@@ -168,3 +168,4 @@ cython_debug/
 #.idea/
 
 agents/ui_agent/weights
+external_data/
