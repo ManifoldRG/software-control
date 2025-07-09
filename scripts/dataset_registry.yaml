@@ -27,3 +27,29 @@ gui_r1:
   name: "GUI-R1"
   type: "ui_grounding"
   repo_id: "ritzzai/GUI-R1"
+
+uground:
+  name: "UGround-V1"
+  type: "ui_grounding"
+  repo_id: "osunlp/UGround-V1-Data"
+
+aguvis-stage1:
+  name: "Aguvis-Stage1"
+  type: "action_taking"
+  repo_id: "xlangai/aguvis-stage1"
+
+aguvis-stage2:
+  name: "Aguvis-Stage2"
+  type: "action_taking"
+  repo_id: "xlangai/aguvis-stage2"
+
+screenspot-v2:
+  name: "ScreenSpot-v2"
+  type: "ui_grounding"
+  repo_id: "HongxinLi/ScreenSpot_v2"
+
+mm-mind2web:
+  name: "Multimodal-Mind2Web"
+  type: "ui_grounding"
+  repo_id: "osunlp/Multimodal-Mind2Web"
+
