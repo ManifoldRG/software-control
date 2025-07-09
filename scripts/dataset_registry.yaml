@@ -1,11 +1,11 @@
 jedi:
   name: "JEDI"
-  type: "ui_navigation"
+  type: "ui_grounding"
   repo_id: "xlangai/Jedi"
 
 screenspot_pro:
   name: "ScreenSpot-Pro"
-  type: "ui_navigation"
+  type: "ui_grounding"
   repo_id: "likaixin/ScreenSpot-Pro"
 
 pc_agent_e:
@@ -13,7 +13,17 @@ pc_agent_e:
   type: "ui_navigation"
   repo_id: "henryhe0123/PC-Agent-E"
 
-pc_agent_e_v2:
-  name: "PC-Agent-E"
+os_atlas:
+  name: "OS-Atlas"
   type: "ui_navigation"
-  repo_id: "henryhe0123/PC-Agent-E"
+  repo_id: "OS-Copilot/OS-Atlas-data"
+
+webclick:
+  name: "WebClick"
+  type: "ui_navigation"
+  repo_id: "Hcompany/WebClick"
+
+gui_r1:
+  name: "GUI-R1"
+  type: "ui_grounding"
+  repo_id: "ritzzai/GUI-R1"
