@@ -6,6 +6,11 @@ from functools import lru_cache
 import logging
 import importlib  # For dynamic class loading
 import yaml
+import os
+import sys
+
+# Add parent directory to path to allow direct script execution
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Logger setup, integrated with Magma's potential logging if exists
 logger = logging.getLogger("magma.evaluation")
@@ -15,9 +20,8 @@ formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(messag
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 
-from .evaluation_pipeline import EvaluationPipeline
-from .utils import MetricCalculator, load_config, logger
-
+from magma.evaluation_pipeline import EvaluationPipeline
+from magma.utils import MetricCalculator
 
 
 @lru_cache(maxsize=128)
