@@ -14,7 +14,7 @@ output_processing:
   class: UIOutputProcessor
 metrics:
   module: magma.utils
-  class: TestMetricCalculator
+  class: MetricCalculator
 dataset_path: magma/datasets/ui_test_dataset.json
 output_path: results/ui_test_results.json
 task_config:
