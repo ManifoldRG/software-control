@@ -1,10 +1,16 @@
 from typing import List, Dict, Any
 import json
-from .data_ingestion import DatasetLoader
-from .model_adaptation import ModelAdapter
-from .output_processing import OutputProcessor
-from .utils import logger, MetricCalculator
-from ..data.dataset import Dataset  # Integrate with Magma's data structures
+import os
+import sys
+
+# Add parent directory to path to allow direct script execution
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from magma.data_ingestion import DatasetLoader
+from magma.model_adaptation import ModelAdapter
+from magma.output_processing import OutputProcessor
+from magma.utils import logger, MetricCalculator
+from data.dataset import Dataset  # Integrate with Magma's data structures
 
 class EvaluationPipeline:
     """

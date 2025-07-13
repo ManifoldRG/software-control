@@ -1,6 +1,12 @@
 from typing import Any, Dict
+import os
+import sys
+
+# Add parent directory to path to allow direct script execution
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from magma import Magma 
-from .utils import logger
+from magma.utils import logger
 
 # Import abc for abstract base class
 import abc

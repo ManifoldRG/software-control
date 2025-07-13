@@ -1,9 +1,14 @@
 import abc
 from typing import List, Dict, Any
 import os
+import sys
 
-from ..data.dataset import Dataset  # Integrate with Magma's existing data module for consistency
-from .utils import logger
+# Add parent directory to path to allow direct script execution
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+
+from data.dataset import Dataset  # Integrate with Magma's existing data module for consistency
+from magma.utils import logger
 
 class DatasetLoader(abc.ABC):
     """

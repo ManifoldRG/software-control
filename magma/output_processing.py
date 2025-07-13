@@ -1,7 +1,13 @@
 import abc
 from typing import Any, Dict
+import os
+import sys
 
-from .utils import logger
+# Add parent directory to path to allow direct script execution
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+
+from magma.utils import logger
 
 class OutputProcessor(abc.ABC):
     """
