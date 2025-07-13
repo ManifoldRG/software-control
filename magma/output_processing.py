@@ -1,0 +1,25 @@
+import abc
+from typing import Any, Dict
+
+from .utils import logger
+
+class OutputProcessor(abc.ABC):
+    """
+    Abstract base class for processing raw model outputs in the Magma evaluation framework.
+    Transforms outputs into standardized formats for metric computation.
+    Designed to be task-agnostic with subclasses for specific parsing needs.
+    """
+
+    @abc.abstractmethod
+    def process_output(self, raw_output: Any, data_item: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Process raw output (e.g., text generations) into evaluable structures.
+        Use data_item for contextual parsing if required.
+        Raise ValueError for unparseable outputs.
+        """
+        pass
+
+# Example subclass (commented):
+# class UIOutputProcessor(OutputProcessor):
+#     def process_output(self, raw_output: Any, data_item: Dict[str, Any]) -> Dict[str, Any]:
+#         ... (e.g., parse action strings) 
