@@ -12,33 +12,28 @@ logger.addHandler(handler)
 
 class MetricCalculator(abc.ABC):
     """
-    Abstract base class for computing evaluation metrics.
-    This allows for flexible metric definitions, injectable into the pipeline.
-    Subclasses can implement specific metric sets (e.g., accuracy, F1).
+    Abstract base class for metric computation.
+    Supports dynamic metric registration for flexibility.
     """
+
+    def __init__(self):
+        self.metric_registry: Dict[str, Callable] = {}
+
+    def register_metric(self, name: str, func: Callable[[List[Dict[str, Any]]], Any]):
+        """
+        Register a custom metric function.
+        """
+        self.metric_registry[name] = func
 
     @abc.abstractmethod
     def compute_metrics(self, results: List[Dict[str, Any]], metric_names: List[str]) -> Dict[str, Any]:
         """
-        Compute metrics from results.
-        metric_names specifies which metrics to compute.
+        Compute requested metrics using the registry.
         """
-        pass
-
-# Example concrete implementation:
-# class BasicMetricCalculator(MetricCalculator):
-#     def compute_metrics(self, results: List[Dict[str, Any]], metric_names: List[str]) -> Dict[str, Any]:
-#         metrics = {}
-#         if 'accuracy' in metric_names:
-#             ... (compute accuracy)
-#         return metrics
-
-# Utility functions (add more as needed, e.g., image utils, text utils)
-def register_metric(name: str) -> Callable:
-    """
-    Decorator to register custom metric functions.
-    """
-    def decorator(func: Callable):
-        # Could maintain a registry of metrics
-        return func
-    return decorator 
+        metrics = {}
+        for name in metric_names:
+            if name in self.metric_registry:
+                metrics[name] = self.metric_registry[name](results)
+            else:
+                logger.warning(f"Metric {name} not registered.")
+        return metrics

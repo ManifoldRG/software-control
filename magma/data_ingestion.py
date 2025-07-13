@@ -7,9 +7,9 @@ from .utils import logger
 
 class DatasetLoader(abc.ABC):
     """
-    Abstract base class for loading and preprocessing datasets in the Magma evaluation framework.
-    This abstraction ensures compatibility with Magma's data pipelines while allowing extension to new formats.
-    Subclasses should implement load_dataset and preprocess, leveraging Magma's Dataset if appropriate.
+    Abstract base class for loading and preprocessing datasets.
+    This abstraction ensures compatibility with data pipelines while allowing extension to new formats.
+    Subclasses should implement load_dataset and preprocess.
     """
 
     @abc.abstractmethod

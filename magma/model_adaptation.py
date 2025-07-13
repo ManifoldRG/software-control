@@ -1,39 +1,44 @@
 from typing import Any, Dict
-from magma import Magma  # Assuming Magma is imported from the project's magma module
+from magma import Magma 
 from .utils import logger
 
-class ModelAdapter:
+# Import abc for abstract base class
+import abc
+
+class ModelAdapter(abc.ABC):
     """
-    Class for adapting the Magma model for zero-shot evaluation on UI tasks.
-    For zero-shot, this mainly involves prompt engineering and input formatting.
+    Abstract base class for adapting models for zero-shot evaluation on UI tasks.
+    Subclasses must implement load_model, and may override other methods as needed.
     """
 
-    def __init__(self, model_path: str, device: str = 'cuda'):
-        self.model = Magma.from_pretrained(model_path).to(device)
-        logger.info(f"Loaded Magma model from {model_path} on {device}")
+    def __init__(self, config: Dict[str, Any]):
+        self.load_model(config)
 
+    @abc.abstractmethod
+    def load_model(self, config: Dict[str, Any]) -> None:
+        """
+        Load the model using the provided configuration.
+        Set self.model appropriately.
+        """
+        pass
+
+    @abc.abstractmethod
     def prepare_input(self, data_item: Dict[str, Any]) -> Dict[str, Any]:
         """
         Prepare the input for the model, e.g., format prompt with image.
         """
-        image = data_item.get('image')
-        prompt = data_item.get('prompt', "Describe the UI action: ")
-        # Assuming Magma takes image and text prompt
-        input_data = {'image': image, 'prompt': prompt}
-        return input_data
+        pass
 
+    @abc.abstractmethod
     def infer(self, input_data: Dict[str, Any]) -> Any:
         """
         Run inference on the adapted model.
         """
-        output = self.model.generate(input_data)  # Adjust based on actual Magma API
-        return output
+        pass
 
     def adapt_for_task(self, task_config: Dict[str, Any]):
         """
-        Apply any task-specific adaptations, e.g., adding a linear head if needed.
-        For zero-shot, this might be a no-op or just set prompts.
+        Apply any task-specific adaptations.
         """
         logger.info(f"Adapting model for task: {task_config.get('task_name')}")
-        # Implement if architectural changes are needed; for zero-shot, minimal
         pass

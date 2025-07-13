@@ -8,8 +8,8 @@ from ..data.dataset import Dataset  # Integrate with Magma's data structures
 
 class EvaluationPipeline:
     """
-    Core orchestration class for zero-shot evaluations in Magma.
-    Integrates with Magma's data and modeling components for seamless workflow.
+    Core orchestration class for zero-shot evaluations.
+    Integrates with data and modeling components for seamless workflow.
     Supports dependency injection for modularity and testing.
     """
 

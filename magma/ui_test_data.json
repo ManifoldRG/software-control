@@ -1,0 +1,7 @@
+[
+    {
+        "image_path": "assets/images/mind2web.png",
+        "instruction": "Imagine that you are imitating humans doing web navigation for a task step by step. At each stage, you can see the webpage like humans by a screenshot and know the previous actions before the current step decided by yourself through recorded history. You need to decide on the following action to take. You can click an element with the mouse, select an option, or type text with the keyboard. The output format should be a dictionary like: \n\"{ \"ACTION\": \"CLICK\" or \"TYPE\" or \"SELECT\", \"MARK\": a numeric id, e.g., 5, \"VALUE\": a string value for the action if applicable, otherwise None}\".\nFor your convenience, I have labeled the candidates with numeric marks and bounding boxes on the screenshot. What is the next action you would take?",
+        "ground_truth": "{\"ACTION\": \"CLICK\", \"MARK\": 1, \"VALUE\": null}"
+    }
+] 

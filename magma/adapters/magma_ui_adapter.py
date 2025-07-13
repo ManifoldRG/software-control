@@ -6,12 +6,12 @@ from ..model_adaptation import ModelAdapter
 from ..utils import logger
 
 class MagmaUIAdapter(ModelAdapter):
-    def load_model(self, model_config: Dict[str, Any]) -> Any:
+    def load_model(self, model_config: Dict[str, Any]) -> None:
         dtype = torch.bfloat16
         model = MagmaForCausalLM.from_pretrained(model_config['path'], trust_remote_code=True, torch_dtype=dtype)
         processor = MagmaProcessor.from_pretrained(model_config['path'], trust_remote_code=True)
         model.to(model_config.get('device', 'cuda'))
-        return {'model': model, 'processor': processor}
+        self.model = {'model': model, 'processor': processor}
 
     def prepare_input(self, data_item: Dict[str, Any]) -> Dict[str, Any]:
         image = data_item['annotated_image']

@@ -5,7 +5,7 @@ from .utils import logger
 
 class OutputProcessor(abc.ABC):
     """
-    Abstract base class for processing raw model outputs in the Magma evaluation framework.
+    Abstract base class for processing raw model outputs.
     Transforms outputs into standardized formats for metric computation.
     Designed to be task-agnostic with subclasses for specific parsing needs.
     """
