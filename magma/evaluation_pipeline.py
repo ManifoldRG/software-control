@@ -10,7 +10,6 @@ from magma.data_ingestion import DatasetLoader
 from magma.model_adaptation import ModelAdapter
 from magma.output_processing import OutputProcessor
 from magma.utils import logger, MetricCalculator
-from data.dataset import Dataset  # Integrate with Magma's data structures
 
 class EvaluationPipeline:
     """
