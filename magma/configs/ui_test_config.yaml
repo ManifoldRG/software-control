@@ -1,24 +1,24 @@
-"data_ingestion:
-  module: evaluation.datasets.ui_test_loader
+data_ingestion:
+  module: magma.datasets.ui_test_loader
   class: UITestDatasetLoader
   config:
     # No instruction here, as it's per sample
 model_adaptation:
-  module: evaluation.adapters.magma_ui_adapter
+  module: magma.adapters.magma_ui_adapter
   class: MagmaUIAdapter
   config:
     path: microsoft/Magma-8B
     device: cuda
 output_processing:
-  module: evaluation.processors.ui_output_processor
+  module: magma.processors.ui_output_processor
   class: UIOutputProcessor
 metrics:
-  module: evaluation.metrics.test_metric_calculator
+  module: magma.utils
   class: TestMetricCalculator
-dataset_path: evaluation/datasets/ui_test_dataset.json
+dataset_path: magma/datasets/ui_test_dataset.json
 output_path: results/ui_test_results.json
 task_config:
   task_name: ui_inference_test
   metrics:
     - response_valid
-    - exact_match" 
+    - exact_match 
