@@ -25,7 +25,6 @@ class MetricCalculator(abc.ABC):
         """
         self.metric_registry[name] = func
 
-    @abc.abstractmethod
     def compute_metrics(self, results: List[Dict[str, Any]], metric_names: List[str]) -> Dict[str, Any]:
         """
         Compute requested metrics using the registry.
