@@ -3,7 +3,7 @@ from PIL import Image
 import base64
 import io
 
-from ...agents.ui_agent.util.utils import check_ocr_box, get_yolo_model, get_caption_model_processor, get_som_labeled_img
+from agents.ui_agent.util.utils import check_ocr_box, get_yolo_model, get_caption_model_processor, get_som_labeled_img
 from ..data_ingestion import DatasetLoader
 from ..utils import logger
 

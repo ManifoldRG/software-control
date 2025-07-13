@@ -1,7 +1,7 @@
 from typing import Any, Dict
 import torch
-from ...magma.modeling_magma import MagmaForCausalLM
-from ...magma.processing_magma import MagmaProcessor
+from ..modeling_magma import MagmaForCausalLM
+from ..processing_magma import MagmaProcessor
 from ..model_adaptation import ModelAdapter
 from ..utils import logger
 

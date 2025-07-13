@@ -20,14 +20,14 @@ import easyocr
 from paddleocr import PaddleOCR
 reader = easyocr.Reader(['en'])
 paddle_ocr = PaddleOCR(
-    lang='en',  # other lang also available
+    '''lang='en',  # other lang also available
     use_angle_cls=False,
     use_gpu=False,  # using cuda will conflict with pytorch in the same process
     show_log=False,
     max_batch_size=1024,
     use_dilation=True,  # improves accuracy
     det_db_score_mode='slow',  # improves accuracy
-    rec_batch_num=1024)
+    rec_batch_num=1024''')
 import time
 import base64
 
@@ -40,7 +40,7 @@ import re
 from torchvision.transforms import ToPILImage
 import supervision as sv
 import torchvision.transforms as T
-from util.box_annotator import BoxAnnotator 
+from .box_annotator import BoxAnnotator 
 
 
 def get_caption_model_processor(model_name, model_name_or_path="Salesforce/blip2-opt-2.7b", device=None):
