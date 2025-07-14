@@ -6,9 +6,8 @@ import sys
 # Add parent directory to path to allow direct script execution
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-
-from data.dataset import Dataset  # Integrate with Magma's existing data module for consistency
 from magma.utils import logger
+
 
 class DatasetLoader(abc.ABC):
     """
@@ -34,7 +33,7 @@ class DatasetLoader(abc.ABC):
         """
         pass
 
-    def get_processed_dataset(self, dataset_path: str) -> Dataset:
+    def get_processed_dataset(self, dataset_path: str) -> List[Dict[str, Any]]:
         """
         Load and preprocess the entire dataset, returning a Magma Dataset object for integration.
         This method ensures the output is pipeline-ready.
@@ -44,7 +43,7 @@ class DatasetLoader(abc.ABC):
         raw_dataset = self.load_dataset(dataset_path)
         processed = [self.preprocess(item) for item in raw_dataset]
         logger.info(f"Loaded and processed {len(processed)} items from {dataset_path}")
-        return Dataset(processed)  # Wrap in Magma's Dataset for consistency
+        return processed
 
 # Example subclass (commented; implement in separate files like evaluation/datasets/ui_loader.py):
 # class UILoader(DatasetLoader):

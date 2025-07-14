@@ -42,7 +42,7 @@ class EvaluationPipeline:
         """
         try:
             self.model_adapter.adapt_for_task(task_config)
-            dataset: Dataset = self.dataset_loader.get_processed_dataset(dataset_path)
+            dataset: List[Dict[str, Any]] = self.dataset_loader.get_processed_dataset(dataset_path)
 
             results = []
             for item in dataset:
