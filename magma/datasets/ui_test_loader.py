@@ -61,4 +61,4 @@ class UITestDatasetLoader(DatasetLoader):
         data_item['parsed_content_list'] = parsed_content_list
         # Retain instruction and ground_truth
         logger.info('Preprocessed UI data item with annotations.')
-        return data_item 
+        return data_item

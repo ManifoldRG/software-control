@@ -1,15 +1,14 @@
 from typing import Any, Dict
 import torch
-from ..modeling_magma import MagmaForCausalLM
-from ..processing_magma import MagmaProcessor
+from transformers import AutoModelForCausalLM, AutoProcessor
 from ..model_adaptation import ModelAdapter
 from ..utils import logger
 
 class MagmaUIAdapter(ModelAdapter):
     def load_model(self, model_config: Dict[str, Any]) -> None:
         dtype = torch.bfloat16
-        model = MagmaForCausalLM.from_pretrained(model_config['path'], trust_remote_code=True, torch_dtype=dtype)
-        processor = MagmaProcessor.from_pretrained(model_config['path'], trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained("microsoft/Magma-8B", trust_remote_code=True, torch_dtype=dtype)
+        processor = AutoProcessor.from_pretrained("microsoft/Magma-8B", trust_remote_code=True)
         model.to(model_config.get('device', 'cuda'))
         self.model = {'model': model, 'processor': processor}
 
