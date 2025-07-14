@@ -853,7 +853,7 @@ class MagmaForCausalLM(MagmaPreTrainedModel):
             elif past_length < input_ids.shape[1]:
                 input_ids = input_ids[:, past_length:]
             # 3 - Otherwise (past_length >= input_ids.shape[1]), let's assume input_ids only has unprocessed tokens.
-            elif self.config.image_token_index in input_ids:
+            elif torch.any(input_ids == self.config.image_token_index):
                 input_ids = input_ids[:, input_ids.shape[1] - 1 :]
             # If the cache has seen more tokens than it can hold, then the cache has a size limit. Let's discard the
             # older attention values, as their corresponding values are not part of the input.
@@ -1046,6 +1046,7 @@ class MagmaForConditionalGeneration(MagmaPreTrainedModel):
         with torch.no_grad():
             if not torch.is_tensor(input_ids):
                 input_ids = torch.as_tensor(input_ids, device=inputs_embeds.device)
+            input_ids = torch.atleast_2d(input_ids)
             num_images = feature_lens.size(0)
             num_image_features, embed_dim = image_features.shape
             if feature_lens.sum() != num_image_features:
@@ -1071,7 +1072,7 @@ class MagmaForConditionalGeneration(MagmaPreTrainedModel):
             # 1. Create a mask to know where special image tokens are
             special_image_token_mask = input_ids == image_token_index
             # special_image_token_mask: [bsz, seqlen]
-            num_special_image_tokens = special_image_token_mask.long().sum(dim=-1) if torch.is_tensor(special_image_token_mask) else torch.tensor(special_image_token_mask, dtype=torch.long)
+            num_special_image_tokens = special_image_token_mask.to(torch.long).sum(dim=-1)
             # num_special_image_tokens: [bsz]
             # Reserve for padding of num_images
             total_num_special_image_tokens = torch.sum(num_special_image_tokens)
@@ -1390,7 +1391,7 @@ class MagmaForConditionalGeneration(MagmaPreTrainedModel):
             elif past_length < input_ids.shape[1]:
                 input_ids = input_ids[:, past_length:]
             # 3 - Otherwise (past_length >= input_ids.shape[1]), let's assume input_ids only has unprocessed tokens.
-            elif self.config.image_token_index in input_ids:
+            elif torch.any(input_ids == self.config.image_token_index):
                 input_ids = input_ids[:, input_ids.shape[1] - 1 :]
             # If the cache has seen more tokens than it can hold, then the cache has a size limit. Let's discard the
             # older attention values, as their corresponding values are not part of the input.
