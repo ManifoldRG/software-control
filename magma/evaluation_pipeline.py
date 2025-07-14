@@ -7,8 +7,8 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from magma.datasets.ui_test_loader import UITestDatasetLoader
-from magma.model_adaptation import ModelAdapter
-from magma.output_processing import OutputProcessor
+from magma.adapters.magma_ui_adapter import MagmaUIAdapter
+from magma.processors.ui_output_processor import UIOutputProcessor
 from magma.utils import logger, MetricCalculator
 
 class EvaluationPipeline:
@@ -21,8 +21,8 @@ class EvaluationPipeline:
     def __init__(
         self,
         dataset_loader: UITestDatasetLoader,
-        model_adapter: ModelAdapter,
-        output_processor: OutputProcessor,
+        model_adapter: MagmaUIAdapter,
+        output_processor: UIOutputProcessor,
         metric_calculator: MetricCalculator
     ):
         self.dataset_loader = dataset_loader
