@@ -1,0 +1,18 @@
+[
+    {
+      "image_path": "data_samples/osworldg.png",
+      "ground_truth": [
+        1422.9,
+        326.4,
+        26.679999999999836,
+        28.400000000000034
+        ],
+      "instruction": "Open the filter function for search settings.",
+      "GUI_types": [
+        "Label",
+        "Button",
+        "Icon"
+        ]
+    }
+  ]
+  
