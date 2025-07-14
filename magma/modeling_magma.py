@@ -488,7 +488,7 @@ class MagmaForCausalLM(MagmaPreTrainedModel):
             # 1. Create a mask to know where special image tokens are
             special_image_token_mask = input_ids == image_token_index
             # special_image_token_mask: [bsz, seqlen]
-            num_special_image_tokens = special_image_token_mask.long().sum(dim=-1)
+            num_special_image_tokens = special_image_token_mask.long().sum(dim=-1) if torch.is_tensor(special_image_token_mask) else torch.tensor(special_image_token_mask, dtype=torch.long)
             # num_special_image_tokens: [bsz]
             # Reserve for padding of num_images
             total_num_special_image_tokens = torch.sum(num_special_image_tokens)
@@ -1073,7 +1073,7 @@ class MagmaForConditionalGeneration(MagmaPreTrainedModel):
             # 1. Create a mask to know where special image tokens are
             special_image_token_mask = input_ids == image_token_index
             # special_image_token_mask: [bsz, seqlen]
-            num_special_image_tokens = special_image_token_mask.long().sum(dim=-1)
+            num_special_image_tokens = special_image_token_mask.long().sum(dim=-1) if torch.is_tensor(special_image_token_mask) else torch.tensor(special_image_token_mask, dtype=torch.long)
             # num_special_image_tokens: [bsz]
             # Reserve for padding of num_images
             total_num_special_image_tokens = torch.sum(num_special_image_tokens)
