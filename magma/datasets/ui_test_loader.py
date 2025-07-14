@@ -2,7 +2,7 @@ from typing import List, Dict, Any
 from PIL import Image
 import base64
 import io
-
+from huggingface_hub import snapshot_download
 from agents.ui_agent.util.utils import check_ocr_box, get_yolo_model, get_caption_model_processor, get_som_labeled_img
 from ..data_ingestion import DatasetLoader
 from ..utils import logger
@@ -10,6 +10,14 @@ from ..utils import logger
 class UITestDatasetLoader(DatasetLoader):
     def __init__(self, config: Dict[str, Any] = None):
         self.instruction = config.get('instruction') if config else None
+        
+        #For SoM annotation
+        repo_id = "microsoft/OmniParser-v2.0"  # HF repo
+        local_dir = "weights"  # Target local directory
+
+        # Download the entire repository
+        snapshot_download(repo_id=repo_id, local_dir=local_dir)
+        print(f"Repository downloaded to: {local_dir}")
 
     def load_dataset(self, dataset_path: str) -> List[Dict[str, Any]]:
         if dataset_path.endswith('.json'):
