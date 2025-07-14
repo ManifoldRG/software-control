@@ -6,7 +6,7 @@ import sys
 # Add parent directory to path to allow direct script execution
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from magma.data_ingestion import DatasetLoader
+from magma.datasets.ui_test_loader import UITestDatasetLoader
 from magma.model_adaptation import ModelAdapter
 from magma.output_processing import OutputProcessor
 from magma.utils import logger, MetricCalculator
@@ -20,7 +20,7 @@ class EvaluationPipeline:
 
     def __init__(
         self,
-        dataset_loader: DatasetLoader,
+        dataset_loader: UITestDatasetLoader,
         model_adapter: ModelAdapter,
         output_processor: OutputProcessor,
         metric_calculator: MetricCalculator
