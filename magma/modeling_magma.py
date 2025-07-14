@@ -461,6 +461,8 @@ class MagmaForCausalLM(MagmaPreTrainedModel):
         ignore_index = ignore_index if ignore_index is not None else self.config.ignore_index
 
         with torch.no_grad():
+            if not torch.is_tensor(input_ids):
+                input_ids = torch.as_tensor(input_ids, device=inputs_embeds.device)
             num_images = feature_lens.size(0)
             num_image_features, embed_dim = image_features.shape
             if feature_lens.sum() != num_image_features:
@@ -486,7 +488,7 @@ class MagmaForCausalLM(MagmaPreTrainedModel):
             # 1. Create a mask to know where special image tokens are
             special_image_token_mask = input_ids == image_token_index
             # special_image_token_mask: [bsz, seqlen]
-            num_special_image_tokens = torch.sum(special_image_token_mask.to(torch.long), dim=-1)
+            num_special_image_tokens = special_image_token_mask.long().sum(dim=-1)
             # num_special_image_tokens: [bsz]
             # Reserve for padding of num_images
             total_num_special_image_tokens = torch.sum(num_special_image_tokens)
@@ -1044,6 +1046,8 @@ class MagmaForConditionalGeneration(MagmaPreTrainedModel):
         ignore_index = ignore_index if ignore_index is not None else self.config.ignore_index
 
         with torch.no_grad():
+            if not torch.is_tensor(input_ids):
+                input_ids = torch.as_tensor(input_ids, device=inputs_embeds.device)
             num_images = feature_lens.size(0)
             num_image_features, embed_dim = image_features.shape
             if feature_lens.sum() != num_image_features:
@@ -1069,7 +1073,7 @@ class MagmaForConditionalGeneration(MagmaPreTrainedModel):
             # 1. Create a mask to know where special image tokens are
             special_image_token_mask = input_ids == image_token_index
             # special_image_token_mask: [bsz, seqlen]
-            num_special_image_tokens = torch.sum(special_image_token_mask.to(torch.long), dim=-1)
+            num_special_image_tokens = special_image_token_mask.long().sum(dim=-1)
             # num_special_image_tokens: [bsz]
             # Reserve for padding of num_images
             total_num_special_image_tokens = torch.sum(num_special_image_tokens)
