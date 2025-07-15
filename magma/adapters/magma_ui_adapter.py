@@ -58,7 +58,7 @@ class MagmaUIAdapter(ModelAdapter):
                         bbox = bbox_coordinates[mark_label]
                         logger.info(f"Found bbox for mark {mark_label}: {bbox}")
                         # You can modify response to include bbox or return both
-                        response = f"{response}\nBbox: {bbox}"
+                        response = f"{response}"
                     else:
                         logger.warning(f"Mark {mark_label} not found in bbox_coordinates")
                 else:
