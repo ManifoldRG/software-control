@@ -52,7 +52,7 @@ class MagmaUIAdapter(ModelAdapter):
                 import re
                 mark_match = re.search(r'\d+', mark_part)
                 if mark_match:
-                    mark_label = int(mark_match.group())
+                    mark_label = str(mark_match.group())
                     # Get bbox coordinates using the mark label as key
                     if mark_label in bbox_coordinates:
                         bbox = bbox_coordinates[mark_label]
@@ -68,7 +68,7 @@ class MagmaUIAdapter(ModelAdapter):
         except Exception as e:
             logger.error(f"Error processing mark label and bbox: {str(e)}")
         
-        return response, bbox_coordinates
+        return response, bbox
     
 
     def adapt_for_task(self, task_config: Dict[str, Any]):

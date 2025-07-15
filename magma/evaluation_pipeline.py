@@ -52,7 +52,7 @@ class EvaluationPipeline:
                 results.append({
                     'ground_truth': item.get('ground_truth'),
                     'prediction': processed_output,
-                    'bbox_coordinates': bbox_coordinates
+                    'bbox_coordinates': str(bbox_coordinates)
                 })
 
             metrics = self.metric_calculator.compute_metrics(results, task_config.get('metrics', []))
