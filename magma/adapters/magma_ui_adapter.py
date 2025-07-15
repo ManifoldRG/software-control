@@ -26,9 +26,9 @@ class MagmaUIAdapter(ModelAdapter):
         inputs['pixel_values'] = inputs['pixel_values'].unsqueeze(0)
         inputs['image_sizes'] = inputs['image_sizes'].unsqueeze(0)
         inputs = inputs.to(self.model['model'].device).to(torch.bfloat16)
-        return inputs
+        return inputs, data_item['label_coordinates']
 
-    def infer(self, input_data: Dict[str, Any]) -> Any:
+    def infer(self, input_data: Dict[str, Any], bbox_coordinates) -> Any:
         model = self.model['model']
         generation_args = {
             'max_new_tokens': 10000,
@@ -42,7 +42,34 @@ class MagmaUIAdapter(ModelAdapter):
         processor = self.model['processor']
         generate_ids = generate_ids[:, input_data['input_ids'].shape[-1]:]
         response = processor.decode(generate_ids[0], skip_special_tokens=True).strip()
-        return response
+        
+        # Extract mark label from response and get corresponding bbox coordinates
+        try:
+            # Parse the response to extract the mark label
+            if "Mark:" in response:
+                mark_part = response.split("Mark:")[1].strip()
+                # Extract the numeric mark (assuming it's the first number after "Mark:")
+                import re
+                mark_match = re.search(r'\d+', mark_part)
+                if mark_match:
+                    mark_label = int(mark_match.group())
+                    # Get bbox coordinates using the mark label as key
+                    if mark_label in bbox_coordinates:
+                        bbox = bbox_coordinates[mark_label]
+                        logger.info(f"Found bbox for mark {mark_label}: {bbox}")
+                        # You can modify response to include bbox or return both
+                        response = f"{response}\nBbox: {bbox}"
+                    else:
+                        logger.warning(f"Mark {mark_label} not found in bbox_coordinates")
+                else:
+                    logger.warning("Could not extract numeric mark from response")
+            else:
+                logger.warning("No 'Mark:' found in response")
+        except Exception as e:
+            logger.error(f"Error processing mark label and bbox: {str(e)}")
+        
+        return response, bbox_coordinates
+    
 
     def adapt_for_task(self, task_config: Dict[str, Any]):
         super().adapt_for_task(task_config)

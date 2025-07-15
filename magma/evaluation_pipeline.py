@@ -46,12 +46,13 @@ class EvaluationPipeline:
 
             results = []
             for item in dataset:
-                input_data = self.model_adapter.prepare_input(item)
-                raw_output = self.model_adapter.infer(input_data)
+                input_data, bbox_coordinates = self.model_adapter.prepare_input(item)
+                raw_output, bbox_coordinates = self.model_adapter.infer(input_data, bbox_coordinates)
                 processed_output = self.output_processor.process_output(raw_output, item)
                 results.append({
                     'ground_truth': item.get('ground_truth'),
-                    'prediction': processed_output
+                    'prediction': processed_output,
+                    'bbox_coordinates': bbox_coordinates
                 })
 
             metrics = self.metric_calculator.compute_metrics(results, task_config.get('metrics', []))
