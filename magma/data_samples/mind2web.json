@@ -1,0 +1,22 @@
+[
+    {
+      "image_path": "data_samples/mind2web.png",
+      "ground_truth": [
+        1422.9,
+        326.4,
+        26.679999999999836,
+        28.400000000000034
+        ],
+      "instruction": "rent a car in Brooklyn - Central, NY on from April 9 to April 15.",
+      "action_reprs": [
+                        "[heading] CAR -> CLICK",
+                        "[combobox] Enter pick up city, airport name, or airport code. -> TYPE: Brooklyn Central",
+                        "[div] Brooklyn - Central (New York), US -> CLICK",
+                        "[textbox] Pickup -> CLICK",
+                        "[button] Sunday, April 9, 2023 -> CLICK",
+                        "[button] Saturday, April 15, 2023 -> CLICK",
+                        "[button] Find cars button. -> CLICK"
+                        ]
+    }
+  ]
+  
