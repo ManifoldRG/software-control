@@ -1,5 +1,0 @@
-# a list of all the data paths
-DATA_PATH: 
-  - "/path/to/llava_v1_5_mix665k.json"
-IMAGE_FOLDER:
-  - "/root/to/llava_v1_5_mix665k/images"

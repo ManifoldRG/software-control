@@ -1,5 +1,0 @@
-# a list of all the data paths
-DATA_PATH: 
-  - "/path/to/magma_820k.json"
-IMAGE_FOLDER:
-  - "/root/to/magma_820k/images"

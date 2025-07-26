@@ -1,1 +1,0 @@
-from .data_utils import Ego4d as ego4d
