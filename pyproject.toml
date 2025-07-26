@@ -1,0 +1,103 @@
+[project]
+name = "software-control"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.2.0",
+]
+
+
+# Copyright 2024 The HuggingFace Inc. team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+
+[tool.ruff]
+target-version = "py310"
+line-length = 110
+exclude = ["tests/artifacts/**/*.safetensors", "*_pb2.py", "*_pb2_grpc.py"]
+
+[tool.ruff.lint]
+# E, W: pycodestyle errors and warnings
+# F: PyFlakes
+# I: isort
+# UP: pyupgrade
+# B: flake8-bugbear (good practices, potential bugs)
+# C4: flake8-comprehensions (more concise comprehensions)
+# A: flake8-builtins (shadowing builtins)
+# SIM: flake8-simplify
+# RUF: Ruff-specific rules
+# D: pydocstyle (for docstring style/formatting)
+# S: flake8-bandit (some security checks, complements Bandit)
+# T20: flake8-print (discourage print statements in production code)
+# N: pep8-naming
+# TODO: Uncomment rules when ready to use
+select = [
+    "E", "W", "F", "I", "B", "C4", "T20", "N" # "SIM", "A", "S", "D", "RUF", "UP"
+]
+ignore = [
+    "E501", # Line too long
+    "T201", # Print statement found
+    "T203", # Pprint statement found
+    "B008", # Perform function call in argument defaults
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401", "F403"]
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+known-first-party = ["lerobot"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = true
+
+[tool.bandit]
+exclude_dirs = [
+    "tests",
+    "benchmarks",
+    "src/lerobot/datasets/push_dataset_to_hub",
+    "src/lerobot/datasets/v2/convert_dataset_v1_to_v2",
+    "src/lerobot/policies/pi0/conversion_scripts",
+    "src/lerobot/scripts/push_dataset_to_hub.py",
+]
+skips = ["B101", "B311", "B404", "B603", "B615"]
+
+[tool.typos]
+default.extend-ignore-re = [
+    "(?Rm)^.*(#|//)\\s*spellchecker:disable-line$",                      # spellchecker:disable-line
+    "(?s)(#|//)\\s*spellchecker:off.*?\\n\\s*(#|//)\\s*spellchecker:on", # spellchecker:<on|off>
+]
+default.extend-ignore-identifiers-re = [
+    # Add individual words here to ignore them
+    "2nd",
+    "pn",
+    "ser",
+    "ein",
+]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = false
