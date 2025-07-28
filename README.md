@@ -68,3 +68,9 @@ Phase 1 - Offline Perturbation (with a focus on GUI)
 10. Evaluate the SoTAs on baselines and the test sets of their benchmark / training datasets using existing eval scripts
 11. Analyze the results
 12. Release 1: fine-tuned models, datasets, updated toolkit code, blog, paper
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+This project incorporates code from various third-party projects with different licenses (Apache 2.0 and MIT). Please see the [NOTICE](NOTICE) file for complete attribution details.

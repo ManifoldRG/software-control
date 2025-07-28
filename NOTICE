@@ -1,0 +1,13 @@
+software-control
+Copyright (c) 2024 [Your Name/Organization]
+
+This project incorporates code from the following third-party projects:
+
+Apache 2.0 Licensed Projects:
+- HuggingFace Inc. - Configuration files (.pre-commit-config.yaml, pyproject.toml)
+  Copyright 2024 The HuggingFace Inc. team. All rights reserved.
+  Licensed under the Apache License, Version 2.0
+
+The original license notices and copyright statements from these projects
+are preserved in their respective files and should be maintained in any distribution
+of this software.
