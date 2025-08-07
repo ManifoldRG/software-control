@@ -1,0 +1,48 @@
+---
+description: Project Guidelines
+alwaysApply: true
+---
+# Software Control Project Guidelines
+
+## Coding Standards
+- Use modern Python features
+- Follow Pythonic and clean code principles
+- Follow MVP prototyping and then incremental iterative development principles
+
+## Architecture Patterns
+- Modular design with clear separation
+- Use dependency injection for external services
+- Implement configuration-driven data augmentation pipelines
+- Separate data loading, augmentation, and agent execution concerns
+
+## Data Handling
+- Use dataclasses or Pydantic models for structured data representation
+- Implement proper serialization for multimodal data (images, DOM, actions)
+- Use async/await for I/O operations (web scraping, API calls)
+- Handle large datasets with generators and streaming
+- Implement proper data validation for web GUI task data
+
+## Type Hints
+- Use type hints for all function parameters and returns
+- Use built-in generics like `list[str]`, `dict[str, int]`, `set[int]` for collections.
+- Use the union operator `|` for union types (e.g., `str | None` instead of `Optional[str]`) where Python 3.10+ is supported.
+- Import from `typing` only when necessary
+- Use `TypeVar` for generic types
+- Define custom types in `types.py`
+- Keep type annotations consistent across the codebase.
+
+## Error Handling
+- Create custom exception classes
+- Use proper try-except blocks
+- Implement proper logging
+- Return proper error responses
+- Handle edge cases properly
+- Use proper error messages
+
+## Documentation
+- Use Google-style docstrings
+- Document all public APIs
+- Keep README.md updated
+- Use proper inline comments
+- Generate API documentation
+- Document environment setup

@@ -18,56 +18,76 @@ uv run pre-commit install
 
 ## Roadmap
 
-Phase 1 - Offline Perturbation (with a focus on GUI)
+This is a rough roadmap for Phase 1 - Offline Perturbation. For most up-to-date project status, refer to the [project board](https://github.com/orgs/ManifoldRG/projects/30/views/1).
 
-1. Establish baseline
-   - [ ] Curate a small set (20-200) of ideal successful & high value trajectories from Mind2Web, OSWorld, GUI-Robust, STEVE, WorkArena++, MinWoB++ as the Baseline Trajectories
-   - [ ] Scope test cost for SoTA models UI-TARS 1.5 7B, GTA1 7B w/ o3, Jedi 7B, InfantAgent and decide on the number of SoTA models to evaluate with.
-   - [ ] Set up eval scripts for SoTA models
-   - [ ] Set up data ingestion for SoTAs
-   - [ ] Test SoTAs on the curated baseline trajectories to verify consistent success if not, re-select the trajectories
-2. GUI Perturbation Design
-   - [ ] Research to see what variables have the highest value
-   - [ ] Visual (easy → hard, measured by information density, structural complexity & number of swaps/changes, size difference, color difference, etc)
-   1. HTML
-      1. Resize, relocate components
-      2. CSS-style perturbation
-      3. Adding visual distractors (e.g., popups, fake search bars, etc)
-      4. Reconstruct object hierarchy
-      5. Menu structure reorganization
-      6. Sub-menu swapping
-      7. Text content shuffling / substitution
-      8. Element ID / class renaming
-      9. Position jitter / relative swapping
-      10. Element visibility / presence randomization
-      11. Text length / word randomization
-      12. Icon / image randomization
-   - [ ] Task Trajectory
-     1. Randomly sample a subset as new trajectory given a trajectory
-     2. Cross-task substitution
-     3. Redundant continuation (add irrelevant steps after goal state)
-     4. Simulate unresponsive state and add duplicated observation timestep
-3. Set up HTML perturbation renderer script using Playwright APIs or equivalent (e.g., browserbase)
-   - [ ] set up screenshot taking, component bounding box returning functionality
-   - [ ] refer to OSWorld-G / jedi codebase for visual component generation for adding visual distractors
-   - [ ] set up perturbation for each variable
-   - [ ] [maybe] set up solvability and plausibility verification for perturbation
-   - [ ] set up task success verification (OSWorld has many examples)
-   - [ ] set up automated perturbation adjustment based on task completion status
-   - [ ] set up data collection logic
-4. Evaluate SoTA models with the perturbation script
-5. Analyze the results
-   - [ ] cluster failure modes
-   - [ ] identify data bottlenecks
-   - [ ] identify architectural bottlenecks
-   - [ ] assess perturbation experiment & update the perturbation design & repeat the evaluation with the script
-6. Release 0: Release code, data, blog
-7. Augment data and curate more data (around 2k trajectories) based on the identified weakness for each model
-8. Set up fine-tune scripts for each SoTA models
-9. Fine-tune the SoTAs on new data targeting their data bottlenecks
-10. Evaluate the SoTAs on baselines and the test sets of their benchmark / training datasets using existing eval scripts
-11. Analyze the results
-12. Release 1: fine-tuned models, datasets, updated toolkit code, blog, paper
+1. Perturbation engine
+
+- environment loading & augmented data saving setup
+  - mind2web data loading
+- randomization constraints & verification
+  - identify randomization variables targeting known failure modes
+  - Set up perturbation engine basic structure & io logic
+  - implement rolling statistics script to extract stats from seed trajectories
+  - experiment & implement scene analysis for downstream perturbation
+    - experiment with element identification & selection (e.g. what elements can be identified & selected accurately for downstream manipulation)
+  - experiment with html and css injection with playwright
+    - randomization
+    - layout change
+    - element addition/removal
+  - experiment with stylebot APIs for more constrained randomization with css injection
+  - experiment with rule-based and VLM-based verification and filtering algorithm
+    - metrics regarding augmented data quality (for iterating the perturbation script)
+
+2. Establish baseline
+
+- data
+  - source seed trajectories (mind2web, and more if needed)
+  - set up data ingestion for mind2web
+- model
+  - adapt model and set up eval script (UI-TARS1.5, GTA1, JEDI for grounding tasks (screenspot-pro)
+- infra
+  - set up cloud instance
+- baseline evaluation
+  - verify model performance on seed trajectories
+
+3. Iterative evaluation & perturbation script tuning
+
+- data
+  - data ingestion for new augmented data
+  - data mixture sampling
+  - data formatting
+- evaluation
+  - use the same eval setup from step 1. establish baseline to evaluate SOTAs on augmented data
+- analysis
+  - analyze augmented data quality
+  - analyze more fine-grained failure modes with SOTAs
+- perturbation script tuning
+  - adjust randomization constraints
+  - adjust perturbation variables
+  - adjust verification mechanisms
+- RELEASE generated datasets and code
+
+4. Augment data & finetune
+
+- training
+  - determine what training methods and configs
+    - implement new SOTA rewards if needed (such as the reward used in GUI-G^2 instead of IoU with bbox)
+  - set up training methods & run a small scale experiment
+    - set up training logging
+  - finetune the model checkpoint before a finetune experiment on augmented data and compare results
+- data
+  - determine data distribution and data sampling methods
+  - implement data sampling / mixture methods
+- evaluation
+  - set up screenspot-pro evaluation
+    - set up eval script
+    - download data
+    - set up data ingestion
+  - set up screenspot-v2 evaluation
+    - ... (same as above)
+  - set up eval on other benchmarks if needed or have time (such as WebArena, VisualWebArena, OSUniverse, WebVoyager, WebBench)
+  - benchmark SOTAs
+- RELEASE fine-tuned models, updated datasets, evaluation results
 
 ## License
 
