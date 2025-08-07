@@ -2,10 +2,13 @@
 name = "software-control"
 version = "0.1.0"
 requires-python = ">=3.10"
-dependencies = []
+dependencies = [
+    "playwright>=1.54.0",
+]
 
 [dependency-groups]
 dev = [
+    "ipykernel>=6.30.0",
     "pre-commit>=4.2.0",
 ]
 
@@ -28,7 +31,7 @@ dev = [
 [tool.ruff]
 target-version = "py310"
 line-length = 110
-exclude = ["tests/artifacts/**/*.safetensors", "*_pb2.py", "*_pb2_grpc.py"]
+exclude = ["tests/artifacts/**/*.safetensors", "*_pb2.py", "*_pb2_grpc.py", "*.mhtml", "*.ipynb"]
 
 [tool.ruff.lint]
 # E, W: pycodestyle errors and warnings
