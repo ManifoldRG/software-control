@@ -13,7 +13,14 @@ conda activate software-control
 
 uv sync --group dev
 
+# set up pre-commit linter & formatter
 uv run pre-commit install
+
+# install package (editable) for proper imports
+uv pip install -e .
+
+# verify
+uv run python -m perturbation_engine.tests.test_scene_analyzers
 ```
 
 ## Roadmap
