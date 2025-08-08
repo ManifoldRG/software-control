@@ -1,22 +1,14 @@
 """Trajectory data structures for the perturbation pipeline."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-
-
-@dataclass
-class MHTMLData:
-    """Raw MHTML file data."""
-
-    file_path: Path
-    content: str
 
 
 @dataclass
 class Observation:
     """Single-step observation for an episode."""
 
-    mhtml: MHTMLData
+    mhtml: Path
     image: bytes | None = None  # Screenshot of the page
     task_instruction: str | None = None
 
@@ -46,4 +38,4 @@ class Episode:
 
     episode_id: str
     task: str
-    steps: list[Step]
+    steps: list[Step] = field(default_factory=list)

@@ -1,8 +1,7 @@
 """Scene analysis data structures for the perturbation pipeline."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-# Type aliases
 Selector = str  # CSS selector
 
 
@@ -28,9 +27,10 @@ class SceneAnalysis:
     """Results from analyzing a scene/observation."""
 
     scene_id: str
-    elements: list[Element]
-    layout: Layout
-    goal_relevant_elements: list[Element]
-    background_elements: list[Element]
     plausibility_score: float
     solvability_score: float
+
+    elements: list[Element] = field(default_factory=list)
+    goal_relevant_elements: list[Element] = field(default_factory=list)
+    background_elements: list[Element] = field(default_factory=list)
+    layout: Layout | None = None
