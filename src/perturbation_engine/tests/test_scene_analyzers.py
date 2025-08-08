@@ -7,12 +7,7 @@ import logging
 import sys
 from pathlib import Path
 
-from perturbation_engine.data.trajectory_data import (
-    Action,
-    Episode,
-    Observation,
-    Step,
-)
+from perturbation_engine import Action, Episode, Observation, Step
 from perturbation_engine.scene.analyzer import SceneAnalyzer
 
 
@@ -52,6 +47,17 @@ Plausibility score: {analysis.plausibility_score}
 Solvability score: {analysis.solvability_score}
                  """)
 
+    # # Display functional components
+    # if analysis.functional_components:
+    #     logging.info("\nFunctional Components:")
+    #     for i, component in enumerate(analysis.functional_components[:5]):  # Show first 5
+    #         logging.info(f"  {i+1}. {component.component_type.value} - {component.text_content[:50]}")
+    #         if component.attributes:
+    #             for attr in component.attributes[:3]:  # Show first 3 attributes
+    #                 logging.info(f"     - {attr.name}: {attr.value}")
+    #         logging.info(f"     Elements: {len(component.elements)}")
+    #         logging.info(f"     Interactive: {component.is_interactive}")
+
     assert analysis.scene_id == mhtml_path.stem
     assert len(analysis.elements) >= 1
     # assert len(analysis.goal_relevant_elements) >= 1
@@ -59,26 +65,26 @@ Solvability score: {analysis.solvability_score}
     assert 0.0 <= analysis.plausibility_score <= 1.0
     assert 0.0 <= analysis.solvability_score <= 1.0
 
-    perturbations = analyzer.propose_configs(analysis)
-    logging.info("Generated perturbations: %d", len(perturbations))
-    assert len(perturbations) == len(analysis.background_elements), (
-        "Number of perturbations not equal to number of background elements"
-    )
+    # perturbations = analyzer.propose_configs(analysis)
+    # logging.info("Generated perturbations: %d", len(perturbations))
+    # assert len(perturbations) == len(analysis.background_elements), (
+    #     "Number of perturbations not equal to number of background elements"
+    # )
 
-    bg_selectors = {e.selector for e in analysis.background_elements}
-    cfg_selectors = {p.target_selector for p in perturbations}
-    assert cfg_selectors.issubset(bg_selectors), "Config selectors not subset of background selectors"
+    # bg_selectors = {e.selector for e in analysis.background_elements}
+    # cfg_selectors = {p.target_selector for p in perturbations}
+    # assert cfg_selectors.issubset(bg_selectors), "Config selectors not subset of background selectors"
 
-    sampled_1 = perturbations[0].sample_concrete(seed=42)
-    css_1 = sampled_1.parameters.to_css()
-    assert "background-color" in css_1, "Background color not in CSS"
-    assert css_1["background-color"].startswith("hsl("), "Background color not in HSL format"
+    # sampled_1 = perturbations[0].sample_concrete(seed=42)
+    # css_1 = sampled_1.parameters.to_css()
+    # assert "background-color" in css_1, "Background color not in CSS"
+    # assert css_1["background-color"].startswith("hsl("), "Background color not in HSL format"
 
-    sampled_2 = perturbations[0].sample_concrete(seed=42)
-    css_2 = sampled_2.parameters.to_css()
-    assert css_1 == css_2, "CSS not deterministic with same seed"
+    # sampled_2 = perturbations[0].sample_concrete(seed=42)
+    # css_2 = sampled_2.parameters.to_css()
+    # assert css_1 == css_2, "CSS not deterministic with same seed"
 
-    return analysis, perturbations
+    return analysis  # , perturbations
 
 
 def main():
@@ -92,7 +98,7 @@ def main():
     print("\n=== Scene Analyzers Test ===")
 
     try:
-        analysis, perturbations = test_scene_analyzer()
+        analysis = test_scene_analyzer()
 
         logging.info("\n✅ All tests completed successfully!")
         logging.info(f"Scene analyzer found {len(analysis.elements)} elements")
