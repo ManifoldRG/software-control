@@ -1,6 +1,24 @@
 # software-control
 
-creating new models capable of taking action on software
+### Problems
+
+1. SOTA Models fail to perform real world tasks reliably to be production ready in dynamic computer environments suffering from failure modes such as task deviation, UI grounding error, missing key goal requirements, and more.
+2. There are no systematic failure-driven “demo2production gaps” assessment for computer use agents
+3. Current benchmarks either only focus on one or few capability, are static, doesn’t target failure modes, can be easily overfitted, or are not reproducible.
+
+### Our approach
+
+We are building a platform that consists of
+
+- a failure-driven scenario simulation engine with perturbation injections
+- a data curation & augmentation pipeline
+- benchmarks measure agent reliability, generalization, & robustness towards the realistic, diverse, and complex environments & tasks
+
+Our release v1.0 focuses on the simulation engine & data generation process to validate this systematic development process for software control agents. We aim to address the gaps in software control agent development with
+
+- a simulation engine that identifies and generate failure scenarios
+- a generated training dataset targeting the failure scenarios
+- fine-tuning studies with the generated training dataset
 
 ## Setup
 
@@ -25,76 +43,42 @@ uv run python -m perturbation_engine.tests.test_scene_analyzers
 
 ## Roadmap
 
-This is a rough roadmap for Phase 1 - Offline Perturbation. For most up-to-date project status, refer to the [project board](https://github.com/orgs/ManifoldRG/projects/30/views/1).
+This is a rough roadmap for Phase 1. For most up-to-date project status, refer to the [project board](https://github.com/orgs/ManifoldRG/projects/30/views/1).
 
-1. Perturbation engine
+Preliminary Design & Env setup
 
-- environment loading & augmented data saving setup
-  - mind2web data loading
-- randomization constraints & verification
-  - identify randomization variables targeting known failure modes
-  - Set up perturbation engine basic structure & io logic
-  - implement rolling statistics script to extract stats from seed trajectories
-  - experiment & implement scene analysis for downstream perturbation
-    - experiment with element identification & selection (e.g. what elements can be identified & selected accurately for downstream manipulation)
-  - experiment with html and css injection with playwright
-    - randomization
-    - layout change
-    - element addition/removal
-  - experiment with stylebot APIs for more constrained randomization with css injection
-  - experiment with rule-based and VLM-based verification and filtering algorithm
-    - metrics regarding augmented data quality (for iterating the perturbation script)
+- MVP perturbable trajectory schema design
+- OSworld & TheAgentCompany env setup
+- Stats & sampling initial design
 
-2. Establish baseline
+Core Pipeline Design & Scaffolding & Seed Dataset Collection
 
-- data
-  - source seed trajectories (mind2web, and more if needed)
-  - set up data ingestion for mind2web
-- model
-  - adapt model and set up eval script (UI-TARS1.5, GTA1, JEDI for grounding tasks (screenspot-pro)
-- infra
-  - set up cloud instance
-- baseline evaluation
-  - verify model performance on seed trajectories
+- Perturbation design
+- Scaffold core MVP pipeline (including the stats, sampling)
+- Seed trajectory collection
 
-3. Iterative evaluation & perturbation script tuning
+Pipeline Tuning & Data Scaling
 
-- data
-  - data ingestion for new augmented data
-  - data mixture sampling
-  - data formatting
-- evaluation
-  - use the same eval setup from step 1. establish baseline to evaluate SOTAs on augmented data
-- analysis
-  - analyze augmented data quality
-  - analyze more fine-grained failure modes with SOTAs
-- perturbation script tuning
-  - adjust randomization constraints
-  - adjust perturbation variables
-  - adjust verification mechanisms
-- RELEASE generated datasets and code
+- Seed trace perturbation
+- pipeline tuning
+  - stats sampler
+  - perturbation
+- seed trajectory scaling
 
-4. Augment data & finetune
+Evaluation & Finetuning
 
-- training
-  - determine what training methods and configs
-    - implement new SOTA rewards if needed (such as the reward used in GUI-G^2 instead of IoU with bbox)
-  - set up training methods & run a small scale experiment
-    - set up training logging
-  - finetune the model checkpoint before a finetune experiment on augmented data and compare results
-- data
-  - determine data distribution and data sampling methods
-  - implement data sampling / mixture methods
-- evaluation
-  - set up screenspot-pro evaluation
-    - set up eval script
-    - download data
-    - set up data ingestion
-  - set up screenspot-v2 evaluation
-    - ... (same as above)
-  - set up eval on other benchmarks if needed or have time (such as WebArena, VisualWebArena, OSUniverse, WebVoyager, WebBench)
-  - benchmark SOTAs
-- RELEASE fine-tuned models, updated datasets, evaluation results
+- prompt based validation setup
+- OSWorld evaluation setup
+- agent finetuning script setup
+
+Analysis & Finetuning Iteration
+
+- establish baseline evaluation results
+- iterative finetuning & monitoring & evaluation with variants of perturbations
+
+Release Preparation
+
+- analyze the results & paper writing & release code, data, evaluation results (paper), & finetuned model
 
 ## License
 
