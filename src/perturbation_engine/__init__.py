@@ -1,21 +1,49 @@
+# Core data structures
 from .data.trajectory_data import Action, Episode, Observation, Step
-from .perturbation.data import PerturbationConfig, PerturbationResult
-from .scene.data import Element, Layout, SceneAnalysis
+
+# Execution system
+# Integration
+from .perturbation_desktop_env import EnhancedDesktopEnv
+from .sampling.scenario_params import PerturbationParams
+
+# Sampling system
+from .sampling.scenario_sampler import ScenarioSamplingEngine
+from .sampling.types import PerturbationMetadata, SamplingContext, SamplingResult
+from .types import (
+    Command,
+    ComponentType,
+    Element,
+    ExecutorInterface,
+    PerturbationConfig,
+    PerturbationResult,
+    SamplerInterface,
+    ScenarioParameters,
+    SceneAnalysis,
+)
 
 __all__ = [
-    # Trajectory
+    # Core types
+    "PerturbationConfig",
+    "PerturbationResult",
+    "Command",
+    "ScenarioParameters",
+    "SamplerInterface",
+    "ExecutorInterface",
+    "ComponentType",
+    "Element",
+    "SceneAnalysis",
+    # Trajectory data
     "Observation",
     "Action",
     "Step",
     "Episode",
-    # Scene
-    "Element",
-    "Layout",
-    "SceneAnalysis",
-    # "FunctionalComponent",
-    # "ComponentType",
-    # "ComponentAttribute",
-    # Perturbation
-    "PerturbationConfig",
-    "PerturbationResult",
+    # Sampling system
+    "ScenarioSamplingEngine",
+    "PerturbationParams",
+    "SamplingContext",
+    "SamplingResult",
+    "PerturbationMetadata",
+    # Execution system
+    # Integration
+    "EnhancedDesktopEnv",
 ]

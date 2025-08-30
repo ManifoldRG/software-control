@@ -7,7 +7,7 @@ from timeit import default_timer as timer
 from playwright.sync_api import sync_playwright
 
 # from perturbation_engine.scene.component_grouper import ComponentGrouper
-from perturbation_engine.scene.data import Element, SceneAnalysis
+from perturbation_engine.sampling.ui_visual_design.data_types import Element, SceneAnalysis
 
 
 class SceneAnalyzer:
