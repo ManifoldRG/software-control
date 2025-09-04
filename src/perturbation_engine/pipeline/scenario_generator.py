@@ -1,43 +1,13 @@
 import logging
 from typing import Any, Dict, List
 
-from perturbation_engine.types import ScenarioParameters
+from perturbation_engine.data_types import ScenarioSpec
 
 
-class ScenarioManager:
+class ScenarioGenerator:
     """Manages perturbation scenarios and parameter generation.
 
-    Attributes:
-        task_setup:
-            - task instruction
-            - file system
-            - apps launched
-            - website
-                - mhtml files
-            - system VM snapshot
-            - servers
-                - databases
-                - configs
-
-        runtime:
-            - state
-                - screenshot
-                - browser
-                - UI
-                - apps
-                - file system
-                - servers
-                    - API responses
-                    - databases
-                    - configs
-            - action
-            - thought
-
-    methods:
-        - generate_scenario: orchestrates sampling and generates complete scenario
-        - _sample_task_instruction: samples instruction perturbations
-        - _sample_ui_visual: samples UI visual perturbations
-        - _sample_environment_distractor: samples environment distractor perturbations
+    Takes in perturbation config, seed task config,
     """
 
     def __init__(self, seed_task_config: Dict[str, Any], perturbation_config: Dict[str, Any]):
@@ -55,14 +25,7 @@ class ScenarioManager:
         # TODO: Initialize active scenarios registry
         pass
 
-    def __str__(self):
-        return f"Scenario(id={self.scenario_id}, type={self.scenario_type})"
-
-    def update_task_config(self, task_config: Dict[str, Any]):
-        """Update current task configuration."""
-        self.task_config = task_config
-
-    def generate_scenario(self) -> ScenarioParameters:
+    def _generate_single_scenario(self) -> ScenarioSpec:
         """Generate perturbation scenario by orchestrating sampling process."""
         # TODO: Select active scenarios based on probability and configuration
         active_scenarios = self._select_active_scenarios()
@@ -76,14 +39,23 @@ class ScenarioManager:
         environment_state = self._sample_environment_state(active_scenarios)
 
         # TODO: Create comprehensive scenario parameters
-        return ScenarioParameters(
+        return ScenarioSpec(
             task_config=self.task_config,
             ui_theme_params=ui_theme_params,
             distractor_params=distractor_params,
             environment_state=environment_state,
         )
 
-    def generate_runtime_scenario(self) -> ScenarioParameters:
+    def generate_scenarios(self, num_scenarios: int) -> List[ScenarioSpec]:
+        """Generate multiple perturbation scenarios."""
+        return [self._generate_single_scenario() for _ in range(num_scenarios)]
+
+    def _generate_static_scenario(self) -> ScenarioSpec:
+        """Generate setup perturbation scenario."""
+        # TODO: Generate setup-specific perturbation parameters
+        pass
+
+    def _generate_runtime_scenario(self) -> ScenarioSpec:
         """Generate runtime perturbation scenario during task execution."""
         # TODO: Generate runtime-specific perturbation parameters
         # TODO: Consider current task state and action history

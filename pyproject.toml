@@ -108,6 +108,7 @@ default.extend-ignore-identifiers-re = [
     "pn",
     "ser",
     "ein",
+    "som",
 ]
 
 [tool.mypy]
