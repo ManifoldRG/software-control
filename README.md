@@ -26,10 +26,10 @@ Our release v1.0 focuses on the simulation engine & data generation process to v
 git clone git@github.com:ManifoldRG/software-control.git
 cd software-control
 
-conda create --env software-control -f environment.yml
+conda env create -f environment.yml -n software-control
 conda activate software-control
 
-uv sync --group dev
+uv sync --all-groups
 
 # set up pre-commit linter & formatter
 uv run pre-commit install
@@ -38,7 +38,7 @@ uv run pre-commit install
 uv pip install -e .
 
 # verify
-uv run python -m perturbation_engine.tests.test_scene_analyzers
+uv run python -m src/perturbation_engine/tests/test_trajectory_generator.py
 ```
 
 ## Roadmap
