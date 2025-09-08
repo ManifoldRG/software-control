@@ -13,9 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import argparse
 import logging
-import os
 import signal
 import sys
 import time
@@ -23,7 +21,7 @@ from multiprocessing import Manager, Process
 from typing import Any, Dict, List
 
 from perturbation_engine.configure_logging import configure_logging
-from perturbation_engine.data_types import GenerationResult, ScenarioSpec
+from perturbation_engine.data_types import ExecutionConfig, GenerationResult
 from perturbation_engine.pipeline.parallel_execution_engine import ParallelExecutionEngine
 from perturbation_engine.pipeline.scenario_generator import ScenarioGenerator
 
@@ -40,7 +38,6 @@ class TrajectoryGenerationOrchestrator:
 
     def __init__(self, scenario_generator: ScenarioGenerator) -> None:
         self.scenario_generator = scenario_generator
-        self.execution_engine = ParallelExecutionEngine()
 
     def generate_trajectories(
         self,
@@ -58,33 +55,31 @@ class TrajectoryGenerationOrchestrator:
         if env_args is None:
             env_args = {}
 
+        # Create execution config
+        config = ExecutionConfig(**env_args)
+
         # Load seed scenarios
-        seed_scenarios = self._load_seed_scenarios(
+        seed_scenarios = self.scenario_generator.load_seed_scenarios(
             env_args.get("test_config_base_dir", "evaluation_examples")
         )
 
         # Generate scenario specifications
         scenario_specs = self.scenario_generator.generate_scenarios(seed_scenarios, num_trajectories_per_seed)
 
-        # Create tasks
-        tasks = self._create_tasks(scenario_specs, result_base_dir)
-
-        # Create argument namespace for compatibility
-        args = argparse.Namespace(**env_args)
-
         # Execute in parallel
         with Manager() as manager:
             shared_results = manager.list()
-            task_queue = manager.Queue()
+            scenario_queue = manager.Queue()
 
-            for task in tasks:
-                task_queue.put(task)
+            for scenario_spec in scenario_specs:
+                scenario_queue.put(scenario_spec)
 
             processes = []
             for i in range(num_parallel_vms):
+                execution_engine = ParallelExecutionEngine(config)
                 p = Process(
-                    target=self.execution_engine.run_vm_tasks,
-                    args=(task_queue, args, shared_results),
+                    target=execution_engine.run_vm_tasks,
+                    args=(scenario_queue, shared_results),
                     name=f"PerturbationProcess-{i + 1}",
                 )
                 p.daemon = True
@@ -96,7 +91,7 @@ class TrajectoryGenerationOrchestrator:
                 # Wait for completion
                 while True:
                     alive_count = sum(1 for p in processes if p.is_alive())
-                    if task_queue.empty():
+                    if scenario_queue.empty():
                         logger.info("All tasks finished.")
                         break
                     if alive_count == 0:
@@ -119,35 +114,6 @@ class TrajectoryGenerationOrchestrator:
             f"Average result: {sum(r.result_score for r in results) / len(results) if results else 0}"
         )
         return results
-
-    def _load_seed_scenarios(self, config_base_dir: str) -> List[Dict[str, Any]]:
-        """Load seed scenarios from task configs and existing trajectories"""
-        # TODO: Implement scenario loading logic
-        # - Load from evaluation_examples directory
-        # - Filter based on domain/type requirements
-        # - Return list of task configurations
-        return []
-
-    def _create_tasks(self, scenario_specs: List[ScenarioSpec], result_base_dir: str) -> List[ScenarioSpec]:
-        """Create trajectory tasks from scenario specifications"""
-        tasks = []
-        for i, scenario_spec in enumerate(scenario_specs):
-            result_dir = os.path.join(result_base_dir, f"scenario_{i}")
-            task_id = f"task_{i}_{scenario_spec.scenario_id}"
-            tasks.append(
-                ScenarioSpec(
-                    scenario_id=scenario_spec.scenario_id,
-                    base_task_config=scenario_spec.base_task_config,
-                    perturbations=scenario_spec.perturbations,
-                    metadata=scenario_spec.metadata,
-                    result_dir=result_dir,
-                    task_id=task_id,
-                    perturbation_type=scenario_spec.perturbation_type,
-                    perturbation_phase=scenario_spec.perturbation_phase,
-                    perturbation_params=scenario_spec.perturbation_params,
-                )
-            )
-        return tasks
 
 
 # ============================================================================
@@ -194,21 +160,27 @@ def main():
 
     # Example usage
     env_args = {
+        # VM/Provider settings
         "path_to_vm": None,
+        "provider_name": "docker",
+        "region": "us-east-1",
+        "snapshot_name": None,
+        # Environment settings
         "headless": True,
         "action_space": "pyautogui",
         "observation_type": "screenshot",
-        "max_steps": 15,
-        "model": "gpt-4o",
-        "temperature": 1.0,
-        "top_p": 0.9,
-        "max_tokens": 1500,
-        "provider_name": "docker",
-        "region": "us-east-1",
-        "screen_width": 1920,
-        "screen_height": 1080,
-        "client_password": "",
+        "screen_size": (1920, 1080),
         "os_type": "Ubuntu",
+        "client_password": "",
+        # Execution settings
+        "max_steps": 15,
+        "sleep_after_execution": 0.0,
+        # Additional OSWorld settings
+        "cache_dir": "cache",
+        "require_a11y_tree": True,
+        "require_terminal": False,
+        "enable_proxy": True,
+        # Test configuration
         "test_config_base_dir": "evaluation_examples",
     }
 

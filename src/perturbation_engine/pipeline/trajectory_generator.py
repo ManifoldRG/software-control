@@ -14,7 +14,6 @@
 # limitations under the License.
 
 
-import argparse
 import datetime
 import json
 import logging
@@ -23,15 +22,16 @@ import time
 from typing import Any, Dict, List
 
 from OSWorld.desktop_env.desktop_env import DesktopEnv
+from perturbation_engine.control.gemini_controller import GeminiController
 from perturbation_engine.data_types import (
     GenerationResult,
-    PerturbationControllers,
     PerturbationPhase,
     PerturbationSpec,
     PerturbationType,
     ScenarioSpec,
 )
-from perturbation_engine.pipeline.replay_agent import ReplayAgent
+from perturbation_engine.pipeline.trajectory_replayer import TrajectoryReplayer
+from perturbation_engine.pipeline.trigger_functions import TRIGGER_FUNCTIONS
 
 
 class TrajectoryGenerator:
@@ -39,38 +39,40 @@ class TrajectoryGenerator:
 
     def __init__(self):
         self.logger = logging.getLogger(__name__)
+        self.vlm_controller = GeminiController()
 
     def execute_trajectory(
-        self, replay_agent: ReplayAgent, env: DesktopEnv, scenario: ScenarioSpec, args: argparse.Namespace
+        self,
+        trajectory_replayer: TrajectoryReplayer,
+        env: DesktopEnv,
+        scenario: ScenarioSpec,
+        max_steps: int,
+        sleep_after_execution: float = 0.0,
     ) -> GenerationResult:
         """Execute a single trajectory with perturbation injection"""
         start_time = time.time()
         os.makedirs(scenario.result_dir, exist_ok=True)
 
-        # Apply setup perturbations
-        perturbed_config = self._apply_setup_perturbations(
-            scenario.base_task_config, scenario.perturbations, env
-        )
+        # Apply setup perturbations before environment reset
+        perturbed_config = self._apply_setup_perturbations(scenario.task_config, scenario.perturbations, env)
 
-        # Reset environment with perturbed task
+        # Reset environment with task config (following OSWorld pattern)
         env.reset(task_config=perturbed_config)
         time.sleep(60)  # Wait for environment to be ready
-
-        # Initialize replay agent by loading the trajectory
-        replay_agent.reset(scenario.trajectory_folder_dir)
 
         # Start recording video
         env.controller.start_recording()
 
-        # Main execution loop
+        # Get initial observation
         obs = env._get_obs()
         done = False
         step_idx = 0
         perturbation_log = []
 
-        while not done and step_idx < args.max_steps:
-            # Get next action
-            response, actions = replay_agent.step()
+        # Main execution loop
+        while not done and step_idx < max_steps and trajectory_replayer.has_more_steps():
+            # Get next action from trajectory replayer
+            response, actions = trajectory_replayer.step()
 
             # Execute actions
             for action in actions:
@@ -83,7 +85,7 @@ class TrajectoryGenerator:
                 )
 
                 # Execute action
-                obs, reward, done, info = env.step(action, args.sleep_after_execution)
+                obs, reward, done, info = env.step(action, sleep_after_execution)
 
                 # Save trajectory data
                 self._save_trajectory_step(
@@ -131,12 +133,18 @@ class TrajectoryGenerator:
 
         for perturbation in perturbations:
             if perturbation.phase == PerturbationPhase.SETUP:
-                result = self.perturbation_manager.apply_perturbation(env, perturbation, context)
-                if result.get("applied"):
-                    # Update config based on perturbation result
-                    if perturbation.perturbation_type == PerturbationType.INSTRUCTION:
-                        # TODO: Update instruction based on perturbation
-                        pass
+                # Use VLM controller directly
+                if self.vlm_controller.can_handle(perturbation.perturbation_type):
+                    result = self.vlm_controller.apply_perturbation(env, perturbation, context)
+                    if result.get("applied"):
+                        # Update config based on perturbation result
+                        if perturbation.perturbation_type == PerturbationType.INSTRUCTION:
+                            # TODO: Update instruction based on perturbation
+                            pass
+                else:
+                    self.logger.warning(
+                        f"VLM controller cannot handle perturbation type: {perturbation.perturbation_type}"
+                    )
 
         return perturbed_config
 
@@ -153,42 +161,42 @@ class TrajectoryGenerator:
 
         for perturbation in perturbations:
             if perturbation.phase == PerturbationPhase.RUNTIME and self._should_trigger_perturbation(
-                perturbation, step_idx, obs
+                perturbation, step_idx, obs, env
             ):
-                result = PerturbationControllers[perturbation.perturbation_controller].apply_perturbation(
-                    env, perturbation, context
-                )
-                if result.get("applied"):
-                    perturbation_log.append(
-                        {
-                            "step": step_idx,
-                            "type": perturbation.perturbation_type.value,
-                            "parameters": perturbation.parameters,
-                            "result": result,
-                        }
+                # Use VLM controller directly
+                if self.vlm_controller.can_handle(perturbation.perturbation_type):
+                    result = self.vlm_controller.apply_perturbation(env, perturbation, context)
+                    if result.get("applied"):
+                        perturbation_log.append(
+                            {
+                                "step": step_idx,
+                                "type": perturbation.perturbation_type.value,
+                                "parameters": perturbation.parameters,
+                                "result": result,
+                            }
+                        )
+                        return True
+                else:
+                    self.logger.warning(
+                        f"VLM controller cannot handle perturbation type: {perturbation.perturbation_type}"
                     )
-                    return True
 
         return False
 
     def _should_trigger_perturbation(
-        self, perturbation: PerturbationSpec, step_idx: int, obs: Dict[str, Any]
+        self, perturbation: PerturbationSpec, step_idx: int, obs: Dict[str, Any], env: Any
     ) -> bool:
-        """Check if perturbation should be triggered"""
-        conditions = perturbation.trigger_conditions
+        """Check if perturbation should be triggered using function registry"""
+        trigger_func = TRIGGER_FUNCTIONS.get(perturbation.trigger_function_name)
+        if not trigger_func:
+            self.logger.warning(f"Unknown trigger function: {perturbation.trigger_function_name}")
+            return False
 
-        # Time-based triggers
-        if "step_range" in conditions:
-            start, end = conditions["step_range"]
-            if not (start <= step_idx <= end):
-                return False
-
-        # State-based triggers
-        if "ui_elements" in conditions:
-            # TODO: Check if specific UI elements are present in obs
-            pass
-
-        return True
+        try:
+            return trigger_func(step_idx, obs, env, perturbation.trigger_parameters)
+        except Exception as e:
+            self.logger.error(f"Error in trigger function {perturbation.trigger_function_name}: {e}")
+            return False
 
     def _save_trajectory_step(
         self,
