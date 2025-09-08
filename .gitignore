@@ -170,3 +170,6 @@ cython_debug/
 agents/ui_agent/weights
 external_data/
 notes/
+
+# VsCode
+*.code-workspace
