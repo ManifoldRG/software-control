@@ -16,8 +16,8 @@
 import logging
 from multiprocessing import Queue, current_process
 
-from OSWorld.desktop_env.desktop_env import DesktopEnv
 from perturbation_engine.data_types import ExecutionConfig, GenerationResult, ScenarioSpec
+from perturbation_engine.pipeline.perturbation_desktop_env import PerturbationDesktopEnv
 from perturbation_engine.pipeline.trajectory_generator import TrajectoryGenerator
 from perturbation_engine.pipeline.trajectory_replayer import TrajectoryReplayer
 
@@ -35,7 +35,7 @@ class TaskExecutor:
         env = None
         try:
             # Initialize DesktopEnv
-            env = DesktopEnv(
+            env = PerturbationDesktopEnv(
                 path_to_vm=self.config.path_to_vm,
                 action_space=self.config.action_space,
                 provider_name=self.config.provider_name,
@@ -49,6 +49,7 @@ class TaskExecutor:
                 enable_proxy=self.config.enable_proxy,
                 client_password=self.config.client_password,
                 cache_dir=self.config.cache_dir,
+                chromium_port=self.config.chromium_port,
             )
 
             # Initialize trajectory replayer

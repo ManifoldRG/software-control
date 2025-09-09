@@ -65,7 +65,10 @@ class ExecutionConfig:
     cache_dir: str = "cache"
     require_a11y_tree: bool = True
     require_terminal: bool = False
-    enable_proxy: bool = True
+    enable_proxy: bool = False
+
+    # Perturbation connection
+    chromium_port: int = 9222
 
 
 @dataclass

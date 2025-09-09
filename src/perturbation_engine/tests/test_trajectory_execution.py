@@ -3,8 +3,10 @@
 import json
 import logging
 import os
+import time
 from multiprocessing import Manager
 
+from perturbation_engine.configure_logging import configure_logging
 from perturbation_engine.data_types import (
     ExecutionConfig,
     PerturbationPhase,
@@ -14,8 +16,7 @@ from perturbation_engine.data_types import (
 )
 from perturbation_engine.pipeline.parallel_execution_engine import ParallelExecutionEngine
 
-# Configure logging for testing
-logging.basicConfig(level=logging.INFO)
+configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -159,4 +160,7 @@ def test_real_trajectory_execution():
 
 
 if __name__ == "__main__":
+    start_time = time.perf_counter()
     test_real_trajectory_execution()
+    end_time = time.perf_counter()
+    print(f"Time taken: {end_time - start_time:.2f} seconds")

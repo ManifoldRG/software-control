@@ -21,8 +21,6 @@ import os
 import time
 from typing import Any, Dict, List
 
-from OSWorld.desktop_env.desktop_env import DesktopEnv
-from perturbation_engine.control.gemini_controller import GeminiController
 from perturbation_engine.data_types import (
     GenerationResult,
     PerturbationPhase,
@@ -30,6 +28,7 @@ from perturbation_engine.data_types import (
     PerturbationType,
     ScenarioSpec,
 )
+from perturbation_engine.pipeline.perturbation_desktop_env import PerturbationDesktopEnv
 from perturbation_engine.pipeline.trajectory_replayer import TrajectoryReplayer
 from perturbation_engine.pipeline.trigger_functions import TRIGGER_FUNCTIONS
 
@@ -39,12 +38,11 @@ class TrajectoryGenerator:
 
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        self.vlm_controller = GeminiController()
 
     def execute_trajectory(
         self,
         trajectory_replayer: TrajectoryReplayer,
-        env: DesktopEnv,
+        env: PerturbationDesktopEnv,
         scenario: ScenarioSpec,
         max_steps: int,
         sleep_after_execution: float = 0.0,
@@ -54,7 +52,7 @@ class TrajectoryGenerator:
         os.makedirs(scenario.result_dir, exist_ok=True)
 
         # Apply setup perturbations before environment reset
-        perturbed_config = self._apply_setup_perturbations(scenario.task_config, scenario.perturbations, env)
+        perturbed_config = self._apply_setup_perturbations(scenario.task_config, env, scenario.perturbations)
 
         # Reset environment with task config (following OSWorld pattern)
         env.reset(task_config=perturbed_config)
@@ -125,17 +123,16 @@ class TrajectoryGenerator:
         )
 
     def _apply_setup_perturbations(
-        self, base_config: Dict[str, Any], perturbations: List[PerturbationSpec], env: DesktopEnv
+        self, task_config: Dict[str, Any], env: PerturbationDesktopEnv, perturbations: List[PerturbationSpec]
     ) -> Dict[str, Any]:
-        """Apply setup-phase perturbations"""
-        perturbed_config = base_config.copy()
-        context = {"phase": "setup", "base_config": base_config}
+        """TODO: Finish implementing this function"""
+        perturbed_config = task_config.copy()
+        context = {"phase": "setup", "task_config": task_config}
 
         for perturbation in perturbations:
             if perturbation.phase == PerturbationPhase.SETUP:
-                # Use VLM controller directly
-                if self.vlm_controller.can_handle(perturbation.perturbation_type):
-                    result = self.vlm_controller.apply_perturbation(env, perturbation, context)
+                if env.controller.can_handle(perturbation.perturbation_type):
+                    result = env.controller.apply_perturbation(perturbation, context)
                     if result.get("applied"):
                         # Update config based on perturbation result
                         if perturbation.perturbation_type == PerturbationType.INSTRUCTION:
@@ -143,14 +140,14 @@ class TrajectoryGenerator:
                             pass
                 else:
                     self.logger.warning(
-                        f"VLM controller cannot handle perturbation type: {perturbation.perturbation_type}"
+                        f"Perturbation controller cannot handle perturbation type: {perturbation.perturbation_type}"
                     )
 
         return perturbed_config
 
     def _check_and_apply_runtime_perturbations(
         self,
-        env: DesktopEnv,
+        env: PerturbationDesktopEnv,
         perturbations: List[PerturbationSpec],
         step_idx: int,
         obs: Dict[str, Any],
@@ -163,23 +160,17 @@ class TrajectoryGenerator:
             if perturbation.phase == PerturbationPhase.RUNTIME and self._should_trigger_perturbation(
                 perturbation, step_idx, obs, env
             ):
-                # Use VLM controller directly
-                if self.vlm_controller.can_handle(perturbation.perturbation_type):
-                    result = self.vlm_controller.apply_perturbation(env, perturbation, context)
-                    if result.get("applied"):
-                        perturbation_log.append(
-                            {
-                                "step": step_idx,
-                                "type": perturbation.perturbation_type.value,
-                                "parameters": perturbation.parameters,
-                                "result": result,
-                            }
-                        )
-                        return True
-                else:
-                    self.logger.warning(
-                        f"VLM controller cannot handle perturbation type: {perturbation.perturbation_type}"
+                result = env.controller.apply_perturbation(perturbation, context)
+                if result.get("applied"):
+                    perturbation_log.append(
+                        {
+                            "step": step_idx,
+                            "type": perturbation.perturbation_type.value,
+                            "parameters": perturbation.parameters,
+                            "result": result,
+                        }
                     )
+                    return True
 
         return False
 
