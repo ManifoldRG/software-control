@@ -24,6 +24,8 @@ where = [
 dev = [
     "google-genai>=1.33.0",
     "ipykernel>=6.30.0",
+    "opencv-python>=4.11.0.86",
+    "pandas>=2.2.3",
     "pre-commit>=4.2.0",
     "pytest>=8.4.2",
 ]
