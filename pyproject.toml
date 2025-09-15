@@ -3,6 +3,7 @@ name = "software-control"
 version = "0.1.0"
 requires-python = ">=3.11,<3.12"
 dependencies = [
+    "pandas>=2.2.3",
     "playwright>=1.54.0",
 ]
 
@@ -22,7 +23,9 @@ where = [
 
 [dependency-groups]
 dev = [
+    "fastparquet>=2024.11.0",
     "google-genai>=1.33.0",
+    "huggingface-hub>=0.34.4",
     "ipykernel>=6.30.0",
     "opencv-python>=4.11.0.86",
     "pandas>=2.2.3",
