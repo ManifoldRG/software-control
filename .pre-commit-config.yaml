@@ -27,7 +27,7 @@ repos:
     hooks:
       - id: check-added-large-files
         args: ['--maxkb=1024']
-        exclude: 'experiments/perturbation_experiment.ipynb|experiments/explore_mm_mind2web.ipynb'
+        exclude: 'experiments/perturbation_experiment.ipynb|experiments/explore_mm_mind2web.ipynb|experiments/explore_mt_mind2web.ipynb'
       # - id: debug-statements
       - id: check-merge-conflict
       - id: check-case-conflict
