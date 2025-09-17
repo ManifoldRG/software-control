@@ -46,23 +46,20 @@ class TrajectoryGenerationOrchestrator:
         num_seed_scenarios: int,
         num_trajectories_per_seed: int,
         num_parallel_vms: int = 1,
-        env_args: Dict[str, Any] = None,
+        config: ExecutionConfig = ExecutionConfig(),
+        task_config_base_dir: str = "evaluation_examples",
+        trajectory_base_dir: str = "external_data/osworld-verified/jedi-7b-4o-15steps",
+        result_base_dir: str = "./perturbation_results",
     ) -> List[GenerationResult]:
         """Generate trajectories with perturbation injection"""
         logger.info(
             f"Generating trajectories for {num_seed_scenarios} seed scenarios with {num_trajectories_per_seed} trajectories per seed..."
         )
+        seed_scenarios = self.load_seed_scenarios(task_config_base_dir, trajectory_base_dir)
 
-        if env_args is None:
-            env_args = {}
-
-        config = ExecutionConfig(**env_args)
-        seed_scenarios = self.load_seed_scenarios(
-            env_args.get("test_config_base_dir", "evaluation_examples"),
-            env_args.get("test_trajectory_base_dir", "external_data/osworld-verified"),
+        scenario_specs = self.scenario_generator.generate_scenarios(
+            seed_scenarios, num_trajectories_per_seed, result_base_dir
         )
-
-        scenario_specs = self.scenario_generator.generate_scenarios(seed_scenarios, num_trajectories_per_seed)
 
         with Manager() as manager:
             shared_results = manager.list()
@@ -243,36 +240,44 @@ def main():
     orchestrator = TrajectoryGenerationOrchestrator(scenario_generator)
 
     # Example usage
-    env_args = {
+    config = ExecutionConfig(
         # VM/Provider settings
-        "path_to_vm": None,
-        "provider_name": "docker",
-        "region": "us-east-1",
-        "snapshot_name": None,
+        path_to_vm=None,
+        provider_name="docker",
+        region="us-east-1",
+        snapshot_name=None,
         # Environment settings
-        "headless": True,
-        "action_space": "pyautogui",
-        "observation_type": "screenshot",
-        "screen_size": (1920, 1080),
-        "os_type": "Ubuntu",
-        "client_password": "",
+        headless=True,
+        action_space="pyautogui",
+        observation_type="screenshot",
+        screen_size=(1920, 1080),
+        os_type="Ubuntu",
+        client_password="password",
         # Execution settings
-        "max_steps": 15,
-        "sleep_after_execution": 0.0,
+        max_steps=15,
+        sleep_after_execution=0.0,
         # Additional OSWorld settings
-        "cache_dir": "cache",
-        "require_a11y_tree": True,
-        "require_terminal": False,
-        "enable_proxy": True,
-        # Test configuration
-        "test_config_base_dir": "evaluation_examples",
-        "test_trajectory_base_dir": "external_data/osworld-verified/jedi-7b-4o-15steps",
-        "test_scenario_specs_folder": "src/perturbation_engine/scenarios/perturbation_scenarios.json",
-        "result_base_dir": "./perturbation_results",
-    }
+        cache_dir="cache",
+        require_a11y_tree=True,
+        require_terminal=False,
+        enable_proxy=True,
+        # Perturbation connection
+        chromium_port=9222,
+    )
+
+    # Test configuration
+    task_config_base_dir = "evaluation_examples"
+    trajectory_base_dir = "external_data/osworld-verified/jedi-7b-4o-15steps"
+    result_base_dir = "./perturbation_results"
 
     results = orchestrator.generate_trajectories(
-        num_seed_scenarios=10, num_trajectories_per_seed=3, num_parallel_vms=2, env_args=env_args
+        num_seed_scenarios=10,
+        num_trajectories_per_seed=3,
+        num_parallel_vms=2,
+        config=config,
+        task_config_base_dir=task_config_base_dir,
+        trajectory_base_dir=trajectory_base_dir,
+        result_base_dir=result_base_dir,
     )
 
     return results

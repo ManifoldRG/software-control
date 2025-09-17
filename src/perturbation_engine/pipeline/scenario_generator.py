@@ -32,6 +32,7 @@ class ScenarioGenerator:
         self,
         seed_trajectories: List[SeedTrajectory],
         num_generations_per_seed: int = 100,
+        result_base_dir: str = "./perturbation_results",
     ) -> List[ScenarioSpec]:
         """
         Generate a curriculum of perturbation scenarios from given seed scenarios
@@ -63,14 +64,14 @@ class ScenarioGenerator:
         for seed_idx, seed_trajectory in enumerate(seed_trajectories):
             for traj_idx in range(num_generations_per_seed):
                 scenario_spec = self._create_scenario_spec_from_seed_trajectory(
-                    seed_trajectory, seed_idx, traj_idx
+                    seed_trajectory, seed_idx, traj_idx, result_base_dir
                 )
                 scenario_specs.append(scenario_spec)
 
         return scenario_specs
 
     def _create_scenario_spec_from_seed_trajectory(
-        self, seed_trajectory: SeedTrajectory, seed_idx: int, traj_idx: int
+        self, seed_trajectory: SeedTrajectory, seed_idx: int, traj_idx: int, result_base_dir: str
     ) -> ScenarioSpec:
         """Create a scenario specification from a seed trajectory."""
         scenario_id = f"seed_{seed_idx}_gen_{traj_idx}"
@@ -83,7 +84,7 @@ class ScenarioGenerator:
         perturbation_parameters = self._generate_scenario_parameters(seed_trajectory)
 
         # Create result directory
-        result_dir = f"./results/{scenario_id}"
+        result_dir = f"{result_base_dir}/{scenario_id}"
 
         return ScenarioSpec(
             scenario_id=scenario_id,
