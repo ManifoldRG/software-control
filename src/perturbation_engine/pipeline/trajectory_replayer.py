@@ -2,41 +2,30 @@
 
 import json
 import logging
-import os
 from typing import Any, Dict, List, Tuple
 
 
 class TrajectoryReplayer:
     """Replays existing task trajectories step by step"""
 
-    def __init__(self, trajectory_file_path: str):
+    def __init__(self, trajectory_file_path: str = None):
         """Initialize trajectory replayer
 
         Args:
             trajectory_file_path: Path to the trajectory directory or file
         """
-        self.trajectory_file_path = trajectory_file_path
         self.trajectory_steps = []
         self.current_step = 0
         self.logger = logging.getLogger(__name__)
 
-        # Load trajectory data
-        self._load_trajectory()
+        # Load trajectory data if provided
+        if trajectory_file_path:
+            self.load_trajectory(trajectory_file_path)
 
-    def _load_trajectory(self):
+    def load_trajectory(self, trajectory_file_path: str):
         """Load trajectory steps from trajectory file"""
         try:
-            # Check if it's a directory with traj.jsonl
-            if os.path.isdir(self.trajectory_file_path):
-                traj_file = os.path.join(self.trajectory_file_path, "traj.jsonl")
-            else:
-                traj_file = self.trajectory_file_path
-
-            if not os.path.exists(traj_file):
-                self.logger.warning(f"Trajectory file not found: {traj_file}")
-                return
-
-            with open(traj_file, "r", encoding="utf-8") as f:
+            with open(trajectory_file_path, "r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if line:
@@ -47,7 +36,9 @@ class TrajectoryReplayer:
                             self.logger.warning(f"Failed to parse trajectory step: {e}")
                             continue
 
-            self.logger.info(f"Loaded {len(self.trajectory_steps)} trajectory steps from {traj_file}")
+            self.logger.info(
+                f"Loaded {len(self.trajectory_steps)} trajectory steps from {trajectory_file_path}"
+            )
 
         except Exception as e:
             self.logger.error(f"Error loading trajectory: {e}")

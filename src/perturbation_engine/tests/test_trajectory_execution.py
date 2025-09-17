@@ -9,9 +9,6 @@ from multiprocessing import Manager
 from perturbation_engine.configure_logging import configure_logging
 from perturbation_engine.data_types import (
     ExecutionConfig,
-    PerturbationPhase,
-    PerturbationSpec,
-    PerturbationType,
     ScenarioSpec,
 )
 from perturbation_engine.pipeline.parallel_execution_engine import ParallelExecutionEngine
@@ -31,14 +28,11 @@ def test_real_trajectory_execution():
         task_config = json.load(f)
 
     # Real trajectory file path
-    trajectory_path = (
-        "external_data/osworld-verified/jedi-7b-4o-15steps/chrome/0d8b7de3-e8de-4d86-b9fd-dd2dce58a217"
-    )
+    trajectory_path = "external_data/osworld-verified/jedi-7b-4o-15steps/jedi-7b-4o-15steps/chrome/0d8b7de3-e8de-4d86-b9fd-dd2dce58a217/traj.jsonl"
 
     # Verify files exist
     assert os.path.exists(task_config_path), f"Task config not found: {task_config_path}"
     assert os.path.exists(trajectory_path), f"Trajectory path not found: {trajectory_path}"
-    assert os.path.exists(os.path.join(trajectory_path, "traj.jsonl")), "Trajectory file not found"
 
     # Create execution configuration for real DesktopEnv
     execution_config = ExecutionConfig(
@@ -65,20 +59,20 @@ def test_real_trajectory_execution():
     )
 
     # Create realistic perturbations
-    perturbations = [
-        PerturbationSpec(
-            perturbation_type=PerturbationType.UI_VISUAL,
-            phase=PerturbationPhase.RUNTIME,
-            perturbation_controller="gemini",
-            parameters={"action": "ui_injection", "num_components": 3},
-            trigger_function_name="step_range",
-            trigger_parameters={"start": 2, "end": 4},
-            validation_function_name="element_created",
-            validation_parameters={"selector": ".injected-element"},
-            name="ui_injection_test",
-            description="Inject UI elements during trajectory execution",
-        )
-    ]
+    # perturbations = [
+    #     PerturbationSpec(
+    #         perturbation_type=PerturbationType.UI_VISUAL,
+    #         phase=PerturbationPhase.RUNTIME,
+    #         perturbation_controller="gemini",
+    #         parameters={"action": "ui_injection", "num_components": 3},
+    #         trigger_function_name="step_range",
+    #         trigger_parameters={"start": 0, "end": 4},
+    #         validation_function_name="element_created",
+    #         validation_parameters={"selector": ".injected-element"},
+    #         name="ui_injection_test",
+    #         description="Inject UI elements during trajectory execution",
+    #     )
+    # ]
 
     # Create scenario specification
     scenario_id = "test_scenario_001"
@@ -87,7 +81,8 @@ def test_real_trajectory_execution():
         scenario_id=scenario_id,
         task_config=task_config,
         trajectory_file_path=trajectory_path,
-        perturbations=perturbations,
+        perturbation_scenario_class="chrome",
+        perturbation_parameters={"num_components": 3},
         result_dir=f"./test_results/0d8b7de3-e8de-4d86-b9fd-dd2dce58a217/{scenario_id}",
         metadata={
             "scenario_id": scenario_id,

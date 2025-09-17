@@ -21,16 +21,10 @@ import os
 import time
 from typing import Any, Dict, List
 
-from perturbation_engine.data_types import (
-    GenerationResult,
-    PerturbationPhase,
-    PerturbationSpec,
-    PerturbationType,
-    ScenarioSpec,
-)
+from perturbation_engine.data_types import GenerationResult, ScenarioSpec
 from perturbation_engine.pipeline.perturbation_desktop_env import PerturbationDesktopEnv
 from perturbation_engine.pipeline.trajectory_replayer import TrajectoryReplayer
-from perturbation_engine.pipeline.trigger_functions import TRIGGER_FUNCTIONS
+from perturbation_engine.scenarios.scenario_factory import PerturbationScenarioFactory
 
 
 class TrajectoryGenerator:
@@ -38,10 +32,11 @@ class TrajectoryGenerator:
 
     def __init__(self):
         self.logger = logging.getLogger(__name__)
+        self.trajectory_replayer = TrajectoryReplayer()
+        self.scenario_factory = PerturbationScenarioFactory()
 
     def execute_trajectory(
         self,
-        trajectory_replayer: TrajectoryReplayer,
         env: PerturbationDesktopEnv,
         scenario: ScenarioSpec,
         max_steps: int,
@@ -51,10 +46,14 @@ class TrajectoryGenerator:
         start_time = time.time()
         os.makedirs(scenario.result_dir, exist_ok=True)
 
-        # Apply setup perturbations before environment reset
-        perturbed_config = self._apply_setup_perturbations(scenario.task_config, env, scenario.perturbations)
+        self.trajectory_replayer.load_trajectory(scenario.trajectory_file_path)
 
-        # Reset environment with task config (following OSWorld pattern)
+        # Apply setup perturbations before environment reset
+        perturbation_scenario = self.scenario_factory.create_scenario(scenario.perturbation_scenario_class)
+        perturbed_config = perturbation_scenario.apply_setup_perturbations(
+            scenario.task_config, scenario.perturbation_scenario_class, scenario.perturbation_parameters
+        )
+
         env.reset(task_config=perturbed_config)
         time.sleep(60)  # Wait for environment to be ready
 
@@ -68,9 +67,9 @@ class TrajectoryGenerator:
         perturbation_log = []
 
         # Main execution loop
-        while not done and step_idx < max_steps and trajectory_replayer.has_more_steps():
+        while not done and step_idx < max_steps and self.trajectory_replayer.has_more_steps():
             # Get next action from trajectory replayer
-            response, actions = trajectory_replayer.step()
+            response, actions = self.trajectory_replayer.step()
 
             # Execute actions
             for action in actions:
@@ -78,8 +77,13 @@ class TrajectoryGenerator:
                 self.logger.info("Step %d: %s", step_idx + 1, action)
 
                 # Apply runtime perturbations
-                runtime_perturbation = self._check_and_apply_runtime_perturbations(
-                    env, scenario.perturbations, step_idx, obs, perturbation_log
+                runtime_perturbation_result = perturbation_scenario.check_and_apply_runtime_perturbations(
+                    env,
+                    perturbation_scenario,
+                    scenario.perturbation_parameters,
+                    step_idx,
+                    obs,
+                    perturbation_log,
                 )
 
                 # Execute action
@@ -96,7 +100,7 @@ class TrajectoryGenerator:
                     done,
                     info,
                     obs,
-                    runtime_perturbation,
+                    runtime_perturbation_result,
                 )
 
                 if done:
@@ -121,73 +125,6 @@ class TrajectoryGenerator:
             generation_time=generation_time,
             metadata={"scenario_id": scenario.scenario_id},
         )
-
-    def _apply_setup_perturbations(
-        self, task_config: Dict[str, Any], env: PerturbationDesktopEnv, perturbations: List[PerturbationSpec]
-    ) -> Dict[str, Any]:
-        """TODO: Finish implementing this function"""
-        perturbed_config = task_config.copy()
-        context = {"phase": "setup", "task_config": task_config}
-
-        for perturbation in perturbations:
-            if perturbation.phase == PerturbationPhase.SETUP:
-                if env.controller.can_handle(perturbation.perturbation_type):
-                    result = env.controller.apply_perturbation(perturbation, context)
-                    if result.get("applied"):
-                        # Update config based on perturbation result
-                        if perturbation.perturbation_type == PerturbationType.INSTRUCTION:
-                            # TODO: Update instruction based on perturbation
-                            pass
-                else:
-                    self.logger.warning(
-                        f"Perturbation controller cannot handle perturbation type: {perturbation.perturbation_type}"
-                    )
-
-        return perturbed_config
-
-    def _check_and_apply_runtime_perturbations(
-        self,
-        env: PerturbationDesktopEnv,
-        perturbations: List[PerturbationSpec],
-        step_idx: int,
-        obs: Dict[str, Any],
-        perturbation_log: List[Dict[str, Any]],
-    ) -> bool:
-        """Check and apply runtime perturbations"""
-        context = {"phase": "runtime", "step_idx": step_idx, "obs": obs}
-
-        for perturbation in perturbations:
-            if perturbation.phase == PerturbationPhase.RUNTIME and self._should_trigger_perturbation(
-                perturbation, step_idx, obs, env
-            ):
-                result = env.controller.apply_perturbation(perturbation, context)
-                if result.get("applied"):
-                    perturbation_log.append(
-                        {
-                            "step": step_idx,
-                            "type": perturbation.perturbation_type.value,
-                            "parameters": perturbation.parameters,
-                            "result": result,
-                        }
-                    )
-                    return True
-
-        return False
-
-    def _should_trigger_perturbation(
-        self, perturbation: PerturbationSpec, step_idx: int, obs: Dict[str, Any], env: Any
-    ) -> bool:
-        """Check if perturbation should be triggered using function registry"""
-        trigger_func = TRIGGER_FUNCTIONS.get(perturbation.trigger_function_name)
-        if not trigger_func:
-            self.logger.warning(f"Unknown trigger function: {perturbation.trigger_function_name}")
-            return False
-
-        try:
-            return trigger_func(step_idx, obs, env, perturbation.trigger_parameters)
-        except Exception as e:
-            self.logger.error(f"Error in trigger function {perturbation.trigger_function_name}: {e}")
-            return False
 
     def _save_trajectory_step(
         self,

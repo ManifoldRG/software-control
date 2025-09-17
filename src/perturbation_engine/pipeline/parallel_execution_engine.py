@@ -16,42 +16,9 @@
 import logging
 from multiprocessing import Queue, current_process
 
-from perturbation_engine.data_types import ExecutionConfig, GenerationResult, ScenarioSpec
+from perturbation_engine.data_types import ExecutionConfig
 from perturbation_engine.pipeline.perturbation_desktop_env import PerturbationDesktopEnv
 from perturbation_engine.pipeline.trajectory_generator import TrajectoryGenerator
-from perturbation_engine.pipeline.trajectory_replayer import TrajectoryReplayer
-
-
-class TaskExecutor:
-    """Handles single task execution with environment setup"""
-
-    def __init__(self, config: ExecutionConfig, env: PerturbationDesktopEnv):
-        self.config = config
-        self.env = env
-        self.trajectory_generator = TrajectoryGenerator()
-        self.logger = logging.getLogger(__name__)
-
-    def execute_scenario(self, scenario: ScenarioSpec) -> GenerationResult:
-        """Execute a single scenario"""
-        try:
-            # Initialize trajectory replayer
-            trajectory_replayer = TrajectoryReplayer(trajectory_file_path=scenario.trajectory_file_path)
-
-            # Execute trajectory
-            return self.trajectory_generator.execute_trajectory(
-                trajectory_replayer,
-                self.env,
-                scenario,
-                self.config.max_steps,
-                self.config.sleep_after_execution,
-            )
-
-        except Exception as e:
-            self.logger.error(f"Task execution error: {e}")
-            import traceback
-
-            self.logger.error(traceback.format_exc())
-            raise
 
 
 class ParallelExecutionEngine:
@@ -60,12 +27,13 @@ class ParallelExecutionEngine:
     def __init__(self, config: ExecutionConfig):
         self.config = config
         self.logger = logging.getLogger(__name__)
+        self.trajectory_generator = TrajectoryGenerator()
 
     def run_vm_tasks(self, scenario_queue: Queue, shared_results: list):
         """Run trajectory generation scenarios in a single VM process"""
         env = None
         try:
-            # Initialize DesktopEnv once per process
+            # Initialize DesktopEnv and TrajectoryReplayer once per process
             env = PerturbationDesktopEnv(
                 path_to_vm=self.config.path_to_vm,
                 action_space=self.config.action_space,
@@ -82,8 +50,6 @@ class ParallelExecutionEngine:
                 cache_dir=self.config.cache_dir,
                 chromium_port=self.config.chromium_port,
             )
-
-            executor = TaskExecutor(self.config, env)
             self.logger.info(f"Process {current_process().name} started with environment initialized.")
 
             while True:
@@ -93,7 +59,13 @@ class ParallelExecutionEngine:
                     break
 
                 try:
-                    result = executor.execute_scenario(scenario)
+                    # TODO: Execute the scenario with the perturbation scenario
+                    result = self.trajectory_generator.execute_trajectory(
+                        env,
+                        scenario,
+                        self.config.max_steps,
+                        self.config.sleep_after_execution,
+                    )
                     shared_results.append(result)
                 except Exception as e:
                     self.logger.error(f"Task-level error in {current_process().name}: {e}")

@@ -72,6 +72,17 @@ class ExecutionConfig:
 
 
 @dataclass
+class SeedTrajectory:
+    """Seed trajectory"""
+
+    task_type: str
+    task_instruction: str
+    task_config: Dict[str, Any]
+    gt_actions_file_path: str
+    gt_actions: Optional[List[Dict[str, Any]]]
+
+
+@dataclass
 class ScenarioSpec:
     """Scenario specification"""
 
@@ -79,14 +90,14 @@ class ScenarioSpec:
     task_id: str
     scenario_id: str
 
-    # OSWorld task configuration (matches example.json format)
-    task_config: Dict[str, Any]  # Contains: id, snapshot, instruction, source, config, evaluator, etc.
+    task_config: Dict[str, Any]
 
     # Trajectory information
     trajectory_file_path: str
 
-    # Perturbation specifications
-    perturbations: List[PerturbationSpec]
+    # Perturbation scenario
+    perturbation_scenario_class: str
+    perturbation_parameters: Dict[str, Any]
 
     # Result directory
     result_dir: str

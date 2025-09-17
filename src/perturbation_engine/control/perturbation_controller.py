@@ -6,15 +6,19 @@ from typing import Any, Dict, Optional
 from playwright.sync_api import Page, sync_playwright
 
 from OSWorld.desktop_env.controllers.python import PythonController
+from OSWorld.desktop_env.controllers.setup import SetupController
 from perturbation_engine.control.gemini_controller import GeminiWebPageController
 from perturbation_engine.data_types import PerturbationSpec, PerturbationType
 
 
-class PerturbationController(PythonController):
+class PerturbationController(PythonController, SetupController):
     """Extended PythonController that provides Playwright page access"""
 
     def __init__(self, vm_ip: str, server_port: int, chromium_port: int = 9222, **kwargs):
-        super().__init__(vm_ip, server_port, **kwargs)
+        PythonController.__init__(self, vm_ip, server_port, **kwargs)
+        SetupController.__init__(self, vm_ip, server_port, chromium_port, **kwargs)
+        self.vm_ip = vm_ip
+        self.server_port = server_port
         self.chromium_port = chromium_port
         self.logger = logging.getLogger(__name__)
         self._playwright = None
@@ -137,7 +141,7 @@ class PerturbationController(PythonController):
                 "[role=link]",
                 "[contenteditable=true]",
             ]
-
+            interactable_elements = []
             for sel in selectors:
                 elements = self.page.query_selector_all(sel)
                 for el in elements:
@@ -148,6 +152,11 @@ class PerturbationController(PythonController):
                     )
                     if visible:
                         interactable_html += el.evaluate("el => el.outerHTML") + "\n"
+                        interactable_elements.append(el)
+
+            # highlight all interactable elements
+            for el in interactable_elements:
+                el.evaluate("el => el.style.border = '2px solid red';")
 
             return interactable_html
 
