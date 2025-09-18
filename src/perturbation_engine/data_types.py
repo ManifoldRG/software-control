@@ -3,6 +3,31 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 
+# Constants for clean code
+class Constants:
+    """Constants for the perturbation engine."""
+
+    # Scenario types
+    SCENARIO_TYPES = ["invariance", "distractor", "negative"]
+
+    # Default scenario counts
+    DEFAULT_INVARIANCE_COUNT = 15
+    DEFAULT_DISTRACTOR_COUNT = 7
+    DEFAULT_NEGATIVE_COUNT = 3
+    DEFAULT_DIFFICULTY_LEVELS = 4
+
+    # Environment setup
+    ENVIRONMENT_READY_WAIT_TIME = 2.0  # seconds
+    DEFAULT_MAX_STEPS = 15
+
+    # Controller commands
+    UI_REORDERING_CMD = "ui_reordering"
+    THEME_CHANGE_CMD = "theme_change"
+    ADD_DISTRACTORS_CMD = "add_distractors"
+    MODIFY_RESOLUTION_CMD = "modify_resolution"
+    INJECT_POPUPS_CMD = "inject_popups"
+
+
 class PerturbationType(Enum):
     """Types of perturbations supported"""
 
@@ -77,9 +102,32 @@ class SeedTrajectory:
 
     task_type: str
     task_instruction: str
-    task_config: Dict[str, Any]
+    config: Dict[str, Any]
     gt_actions_file_path: str
     gt_actions: Optional[List[Dict[str, Any]]]
+
+
+@dataclass
+class GenerationConfig:
+    """Generation configuration"""
+
+    # Scenario numbers
+    num_invariance_scenarios: int = Constants.DEFAULT_INVARIANCE_COUNT
+    num_distractor_scenarios: int = Constants.DEFAULT_DISTRACTOR_COUNT
+    num_negative_scenarios: int = Constants.DEFAULT_NEGATIVE_COUNT
+    # Difficulty levels
+    num_difficulty_levels: int = Constants.DEFAULT_DIFFICULTY_LEVELS
+
+
+@dataclass
+class DifficultyLevel:
+    """Difficulty level configuration"""
+
+    level: int
+    intensity: float  # 0.0 to 1.0
+    perturbation_count: int
+    complexity_multiplier: float = 1.0
+    parameters: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -89,7 +137,9 @@ class ScenarioSpec:
     # Task identification
     task_id: str
     scenario_id: str
-
+    task_type: str
+    scenario_type: str
+    difficulty_level: int
     task_config: Dict[str, Any]
 
     # Trajectory information
@@ -97,13 +147,33 @@ class ScenarioSpec:
 
     # Perturbation scenario
     perturbation_scenario_class: str
-    perturbation_parameters: Dict[str, Any]
+    intensity: float
+    perturbation_count: int
+    parameters: Dict[str, Any]  # Renamed from perturbation_parameters for clarity
 
     # Result directory
     result_dir: str
 
-    # Additional metadata
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    # Metadata
+    seed_index: int
+    scenario_count: int
+
+    def __post_init__(self):
+        """Ensure all data is serializable."""
+        if not isinstance(self.parameters, dict):
+            self.parameters = dict(self.parameters) if self.parameters else {}
+
+        if not isinstance(self.task_config, dict):
+            self.task_config = dict(self.task_config) if self.task_config else {}
+
+    def to_difficulty_level(self) -> "DifficultyLevel":
+        """Convert to DifficultyLevel without recreation."""
+        return DifficultyLevel(
+            level=self.difficulty_level,
+            intensity=self.intensity,
+            perturbation_count=self.perturbation_count,
+            parameters=self.parameters,
+        )
 
 
 @dataclass

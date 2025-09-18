@@ -71,13 +71,19 @@ class PerturbationController(PythonController, SetupController):
         return perturbation_type in [PerturbationType.UI_VISUAL, PerturbationType.VISUAL_DISTRACTOR]
 
     def apply_perturbation(self, spec: PerturbationSpec, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Apply UI component injection using Gemini"""
+        """Apply UI perturbations using Gemini based on perturbation type"""
         try:
             nav_html = self.get_interactable_html()
             if not nav_html:
                 return {"applied": False, "error": "Could not extract page HTML"}
 
-            js_code = self.vlm_controller.get_ui_perturbation_js_code(nav_html, spec.parameters)
+            # Determine action based on parameters or perturbation type
+            action = self._determine_action(spec)
+
+            # Prepare Gemini parameters
+            gemini_params = {"action": action, **spec.parameters}
+
+            js_code = self.vlm_controller.get_ui_perturbation_js_code(nav_html, gemini_params)
             if not js_code:
                 return {"applied": False, "error": "Could not generate JavaScript code"}
 
@@ -85,7 +91,7 @@ class PerturbationController(PythonController, SetupController):
 
             return {
                 "applied": success,
-                "method": "gemini_ui_perturbation",
+                "method": f"gemini_{action}",
                 "js_code": js_code,
                 "parameters": spec.parameters,
             }
@@ -93,6 +99,33 @@ class PerturbationController(PythonController, SetupController):
         except Exception as e:
             self.logger.error(f"Error applying VLM perturbation: {e}")
             return {"applied": False, "error": str(e)}
+
+    def _determine_action(self, spec: PerturbationSpec) -> str:
+        """Determine the action type based on perturbation spec parameters."""
+        # Check if action is explicitly specified
+        if "action" in spec.parameters:
+            return spec.parameters["action"]
+
+        # Map perturbation types to actions
+        type_to_action = {
+            PerturbationType.UI_VISUAL: "ui_reordering",
+            PerturbationType.VISUAL_DISTRACTOR: "ui_injection",
+        }
+
+        # Check for specific command indicators in parameters
+        if "theme" in spec.parameters:
+            return "theme_change"
+        elif "num_popups" in spec.parameters:
+            return "add_popups"
+        elif "resolution" in spec.parameters:
+            return "modify_resolution"
+        elif "num_components" in spec.parameters:
+            return "ui_injection"
+        elif "num_elements" in spec.parameters:
+            return "ui_reordering"
+
+        # Default based on perturbation type
+        return type_to_action.get(spec.perturbation_type, "ui_reordering")
 
     def execute_js_on_page(self, js_code: str) -> Any:
         """Execute JavaScript code on the current page"""

@@ -20,10 +20,10 @@ import signal
 import sys
 import time
 from multiprocessing import Manager, Process
-from typing import Any, Dict, List
+from typing import List
 
 from perturbation_engine.configure_logging import configure_logging
-from perturbation_engine.data_types import ExecutionConfig, GenerationResult
+from perturbation_engine.data_types import ExecutionConfig, GenerationConfig, GenerationResult, SeedTrajectory
 from perturbation_engine.pipeline.parallel_execution_engine import ParallelExecutionEngine
 from perturbation_engine.pipeline.scenario_generator import ScenarioGenerator
 
@@ -44,21 +44,35 @@ class TrajectoryGenerationOrchestrator:
     def generate_trajectories(
         self,
         num_seed_scenarios: int,
-        num_trajectories_per_seed: int,
+        generation_config: GenerationConfig,
         num_parallel_vms: int = 1,
-        config: ExecutionConfig = ExecutionConfig(),
+        execution_config: ExecutionConfig = ExecutionConfig(),
         task_config_base_dir: str = "evaluation_examples",
         trajectory_base_dir: str = "external_data/osworld-verified/jedi-7b-4o-15steps",
         result_base_dir: str = "./perturbation_results",
     ) -> List[GenerationResult]:
         """Generate trajectories with perturbation injection"""
+        total_trajectories = (
+            generation_config.num_invariance_scenarios
+            + generation_config.num_distractor_scenarios
+            + generation_config.num_negative_scenarios
+        ) * generation_config.num_difficulty_levels
+
         logger.info(
-            f"Generating trajectories for {num_seed_scenarios} seed scenarios with {num_trajectories_per_seed} trajectories per seed..."
+            f"Generating trajectories for {num_seed_scenarios} seed scenarios..."
+            f"Total trajectories: {total_trajectories}"
+            f"- {generation_config.num_invariance_scenarios} invariance"
+            f"- {generation_config.num_distractor_scenarios} distractor"
+            f"- {generation_config.num_negative_scenarios} negative"
+            f"- {generation_config.num_difficulty_levels} levels of difficulty"
         )
-        seed_scenarios = self.load_seed_scenarios(task_config_base_dir, trajectory_base_dir)
+        seed_trajectories = self.load_seed_trajectories(task_config_base_dir, trajectory_base_dir)
+
+        # TODO: Remove this after testing
+        seed_trajectories = seed_trajectories[:num_seed_scenarios]
 
         scenario_specs = self.scenario_generator.generate_scenarios(
-            seed_scenarios, num_trajectories_per_seed, result_base_dir
+            seed_trajectories, generation_config, result_base_dir
         )
 
         with Manager() as manager:
@@ -70,7 +84,7 @@ class TrajectoryGenerationOrchestrator:
 
             processes = []
             for i in range(num_parallel_vms):
-                execution_engine = ParallelExecutionEngine(config)
+                execution_engine = ParallelExecutionEngine(execution_config)
                 p = Process(
                     target=execution_engine.run_vm_tasks,
                     args=(scenario_queue, shared_results),
@@ -102,21 +116,18 @@ class TrajectoryGenerationOrchestrator:
                 logger.error(f"Unexpected error: {e}", exc_info=True)
                 raise
 
-        results = list(shared_results)
-        logger.info(
-            f"Average result: {sum(r.result_score for r in results) / len(results) if results else 0}"
-        )
-        return results
+            results = list(shared_results)
+            logger.info(
+                f"Average result: {sum(r.result_score for r in results) / len(results) if results else 0}"
+            )
+            return results
 
-    def load_seed_scenarios(self, config_base_dir: str, trajectory_base_dir: str) -> List[Dict[str, Any]]:
-        """Load seed scenarios from task configs and existing trajectories"""
+    def load_seed_trajectories(self, config_base_dir: str, trajectory_base_dir: str) -> List[SeedTrajectory]:
+        """Load seed trajectories from task configs and existing trajectories"""
         from pathlib import Path
 
-        seed_scenarios = []
-
-        # Convert to Path for easier manipulation
+        seed_trajectories = []
         config_path = Path(config_base_dir)
-        trajectory_path = Path(trajectory_base_dir)
 
         # Find all task config JSON files in the evaluation examples
         if config_path.name == "evaluation_examples":
@@ -126,15 +137,14 @@ class TrajectoryGenerationOrchestrator:
             examples_dir = config_path
 
         if not examples_dir.exists():
-            logger.warning(f"Examples directory not found: {examples_dir}")
-            return seed_scenarios
+            raise FileNotFoundError(f"Examples directory not found: {examples_dir}")
 
         # Get all app directories (chrome, gimp, etc.)
         app_dirs = [d for d in examples_dir.iterdir() if d.is_dir()]
 
         for app_dir in app_dirs:
             app_name = app_dir.name
-            logger.info(f"Loading scenarios for app: {app_name}")
+            logger.info(f"Loading trajectories for app: {app_name}")
 
             # Find all JSON config files in this app directory
             config_files = list(app_dir.glob("*.json"))
@@ -153,48 +163,37 @@ class TrajectoryGenerationOrchestrator:
 
                     # Construct trajectory path based on the task ID
                     task_id = task_config["id"]
-                    trajectory_path = os.path.join(trajectory_base_dir, app_name, task_id)
+                    task_trajectory_dir = os.path.join(trajectory_base_dir, app_name, task_id)
 
                     # Verify trajectory directory exists
-                    if not os.path.exists(trajectory_path):
-                        logger.warning(f"Trajectory directory not found: {trajectory_path}")
+                    if not os.path.exists(task_trajectory_dir):
+                        logger.warning(f"Trajectory directory not found: {task_trajectory_dir}")
                         continue
 
                     # Verify traj.jsonl exists
-                    traj_file = os.path.join(trajectory_path, "traj.jsonl")
+                    traj_file = os.path.join(task_trajectory_dir, "traj.jsonl")
                     if not os.path.exists(traj_file):
                         logger.warning(f"Trajectory file not found: {traj_file}")
                         continue
 
-                    # Create seed scenario with trajectory path
-                    seed_scenario = {
-                        "id": task_config["id"],
-                        "snapshot": task_config.get("snapshot", "chrome"),
-                        "instruction": task_config["instruction"],
-                        "source": task_config.get("source", "unknown"),
-                        "config": task_config["config"],
-                        "trajectory": trajectory_path,
-                        "related_apps": task_config.get("related_apps", [app_name]),
-                        "evaluator": task_config["evaluator"],
-                        "proxy": task_config.get("proxy", False),
-                        "fixed_ip": task_config.get("fixed_ip", False),
-                        "possibility_of_env_change": task_config.get("possibility_of_env_change", "low"),
-                    }
+                    # Create seed trajectory with trajectory path
+                    seed_trajectory = SeedTrajectory(
+                        task_type=task_config.get("snapshot", "chrome"),
+                        task_instruction=task_config["instruction"],
+                        config=task_config,
+                        gt_actions_file_path=traj_file,
+                        gt_actions=None,
+                    )
 
-                    # Add any additional fields from the original config
-                    for key, value in task_config.items():
-                        if key not in seed_scenario:
-                            seed_scenario[key] = value
-
-                    seed_scenarios.append(seed_scenario)
-                    logger.debug(f"Loaded scenario: {task_id}")
+                    seed_trajectories.append(seed_trajectory)
+                    logger.debug(f"Loaded trajectory: {task_id}")
 
                 except (json.JSONDecodeError, KeyError, OSError) as e:
                     logger.error(f"Error loading {config_file.name}: {e}")
                     continue
 
-        logger.info(f"Loaded {len(seed_scenarios)} seed scenarios from {len(app_dirs)} app directories")
-        return seed_scenarios
+        logger.info(f"Loaded {len(seed_trajectories)} seed trajectories from {len(app_dirs)} app directories")
+        return seed_trajectories
 
 
 # ============================================================================
@@ -240,12 +239,12 @@ def main():
     orchestrator = TrajectoryGenerationOrchestrator(scenario_generator)
 
     # Example usage
-    config = ExecutionConfig(
+    execution_config = ExecutionConfig(
         # VM/Provider settings
-        path_to_vm=None,
-        provider_name="docker",
+        path_to_vm="/Users/lockewang/FIG/OSWorld/vmware_vm_data/Ubuntu0/Ubuntu0.vmx",
+        provider_name="vmware",  # TODO: using vmware for local testing for now
         region="us-east-1",
-        snapshot_name=None,
+        snapshot_name="chrome",  # TODO: using chrome for local testing for now
         # Environment settings
         headless=True,
         action_space="pyautogui",
@@ -260,21 +259,26 @@ def main():
         cache_dir="cache",
         require_a11y_tree=True,
         require_terminal=False,
-        enable_proxy=True,
+        enable_proxy=False,
         # Perturbation connection
         chromium_port=9222,
     )
 
     # Test configuration
-    task_config_base_dir = "evaluation_examples"
-    trajectory_base_dir = "external_data/osworld-verified/jedi-7b-4o-15steps"
+    task_config_base_dir = "src/OSWorld/evaluation_examples"
+    trajectory_base_dir = "external_data/osworld-verified/jedi-7b-4o-15steps/jedi-7b-4o-15steps"
     result_base_dir = "./perturbation_results"
 
     results = orchestrator.generate_trajectories(
-        num_seed_scenarios=10,
-        num_trajectories_per_seed=3,
-        num_parallel_vms=2,
-        config=config,
+        num_seed_scenarios=2,
+        generation_config=GenerationConfig(
+            num_invariance_scenarios=3,
+            num_distractor_scenarios=2,
+            num_negative_scenarios=1,
+            num_difficulty_levels=4,
+        ),
+        num_parallel_vms=1,
+        execution_config=execution_config,
         task_config_base_dir=task_config_base_dir,
         trajectory_base_dir=trajectory_base_dir,
         result_base_dir=result_base_dir,

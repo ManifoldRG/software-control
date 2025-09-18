@@ -31,6 +31,14 @@ class GeminiWebPageController:
 
             if action == "theme_change":
                 prompt = self._create_theme_change_prompt(nav_html, parameters)
+            elif action == "ui_reordering":
+                prompt = self._create_ui_reordering_prompt(nav_html, parameters)
+            elif action == "text_rephrasing":
+                prompt = self._create_text_rephrasing_prompt(nav_html, parameters)
+            elif action == "resolution_change":
+                prompt = self._create_resolution_change_prompt(nav_html, parameters)
+            elif action == "add_popups":
+                prompt = self._create_add_popups_prompt(nav_html, parameters)
             elif action == "add_success_indicators":
                 prompt = self._create_success_indicators_prompt(nav_html, parameters)
             else:
@@ -118,6 +126,118 @@ class GeminiWebPageController:
         - Add success indicators like checkmarks, progress bars, or completion messages
         - Position them appropriately on the page
         - Make them visually consistent with the existing design
+        - Use `const` or `let` for variable declarations.
+        - Do not include async code or external resource loading.
+        - The code should run safely without throwing errors if elements are missing.
+        """
+
+    def _create_ui_reordering_prompt(self, nav_html: str, parameters: Dict[str, Any]) -> str:
+        """Create prompt for UI reordering"""
+        max_depth = parameters.get("max_reorder_depth", 2)
+        preserve_functionality = parameters.get("preserve_functionality", True)
+
+        return f"""
+        Here is the website html:
+        {nav_html}
+
+        Now, you are required to reorder UI components (like navigation menus, lists, etc.) while preserving functionality.
+
+        Please generate **only the JavaScript code** that will go **inside the argument of page.evaluate()**
+
+        Output strictly only the JavaScript code inside the parentheses, nothing else. Do not include the page.evaluate wrapper, any explanation, or extra text.
+
+        Specifically,
+        - Reorder navigation menus, lists, and other UI components
+        - Maximum reorder depth: {max_depth}
+        - Preserve functionality: {preserve_functionality}
+        - Shuffle children of nav, ul, ol, .menu, .navigation elements
+        - Ensure safety by checking that all selected DOM elements exist before manipulating them
+        - Use `const` or `let` for variable declarations.
+        - Do not include async code or external resource loading.
+        - The code should run safely without throwing errors if elements are missing.
+        """
+
+    def _create_text_rephrasing_prompt(self, nav_html: str, parameters: Dict[str, Any]) -> str:
+        """Create prompt for text rephrasing"""
+        preserve_meaning = parameters.get("preserve_meaning", True)
+        max_word_changes = parameters.get("max_word_changes", 2)
+
+        return f"""
+        Here is the website html:
+        {nav_html}
+
+        Now, you are required to rephrase text content while preserving meaning.
+
+        Please generate **only the JavaScript code** that will go **inside the argument of page.evaluate()**
+
+        Output strictly only the JavaScript code inside the parentheses, nothing else. Do not include the page.evaluate wrapper, any explanation, or extra text.
+
+        Specifically,
+        - Rephrase text in buttons, links, labels, and other text elements
+        - Preserve meaning: {preserve_meaning}
+        - Maximum word changes: {max_word_changes}
+        - Use simple word substitutions (e.g., "click" -> "select", "find" -> "locate")
+        - Only modify leaf text nodes (elements without children)
+        - Ensure safety by checking that all selected DOM elements exist before manipulating them
+        - Use `const` or `let` for variable declarations.
+        - Do not include async code or external resource loading.
+        - The code should run safely without throwing errors if elements are missing.
+        """
+
+    def _create_resolution_change_prompt(self, nav_html: str, parameters: Dict[str, Any]) -> str:
+        """Create prompt for resolution change"""
+        resolution = parameters.get("resolution", (1920, 1080))
+        maintain_aspect_ratio = parameters.get("maintain_aspect_ratio", True)
+        width, height = resolution
+
+        return f"""
+        Here is the website html:
+        {nav_html}
+
+        Now, you are required to simulate a resolution change to {width}x{height}.
+
+        Please generate **only the JavaScript code** that will go **inside the argument of page.evaluate()**
+
+        Output strictly only the JavaScript code inside the parentheses, nothing else. Do not include the page.evaluate wrapper, any explanation, or extra text.
+
+        Specifically,
+        - Simulate resolution change to {width}x{height}
+        - Maintain aspect ratio: {maintain_aspect_ratio}
+        - Use CSS transform scale to simulate the resolution change
+        - Calculate appropriate scale factor based on current window size
+        - Apply transform to document.body
+        - Set transform-origin to 'top left'
+        - Use `const` or `let` for variable declarations.
+        - Do not include async code or external resource loading.
+        - The code should run safely without throwing errors if elements are missing.
+        """
+
+    def _create_add_popups_prompt(self, nav_html: str, parameters: Dict[str, Any]) -> str:
+        """Create prompt for adding popups"""
+        num_popups = parameters.get("num_popups", 1)
+        popup_types = parameters.get("popup_types", ["modal", "notification"])
+        trigger_delay = parameters.get("trigger_delay", 0.1)
+
+        return f"""
+        Here is the website html:
+        {nav_html}
+
+        Now, you are required to add {num_popups} popup(s) to the website page.
+
+        Popup types to add: {", ".join(popup_types)}
+        Trigger delay: {trigger_delay} seconds
+
+        Please generate **only the JavaScript code** that will go **inside the argument of page.evaluate()**
+
+        Output strictly only the JavaScript code inside the parentheses, nothing else. Do not include the page.evaluate wrapper, any explanation, or extra text.
+
+        Specifically,
+        - Add {num_popups} popup(s) of types: {", ".join(popup_types)}
+        - Position them appropriately on the page
+        - Make them visually distinct and distracting
+        - Include close buttons for modals
+        - Auto-remove notifications after a few seconds
+        - Use high z-index to ensure they appear on top
         - Use `const` or `let` for variable declarations.
         - Do not include async code or external resource loading.
         - The code should run safely without throwing errors if elements are missing.

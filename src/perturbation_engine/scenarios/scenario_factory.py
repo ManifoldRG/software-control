@@ -1,53 +1,87 @@
 """
-Factory for creating perturbation scenarios.
+Factory pattern for creating perturbation scenarios.
 """
 
 import logging
-from typing import Dict, Type
+from typing import Dict, List, Type
 
-from perturbation_engine.scenarios.base_scenario import PerturbationScenario
-from perturbation_engine.scenarios.scenarios import ChromePerturbationScenario
+from perturbation_engine.data_types import DifficultyLevel
+from perturbation_engine.scenarios.scenarios import BasePerturbationScenario
 
 
-class PerturbationScenarioFactory:
-    """Factory for creating perturbation scenario instances."""
+class ScenarioFactory:
+    """Simplified factory for creating perturbation scenarios."""
 
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        self._scenarios: Dict[str, Type[PerturbationScenario]] = {
-            "chrome": ChromePerturbationScenario,
-        }
+        self._registry: Dict[tuple[str, str], Type[BasePerturbationScenario]] = {}
+        self._scenario_types = ["invariance", "distractor", "negative"]
+        self._scenario_cache = {}  # Cache instances for efficiency
 
-    def register_scenario(self, name: str, scenario_class: Type[PerturbationScenario]) -> None:
-        """Register a scenario class.
+    def register_scenario(
+        self, task_type: str, scenario_type: str, scenario_class: Type[BasePerturbationScenario]
+    ):
+        """Register a scenario class for a task type and scenario type combination."""
+        self._registry[(task_type, scenario_type)] = scenario_class
 
-        Args:
-            name: Scenario name
-            scenario_class: Scenario class
-        """
-        if name not in self._scenarios:
-            self._scenarios[name] = scenario_class
-        else:
-            self.logger.warning(f"Scenario {name} already registered, skipping registration")
-        self.logger.debug(f"Registered scenario: {name}")
+    def create_scenario(self, task_type: str, scenario_type: str) -> BasePerturbationScenario:
+        """Create a scenario instance for the given task type and scenario type."""
+        cache_key = (task_type, scenario_type)
 
-    def create_scenario(self, name: str) -> PerturbationScenario:
-        """Create a scenario instance.
+        if cache_key not in self._scenario_cache:
+            scenario_class = self._registry.get(cache_key)
+            if not scenario_class:
+                # Fallback to Chrome scenario
+                scenario_class = self._registry.get(("chrome", scenario_type))
+                if not scenario_class:
+                    raise ValueError(f"No scenario class found for ({task_type}, {scenario_type})")
+                self.logger.warning(f"Using fallback scenario {scenario_class.__name__} for {cache_key}")
 
-        Args:
-            name: Scenario name
+            self._scenario_cache[cache_key] = scenario_class()
 
-        Returns:
-            Scenario instance
+        return self._scenario_cache[cache_key]
 
-        Raises:
-            ValueError: If scenario not found
-        """
-        if name not in self._scenarios:
-            raise ValueError(f"Unknown scenario: {name}")
+    def get_difficulty_levels(self, task_type: str, scenario_type: str) -> List[DifficultyLevel]:
+        """Get difficulty levels for a task type and scenario type combination."""
+        scenario = self.create_scenario(task_type, scenario_type)
+        return scenario.get_difficulty_levels()
 
-        return self._scenarios[name]()
 
-    def get_available_scenarios(self) -> list[str]:
-        """Get list of available scenario names."""
-        return list(self._scenarios.keys())
+def create_default_factory() -> ScenarioFactory:
+    """Create a factory with default scenario registrations."""
+    from perturbation_engine.scenarios.scenarios import (
+        ChromeDistractorScenario,
+        ChromeInvarianceScenario,
+        ChromeNegativeScenario,
+        OSInvarianceScenario,
+    )
+
+    factory = ScenarioFactory()
+
+    # Register Chrome scenarios
+    factory.register_scenario("chrome", "invariance", ChromeInvarianceScenario)
+    factory.register_scenario("chrome", "distractor", ChromeDistractorScenario)
+    factory.register_scenario("chrome", "negative", ChromeNegativeScenario)
+
+    # Register OS scenarios
+    factory.register_scenario("os", "invariance", OSInvarianceScenario)
+    factory.register_scenario("os", "distractor", ChromeDistractorScenario)  # Fallback
+    factory.register_scenario("os", "negative", ChromeNegativeScenario)  # Fallback
+
+    # Register other task types with Chrome scenarios as fallbacks
+    other_task_types = [
+        "gimp",
+        "thunderbird",
+        "vlc",
+        "vs_code",
+        "libreoffice_calc",
+        "libreoffice_impress",
+        "libreoffice_writer",
+    ]
+
+    for task_type in other_task_types:
+        factory.register_scenario(task_type, "invariance", ChromeInvarianceScenario)
+        factory.register_scenario(task_type, "distractor", ChromeDistractorScenario)
+        factory.register_scenario(task_type, "negative", ChromeNegativeScenario)
+
+    return factory

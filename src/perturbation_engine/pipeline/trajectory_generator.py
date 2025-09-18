@@ -21,10 +21,9 @@ import os
 import time
 from typing import Any, Dict, List
 
-from perturbation_engine.data_types import GenerationResult, ScenarioSpec
+from perturbation_engine.data_types import Constants, GenerationResult, ScenarioSpec
 from perturbation_engine.pipeline.perturbation_desktop_env import PerturbationDesktopEnv
 from perturbation_engine.pipeline.trajectory_replayer import TrajectoryReplayer
-from perturbation_engine.scenarios.scenario_factory import PerturbationScenarioFactory
 
 
 class TrajectoryGenerator:
@@ -33,7 +32,10 @@ class TrajectoryGenerator:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         self.trajectory_replayer = TrajectoryReplayer()
-        self.scenario_factory = PerturbationScenarioFactory()
+
+        # Cache factory and scenario instances for efficiency
+        self._scenario_factory = None
+        self._scenario_cache = {}  # (task_type, scenario_type) -> scenario_instance
 
     def execute_trajectory(
         self,
@@ -48,14 +50,16 @@ class TrajectoryGenerator:
 
         self.trajectory_replayer.load_trajectory(scenario.trajectory_file_path)
 
-        # Apply setup perturbations before environment reset
-        perturbation_scenario = self.scenario_factory.create_scenario(scenario.perturbation_scenario_class)
-        perturbed_config = perturbation_scenario.apply_setup_perturbations(
-            scenario.task_config, scenario.perturbation_scenario_class, scenario.perturbation_parameters
-        )
+        # Get or create scenario instance (cached for efficiency)
+        scenario_instance = self._get_scenario_instance(scenario.task_type, scenario.scenario_type)
+
+        # Convert scenario spec to difficulty level (efficient conversion)
+        difficulty_level = scenario.to_difficulty_level()
+
+        perturbed_config = scenario_instance.apply_setup_perturbations(scenario.task_config, difficulty_level)
 
         env.reset(task_config=perturbed_config)
-        time.sleep(60)  # Wait for environment to be ready
+        time.sleep(Constants.ENVIRONMENT_READY_WAIT_TIME)  # Wait for environment to be ready
 
         # Start recording video
         env.controller.start_recording()
@@ -77,13 +81,11 @@ class TrajectoryGenerator:
                 self.logger.info("Step %d: %s", step_idx + 1, action)
 
                 # Apply runtime perturbations
-                runtime_perturbation_result = perturbation_scenario.check_and_apply_runtime_perturbations(
+                runtime_perturbation_result = scenario_instance.apply_runtime_perturbations(
                     env,
-                    perturbation_scenario,
-                    scenario.perturbation_parameters,
+                    difficulty_level,
                     step_idx,
                     obs,
-                    perturbation_log,
                 )
 
                 # Execute action
@@ -174,3 +176,20 @@ class TrajectoryGenerator:
         # Save perturbation log
         with open(os.path.join(result_dir, "perturbations.json"), "w", encoding="utf-8") as f:
             json.dump(perturbation_log, f, indent=2)
+
+    def _get_scenario_instance(self, task_type: str, scenario_type: str):
+        """Get cached scenario instance or create and cache it."""
+        cache_key = (task_type, scenario_type)
+
+        if cache_key not in self._scenario_cache:
+            # Lazy initialization of factory
+            if self._scenario_factory is None:
+                from perturbation_engine.scenarios.scenario_factory import create_default_factory
+
+                self._scenario_factory = create_default_factory()
+
+            # Create and cache scenario instance
+            self._scenario_cache[cache_key] = self._scenario_factory.create_scenario(task_type, scenario_type)
+            self.logger.debug(f"Cached scenario instance for {cache_key}")
+
+        return self._scenario_cache[cache_key]

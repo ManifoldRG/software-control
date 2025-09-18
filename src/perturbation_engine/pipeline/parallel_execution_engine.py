@@ -74,7 +74,16 @@ class ParallelExecutionEngine:
                     self.logger.error(traceback.format_exc())
 
         except Exception as e:
-            self.logger.error(f"Environment initialization error in {current_process().name}: {e}")
+            error_msg = str(e)
+            if "Connection refused" in error_msg and "docker" in error_msg.lower():
+                self.logger.error(
+                    f"Environment initialization error in {current_process().name}: "
+                    f"Docker connection failed. Please ensure Docker is running or change provider to 'vmware'. "
+                    f"Original error: {e}"
+                )
+            else:
+                self.logger.error(f"Environment initialization error in {current_process().name}: {e}")
+
             import traceback
 
             self.logger.error(traceback.format_exc())
