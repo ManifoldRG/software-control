@@ -20,7 +20,7 @@ class ColorFormatter(logging.Formatter):
 
     def __init__(self, *, use_color: bool, datefmt: str | None = "%H:%M:%S") -> None:
         # Short clickable path via relative path when possible
-        fmt = "%(asctime)s %(levelname)s %(pathline)s - %(message)s"
+        fmt = "%(asctime)s %(levelname)s [%(processName)s] %(pathline)s - %(message)s"
         super().__init__(fmt=fmt, datefmt=datefmt)
         self.use_color = use_color
 

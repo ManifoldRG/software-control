@@ -53,7 +53,14 @@ class ScenarioGenerator:
                 self._logger.info(f"  Generating {num_scenarios} {scenario_type} scenarios for {task_type}")
 
                 # Get difficulty levels for this scenario
-                difficulty_levels = self._scenario_factory.get_difficulty_levels(task_type, scenario_type)
+                all_difficulty_levels = self._scenario_factory.get_difficulty_levels(task_type, scenario_type)
+                if generation_config.num_difficulty_levels < len(all_difficulty_levels):
+                    difficulty_levels = all_difficulty_levels[: generation_config.num_difficulty_levels]
+                else:
+                    self._logger.warning(
+                        f"Only {len(all_difficulty_levels)} difficulty levels available for {task_type} {scenario_type}, using all levels"
+                    )
+                    difficulty_levels = all_difficulty_levels
 
                 # Generate scenarios for each trajectory and difficulty level
                 for seed_idx, seed_trajectory in enumerate(trajectories):

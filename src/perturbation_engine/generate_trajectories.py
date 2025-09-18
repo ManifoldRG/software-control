@@ -84,6 +84,12 @@ class TrajectoryGenerationOrchestrator:
 
             processes = []
             for i in range(num_parallel_vms):
+                # TODO: For testing multiple VMs with local vmware setup
+                if i == 1:
+                    execution_config.path_to_vm = (
+                        "/Users/lockewang/Virtual Machines.localized/Ubuntu1.vmwarevm/Ubuntu1.vmx"
+                    )
+
                 execution_engine = ParallelExecutionEngine(execution_config)
                 p = Process(
                     target=execution_engine.run_vm_tasks,
@@ -275,7 +281,7 @@ def main():
             num_invariance_scenarios=3,
             num_distractor_scenarios=2,
             num_negative_scenarios=1,
-            num_difficulty_levels=4,
+            num_difficulty_levels=2,
         ),
         num_parallel_vms=1,
         execution_config=execution_config,

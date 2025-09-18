@@ -6,7 +6,7 @@ import logging
 from typing import Dict, List, Type
 
 from perturbation_engine.data_types import DifficultyLevel
-from perturbation_engine.scenarios.scenarios import BasePerturbationScenario
+from perturbation_engine.scenarios.base_scenarios import BasePerturbationScenario
 
 
 class ScenarioFactory:
@@ -49,11 +49,15 @@ class ScenarioFactory:
 
 def create_default_factory() -> ScenarioFactory:
     """Create a factory with default scenario registrations."""
-    from perturbation_engine.scenarios.scenarios import (
+    from perturbation_engine.scenarios.chrome_scenarios import (
         ChromeDistractorScenario,
         ChromeInvarianceScenario,
         ChromeNegativeScenario,
+    )
+    from perturbation_engine.scenarios.os_scenarios import (
         OSInvarianceScenario,
+        # OSDistractorScenario,
+        # OSNegativeScenario,
     )
 
     factory = ScenarioFactory()
