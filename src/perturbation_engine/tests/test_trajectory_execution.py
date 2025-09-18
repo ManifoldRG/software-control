@@ -79,16 +79,18 @@ def test_real_trajectory_execution():
     scenario_spec = ScenarioSpec(
         task_id="0d8b7de3-e8de-4d86-b9fd-dd2dce58a217",
         scenario_id=scenario_id,
+        task_type="chrome",
+        scenario_type="invariance",
+        difficulty_level=1,
         task_config=task_config,
         trajectory_file_path=trajectory_path,
         perturbation_scenario_class="chrome",
-        perturbation_parameters={"num_components": 3},
+        intensity=0.2,
+        perturbation_count=1,
+        parameters={"theme_options": ["light", "dark"]},
         result_dir=f"./test_results/0d8b7de3-e8de-4d86-b9fd-dd2dce58a217/{scenario_id}",
-        metadata={
-            "scenario_id": scenario_id,
-            "test_type": "real_execution",
-            "source": "test_trajectory_generator",
-        },
+        seed_index=0,
+        scenario_count=0,
     )
 
     # Create multiprocessing components

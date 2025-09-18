@@ -251,7 +251,7 @@ def main():
         observation_type="screenshot",
         screen_size=(1920, 1080),
         os_type="Ubuntu",
-        client_password="password",
+        client_password="",
         # Execution settings
         max_steps=15,
         sleep_after_execution=0.0,
