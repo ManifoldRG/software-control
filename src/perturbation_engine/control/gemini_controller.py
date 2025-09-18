@@ -19,7 +19,14 @@ class GeminiWebPageController:
         else:
             self.logger.error("Gemini API not available or API key not provided")
 
-    def get_ui_perturbation_js_code(self, nav_html: str, parameters: Dict[str, Any]) -> str:
+    def get_ui_perturbation_js_code(
+        self,
+        nav_html: str,
+        parameters: Dict[str, Any],
+        menu_elements: Dict[str, str] = None,
+        text_elements: str = None,
+        style_tags: list[str] = None,
+    ) -> str:
         """Generate JavaScript code using Gemini (following experiment pattern)"""
         if not self.client:
             return ""
@@ -27,12 +34,18 @@ class GeminiWebPageController:
         try:
             # Get parameters
             action = parameters.get("action", "ui_injection")
-            # num_components = parameters.get("num_components", 10)
-
             if action == "theme_change":
                 prompt = self._create_theme_change_prompt(nav_html, parameters)
             elif action == "add_success_indicators":
                 prompt = self._create_success_indicators_prompt(nav_html, parameters)
+            elif action == "reorder_menu_elements":
+                prompt = self._reorder_menu_items_prompt(menu_elements, parameters)
+            elif action == "rephrase_text":
+                prompt = self._rephrase_text_prompt(text_elements, parameters)
+            elif action == "change_logo":
+                prompt = self._change_logo_prompt(menu_elements, parameters)
+            elif action == "add_popup":
+                prompt = self._add_popup_prompt(style_tags, parameters)
             else:
                 prompt = self._create_ui_injection_prompt(nav_html, parameters)
 
@@ -40,7 +53,9 @@ class GeminiWebPageController:
                 model="gemini-1.5-flash-8b",
                 contents=prompt,
                 config=types.GenerateContentConfig(
-                    thinking_config=types.ThinkingConfig(thinking_budget=0)  # Disables thinking
+                    thinking_config=types.ThinkingConfig(
+                        thinking_budget=0
+                    )  # Disables thinking
                 ),
             )
 
@@ -50,7 +65,9 @@ class GeminiWebPageController:
             self.logger.error(f"Error generating JavaScript with Gemini: {e}")
             return ""
 
-    def _create_ui_injection_prompt(self, nav_html: str, parameters: Dict[str, Any]) -> str:
+    def _create_ui_injection_prompt(
+        self, nav_html: str, parameters: Dict[str, Any]
+    ) -> str:
         """Create prompt for UI injection (following experiment pattern)"""
         num_components = parameters.get("num_components", 10)
 
@@ -75,7 +92,9 @@ class GeminiWebPageController:
         - Keep the line of code as short as possible.
         """
 
-    def _create_theme_change_prompt(self, nav_html: str, parameters: Dict[str, Any]) -> str:
+    def _create_theme_change_prompt(
+        self, nav_html: str, parameters: Dict[str, Any]
+    ) -> str:
         """Create prompt for theme change"""
         theme = parameters.get("theme", "dark")
 
@@ -98,7 +117,9 @@ class GeminiWebPageController:
         - The code should run safely without throwing errors if elements are missing.
         """
 
-    def _create_success_indicators_prompt(self, nav_html: str, parameters: Dict[str, Any]) -> str:
+    def _create_success_indicators_prompt(
+        self, nav_html: str, parameters: Dict[str, Any]
+    ) -> str:
         """Create prompt for success indicators"""
         indicators = parameters.get("indicators", ["checkmark", "progress_bar"])
 
@@ -118,6 +139,113 @@ class GeminiWebPageController:
         - Add success indicators like checkmarks, progress bars, or completion messages
         - Position them appropriately on the page
         - Make them visually consistent with the existing design
+        - Use `const` or `let` for variable declarations.
+        - Do not include async code or external resource loading.
+        - The code should run safely without throwing errors if elements are missing.
+        """
+
+    def _reorder_menu_items_prompt(
+        self, menu_elements: Dict[str, str], parameters: Dict[str, Any]
+    ) -> str:
+        """Create prompt for menu reordering"""
+
+        return f"""
+        Here are the likely menu container elements:
+        {menu_elements["header_containers"]}
+
+        Here are the likely interactable menu items:
+        {menu_elements["menu_interactables"]}
+
+        Now, you are required to reorder the menu items in a realistic way. Identify the menu container most likely to be the main navigation menu, then reorder its items.
+
+        Please generate **only the JavaScript code** that will go **inside the argument of page.evaluate()**
+
+        Output strictly only the JavaScript code inside the parentheses, nothing else. Do not include the page.evaluate wrapper, any explanation, or extra text.
+
+        Specifically,
+        - Identify the main navigation menu container from the provided elements
+        - Reorder its items in a realistic manner
+        - Preserve 
+        - Make them visually consistent with the existing design
+        - Use `const` or `let` for variable declarations.
+        - Do not include async code or external resource loading.
+        - The code should run safely without throwing errors if elements are missing.
+        """
+
+    def _rephrase_text_prompt(
+        self, text_elements: list[str], parameters: Dict[str, Any]
+    ) -> str:
+        """Create prompt for text rephrasing"""
+        num_rephrases = parameters.get("num_rephrases", 10)
+
+        return f"""
+        Here is the text content of an entire webpage:
+        {"\n".join(text_elements)}
+
+        Identify the {num_rephrases} most important text elements on the page and rephrase them, while preserving their original meaning. Then insert the rephrased text back into the page, replacing the original text.
+
+        Please generate **only the JavaScript code** that will go **inside the argument of page.evaluate()**
+
+        Output strictly only the JavaScript code inside the parentheses, nothing else. Do not include the page.evaluate wrapper, any explanation, or extra text.
+
+        Specifically,
+        - Identify the {num_rephrases} most important text elements on the page
+        - Rephrase them, while preserving their original meaning, and keeping a similar length
+        - Write JavaScript code to insert the rephrased text back into the page, replacing the original text
+        - Make them visually consistent with the existing design
+        - Use `const` or `let` for variable declarations.
+        - Do not include async code or external resource loading.
+        - The code should run safely without throwing errors if elements are missing.
+        """
+
+
+    def _change_logo_prompt(
+        self, menu_elements: list[str], parameters: Dict[str, Any]
+    ) -> str:
+        """Create prompt for changing logo"""
+        new_logo_url = parameters.get("new_logo", "new_logo_url")
+
+        return f"""
+        Here are the likely menu container elements:
+        {menu_elements["header_containers"]}
+
+        You need to change the logo of the website. Here is the new logo URL:
+        {new_logo_url}
+
+        Please generate **only the JavaScript code** that will go **inside the argument of page.evaluate()**
+
+        Output strictly only the JavaScript code inside the parentheses, nothing else. Do not include the page.evaluate wrapper, any explanation, or extra text.
+
+        Specifically,
+        - Identify the logo element on the page
+        - Change its source to the new logo URL
+        - Make it visually consistent with the existing design
+        - Use `const` or `let` for variable declarations.
+        - Do not include async code or external resource loading.
+        - The code should run safely without throwing errors if elements are missing.
+        """
+
+    def _add_popup_prompt(
+        self, style_tag: str, parameters: Dict[str, Any]
+    ) -> str:
+        """Create prompt for adding a popup"""
+        popup_type, popup_html = parameters.get("popup", ("info", "<div>New popup</div>"))
+
+        return f"""
+        Here is the style tag of the webpage:
+        {style_tag}
+
+        You need to add a {popup_type} popup to the website. Here is the popup HTML:
+        {popup_html}
+
+        Please generate **only the JavaScript code** that will go **inside the argument of page.evaluate()**
+
+        Output strictly only the JavaScript code inside the parentheses, nothing else. Do not include the page.evaluate wrapper, any explanation, or extra text.
+
+        Specifically,
+        - Identify the container element on the page
+        - Insert the popup HTML into the container
+        - Make it visually consistent with the existing design
         - Use `const` or `let` for variable declarations.
         - Do not include async code or external resource loading.
         - The code should run safely without throwing errors if elements are missing.
