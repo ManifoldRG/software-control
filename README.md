@@ -41,6 +41,16 @@ uv pip install -e .
 uv run python -m src/perturbation_engine/tests/test_trajectory_generator.py
 ```
 
+Make sure when you are using the correct python created by uv in `.venv/bin/python`
+
+## Run data generation
+
+```
+uv run src/perturbation_engine/generate_trajectories.py
+```
+
+or use `launch.json` PythonDebugger: Current File config to run `generate_trajectories.py`
+
 ## Roadmap
 
 This is a rough roadmap for Phase 1. For most up-to-date project status, refer to the [project board](https://github.com/orgs/ManifoldRG/projects/30/views/1).
