@@ -278,12 +278,12 @@ def main():
     results = orchestrator.generate_trajectories(
         num_seed_scenarios=2,
         generation_config=GenerationConfig(
-            num_invariance_scenarios=3,
-            num_distractor_scenarios=2,
-            num_negative_scenarios=1,
-            num_difficulty_levels=2,
+            num_invariance_scenarios=1,
+            num_distractor_scenarios=1,
+            num_negative_scenarios=0,
+            num_difficulty_levels=1,
         ),
-        num_parallel_vms=1,
+        num_parallel_vms=2,
         execution_config=execution_config,
         task_config_base_dir=task_config_base_dir,
         trajectory_base_dir=trajectory_base_dir,
