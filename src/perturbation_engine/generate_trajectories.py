@@ -22,11 +22,14 @@ import time
 from multiprocessing import Manager, Process
 from typing import List
 
+from dotenv import load_dotenv
+
 from perturbation_engine.configure_logging import configure_logging
 from perturbation_engine.data_types import ExecutionConfig, GenerationConfig, GenerationResult, SeedTrajectory
 from perturbation_engine.pipeline.parallel_execution_engine import ParallelExecutionEngine
 from perturbation_engine.pipeline.scenario_generator import ScenarioGenerator
 
+load_dotenv()
 configure_logging()
 logger = logging.getLogger(__name__)
 
@@ -84,12 +87,6 @@ class TrajectoryGenerationOrchestrator:
 
             processes = []
             for i in range(num_parallel_vms):
-                # TODO: For testing multiple VMs with local vmware setup
-                if i == 1:
-                    execution_config.path_to_vm = (
-                        "/Users/lockewang/Virtual Machines.localized/Ubuntu1.vmwarevm/Ubuntu1.vmx"
-                    )
-
                 execution_engine = ParallelExecutionEngine(execution_config)
                 p = Process(
                     target=execution_engine.run_vm_tasks,
@@ -247,17 +244,18 @@ def main():
     # Example usage
     execution_config = ExecutionConfig(
         # VM/Provider settings
-        path_to_vm="/Users/lockewang/FIG/OSWorld/vmware_vm_data/Ubuntu0/Ubuntu0.vmx",
-        provider_name="vmware",  # TODO: using vmware for local testing for now
-        region="us-east-1",
-        snapshot_name="chrome",  # TODO: using chrome for local testing for now
+        # path_to_vm="/Users/lockewang/FIG/OSWorld/vmware_vm_data/Ubuntu0/Ubuntu0.vmx",
+        path_to_vm=None,
+        provider_name="aws",
+        region=os.environ["AWS_REGION"],
+        snapshot_name=os.environ["AWS_SNAPSHOT_NAME"],
         # Environment settings
         headless=True,
         action_space="pyautogui",
         observation_type="screenshot",
         screen_size=(1920, 1080),
         os_type="Ubuntu",
-        client_password="",
+        client_password="osworld-public-evaluation",
         # Execution settings
         max_steps=15,
         sleep_after_execution=0.0,
@@ -265,7 +263,7 @@ def main():
         cache_dir="cache",
         require_a11y_tree=True,
         require_terminal=False,
-        enable_proxy=False,
+        enable_proxy=True,
         # Perturbation connection
         chromium_port=9222,
     )
@@ -283,7 +281,7 @@ def main():
             num_negative_scenarios=0,
             num_difficulty_levels=1,
         ),
-        num_parallel_vms=2,
+        num_parallel_vms=1,
         execution_config=execution_config,
         task_config_base_dir=task_config_base_dir,
         trajectory_base_dir=trajectory_base_dir,

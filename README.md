@@ -51,6 +51,17 @@ uv run src/perturbation_engine/generate_trajectories.py
 
 or use `launch.json` PythonDebugger: Current File config to run `generate_trajectories.py`
 
+## Working with AWS
+
+```
+# Checking for activate EC2 instances
+aws ec2 describe-instances --region us-east-1 --query 'Reservations[*].Instances[*].[InstanceId,State.Name,LaunchTime,PublicIpAddress]' --output table
+
+# Terminate them using awscli if ctrl+c didn't shut them down gracefully
+aws ec2 terminate-instances --region us-east-1 --instance-ids <replace-with-the-target-i-xxxxxxxxx>
+
+```
+
 ## Roadmap
 
 This is a rough roadmap for Phase 1. For most up-to-date project status, refer to the [project board](https://github.com/orgs/ManifoldRG/projects/30/views/1).
