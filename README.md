@@ -23,7 +23,7 @@ Our release v1.0 focuses on the simulation engine & data generation process to v
 ## Setup
 
 ```
-git clone git@github.com:ManifoldRG/software-control.git
+git clone --recurse-submodules git@github.com:ManifoldRG/software-control.git
 cd software-control
 
 conda env create -f environment.yml -n software-control
@@ -38,7 +38,7 @@ uv run pre-commit install
 uv pip install -e .
 
 # verify
-uv run python -m src/perturbation_engine/tests/test_trajectory_generator.py
+uv run python src/perturbation_engine/generate_trajectories.py
 ```
 
 Make sure when you are using the correct python created by uv in `.venv/bin/python`
