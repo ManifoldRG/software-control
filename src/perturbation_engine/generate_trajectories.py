@@ -233,6 +233,8 @@ def signal_handler(signum, frame):
 
 def main():
     """Main entry point for trajectory generation"""
+    os.environ["PROXY_CONFIG_FILE"] = "src/OSWorld/evaluation_examples/settings/proxy/dataimpulse.json"
+
     # Register signal handlers
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
@@ -263,7 +265,7 @@ def main():
         cache_dir="cache",
         require_a11y_tree=True,
         require_terminal=False,
-        enable_proxy=True,
+        enable_proxy=False,
         # Perturbation connection
         chromium_port=9222,
     )
@@ -271,7 +273,7 @@ def main():
     # Test configuration
     task_config_base_dir = "src/OSWorld/evaluation_examples"
     trajectory_base_dir = "external_data/osworld-verified/jedi-7b-4o-15steps/jedi-7b-4o-15steps"
-    result_base_dir = "./perturbation_results"
+    result_base_dir = "/opt/manifold/results"
 
     results = orchestrator.generate_trajectories(
         num_seed_scenarios=2,
