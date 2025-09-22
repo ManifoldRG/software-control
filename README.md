@@ -35,13 +35,15 @@ uv sync --all-groups
 uv run pre-commit install
 
 # install package (editable) for proper imports
-uv pip install -e .
+pip install -e .
 
-# verify
-uv run python src/perturbation_engine/generate_trajectories.py
+cd src/OSWorld
+pip install -e .
+
+cd ../../
 ```
 
-Make sure when you are using the correct python created by uv in `.venv/bin/python`
+Make sure when you are using the correct conda env `software-control` & python created by uv in `.venv/bin/python`
 
 ## Run data generation
 
@@ -56,6 +58,12 @@ or use `launch.json` PythonDebugger: Current File config to run `generate_trajec
 ```
 # Checking for activate EC2 instances
 aws ec2 describe-instances --region us-east-1 --query 'Reservations[*].Instances[*].[InstanceId,State.Name,LaunchTime,PublicIpAddress]' --output table
+
+# Start instance
+aws ec2 start-instances --region us-east-1 --instance-ids <replace-with-the-target-i-xxxxxxxxx>
+
+# Stop instance
+aws ec2 stop-instances --region us-east-1 --instance-ids <replace-with-the-target-i-xxxxxxxxx>
 
 # Terminate them using awscli if ctrl+c didn't shut them down gracefully
 aws ec2 terminate-instances --region us-east-1 --instance-ids <replace-with-the-target-i-xxxxxxxxx>
