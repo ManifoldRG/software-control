@@ -170,3 +170,8 @@ cython_debug/
 agents/ui_agent/weights
 external_data/
 notes/
+test_results/
+**/.DS_Store
+.vmware_lck
+.vmware_vms
+extern/

@@ -26,10 +26,10 @@ Our release v1.0 focuses on the simulation engine & data generation process to v
 git clone git@github.com:ManifoldRG/software-control.git
 cd software-control
 
-conda create --env software-control -f environment.yml
+conda env create -f environment.yml -n software-control
 conda activate software-control
 
-uv sync --group dev
+uv sync --all-groups
 
 # set up pre-commit linter & formatter
 uv run pre-commit install
@@ -38,7 +38,28 @@ uv run pre-commit install
 uv pip install -e .
 
 # verify
-uv run python -m perturbation_engine.tests.test_scene_analyzers
+uv run python -m src/perturbation_engine/tests/test_trajectory_generator.py
+```
+
+Make sure when you are using the correct python created by uv in `.venv/bin/python`
+
+## Run data generation
+
+```
+uv run src/perturbation_engine/generate_trajectories.py
+```
+
+or use `launch.json` PythonDebugger: Current File config to run `generate_trajectories.py`
+
+## Working with AWS
+
+```
+# Checking for activate EC2 instances
+aws ec2 describe-instances --region us-east-1 --query 'Reservations[*].Instances[*].[InstanceId,State.Name,LaunchTime,PublicIpAddress]' --output table
+
+# Terminate them using awscli if ctrl+c didn't shut them down gracefully
+aws ec2 terminate-instances --region us-east-1 --instance-ids <replace-with-the-target-i-xxxxxxxxx>
+
 ```
 
 ## Roadmap
