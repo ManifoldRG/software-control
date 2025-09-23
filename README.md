@@ -44,6 +44,7 @@ cd ../../
 ```
 
 Make sure when you are using the correct conda env `software-control` & python created by uv in `.venv/bin/python`
+If you get conda not found error, try `source ~/.bashrc` or `eval "$(/opt/miniconda/bin/conda shell.bash hook)"`
 
 ## Run data generation
 
@@ -55,6 +56,8 @@ or use `launch.json` PythonDebugger: Current File config to run `generate_trajec
 
 ## Working with AWS
 
+### EC2 Instances
+
 ```
 # Checking for activate EC2 instances
 aws ec2 describe-instances --region us-east-1 --query 'Reservations[*].Instances[*].[InstanceId,State.Name,LaunchTime,PublicIpAddress]' --output table
@@ -65,9 +68,9 @@ aws ec2 start-instances --region us-east-1 --instance-ids <replace-with-the-targ
 # Stop instance
 aws ec2 stop-instances --region us-east-1 --instance-ids <replace-with-the-target-i-xxxxxxxxx>
 
-# Terminate them using awscli if ctrl+c didn't shut them down gracefully
+# Terminate client VMs using awscli if ctrl+c didn't shut them down gracefully
+# Do NOT terminate host machines
 aws ec2 terminate-instances --region us-east-1 --instance-ids <replace-with-the-target-i-xxxxxxxxx>
-
 ```
 
 ## Roadmap
