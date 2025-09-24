@@ -20,7 +20,9 @@ import signal
 import sys
 import time
 from multiprocessing import Manager, Process
-from typing import List
+from dataclasses import asdict
+import random
+from typing import Dict, List, Set, Tuple
 
 from dotenv import load_dotenv
 
@@ -37,6 +39,31 @@ active_environments = []
 processes = []
 is_terminating = False
 
+# ---------------------------
+# Defaults / Constants
+# ---------------------------
+
+# Paths to precomputed failure lists (newline-delimited JSON)
+DEFAULT_O3_FAILURES_PATH = "external_data/failures/o3_gta1_100steps_failed_tasks.json"
+DEFAULT_UITARS_FAILURES_PATH = "external_data/failures/uitars15-7b-100step-1_failed_tasks.json"
+
+# Reproducible sampling seed (can be overridden via env var SEED_TRAJECTORIES_SEED)
+DEFAULT_SEED_TRAJECTORIES_SEED = 42
+
+# Per-task-type sample caps (mirrors experiments/seed_data_selection.py)
+DEFAULT_SAMPLES_REQUIRED: Dict[str, int] = {
+    "chrome": 9,
+    "vs_code": 3,
+    "vlc": 4,
+    "gimp": 3,
+    "libreoffice_calc": 14,
+    "libreoffice_impress": 12,
+    "libreoffice_writer": 5,
+    "os": 4,
+    "thunderbird": 1,
+    "multi_apps": 44,
+}
+
 
 class TrajectoryGenerationOrchestrator:
     """Main orchestrator for trajectory generation with perturbations"""
@@ -50,8 +77,8 @@ class TrajectoryGenerationOrchestrator:
         generation_config: GenerationConfig,
         num_parallel_vms: int = 1,
         execution_config: ExecutionConfig = ExecutionConfig(),
-        task_config_base_dir: str = "evaluation_examples",
-        trajectory_base_dir: str = "external_data/osworld-verified/jedi-7b-4o-15steps",
+        task_config_base_dir: str = "external_data/osworld_evaluation_examples",
+        trajectory_base_dir: str = "external_data/osworld-verified/jedi-7b-4o-15steps/jedi-7b-4o-15steps",
         result_base_dir: str = "./perturbation_results",
     ) -> List[GenerationResult]:
         """Generate trajectories with perturbation injection"""
@@ -70,9 +97,6 @@ class TrajectoryGenerationOrchestrator:
             f"- {generation_config.num_difficulty_levels} levels of difficulty"
         )
         seed_trajectories = self.load_seed_trajectories(task_config_base_dir, trajectory_base_dir)
-
-        # TODO: Remove this after testing
-        seed_trajectories = seed_trajectories[:num_seed_scenarios]
 
         scenario_specs = self.scenario_generator.generate_scenarios(
             seed_trajectories, generation_config, result_base_dir
@@ -129,18 +153,19 @@ class TrajectoryGenerationOrchestrator:
         """Load seed trajectories from task configs and existing trajectories"""
         from pathlib import Path
 
-        seed_trajectories = []
+        seed_trajectories: List[SeedTrajectory] = []
         config_path = Path(config_base_dir)
 
         # Find all task config JSON files in the evaluation examples
-        if config_path.name == "evaluation_examples":
-            # Look in examples subdirectories
-            examples_dir = config_path / "examples"
-        else:
-            examples_dir = config_path
+        # Prefer an 'examples' subdirectory if present (works for both
+        # src/OSWorld/evaluation_examples and external_data/osworld_evaluation_examples)
+        examples_dir = config_path / "examples" if (config_path / "examples").exists() else config_path
 
         if not examples_dir.exists():
             raise FileNotFoundError(f"Examples directory not found: {examples_dir}")
+
+        # Optionally load failure intersection filters to filter seeds
+        failure_ids, failure_filter_keys = self._try_load_failure_intersection()
 
         # Get all app directories (chrome, gimp, etc.)
         app_dirs = [d for d in examples_dir.iterdir() if d.is_dir()]
@@ -179,9 +204,17 @@ class TrajectoryGenerationOrchestrator:
                         logger.warning(f"Trajectory file not found: {traj_file}")
                         continue
 
+                    # Skip if not in failure intersection (when available)
+                    task_id = task_config["id"]
+                    if failure_ids is not None and task_id not in failure_ids:
+                        continue
+                    key = (app_name, task_config["instruction"])  # (task_type, instruction)
+                    if failure_filter_keys is not None and key not in failure_filter_keys:
+                        continue
+
                     # Create seed trajectory with trajectory path
                     seed_trajectory = SeedTrajectory(
-                        task_type=task_config.get("snapshot", "chrome"),
+                        task_type=app_name,
                         task_instruction=task_config["instruction"],
                         config=task_config,
                         gt_actions_file_path=traj_file,
@@ -195,8 +228,217 @@ class TrajectoryGenerationOrchestrator:
                     logger.error(f"Error loading {config_file.name}: {e}")
                     continue
 
-        logger.info(f"Loaded {len(seed_trajectories)} seed trajectories from {len(app_dirs)} app directories")
-        return seed_trajectories
+        # Apply per-type sampling caps
+        rng = random.Random(int(os.environ.get("SEED_TRAJECTORIES_SEED", str(DEFAULT_SEED_TRAJECTORIES_SEED))))
+        counts_by_type = dict(DEFAULT_SAMPLES_REQUIRED)
+
+        # Strictly validate availability before sampling
+        self._assert_required_counts_available(seed_trajectories, counts_by_type)
+        selected = self._sample_seed_trajectories_by_type(seed_trajectories, counts_by_type, rng)
+
+        # Log distribution
+        dist: Dict[str, int] = {}
+        for st in selected:
+            dist[st.task_type] = dist.get(st.task_type, 0) + 1
+        logger.info(
+            "Selected %d seed trajectories after per-type caps: %s",
+            len(selected),
+            ", ".join(f"{k}={v}" for k, v in sorted(dist.items())),
+        )
+        return selected
+
+    def load_seed_scenarios(self, config_base_dir: str, trajectory_base_dir: str) -> List[dict]:
+        """Back-compat wrapper that returns a list of dicts instead of SeedTrajectory.
+
+        This interfaces previous callers expecting `List[Dict[str, Any]]` while
+        reusing the typed `SeedTrajectory` loader.
+        """
+        seed_trajectories = self.load_seed_trajectories(config_base_dir, trajectory_base_dir)
+        return [asdict(st) for st in seed_trajectories]
+
+    # ---------------------------
+    # Internals / Helpers
+    # ---------------------------
+
+    def _read_failed_task_ids(self, path: str) -> Set[str]:
+        """Read failure IDs from either {app_type:[ids...]} JSON or JSONL of objects.
+
+        Returns a set of IDs.
+        """
+        try:
+            text = open(path, "r", encoding="utf-8").read()
+        except FileNotFoundError:
+            return set()
+
+        # Try object mapping format first
+        try:
+            obj = json.loads(text)
+            if isinstance(obj, dict):
+                ids: Set[str] = set()
+                for v in obj.values():
+                    if isinstance(v, list):
+                        for task_id in v:
+                            if isinstance(task_id, str):
+                                ids.add(task_id)
+                return ids
+        except json.JSONDecodeError:
+            pass
+
+        # Fallback to JSONL
+        ids: Set[str] = set()
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            task_id = rec.get("id")
+            if isinstance(task_id, str):
+                ids.add(task_id)
+        return ids
+
+    def _read_failed_task_pairs(self, path: str) -> Set[Tuple[str, str]]:
+        """Read JSONL file with fields {"instruction", "task_type"}.
+
+        Returns a set of (task_type, instruction) tuples.
+        """
+        keys: Set[Tuple[str, str]] = set()
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                        task_type = obj.get("task_type")
+                        instruction = obj.get("instruction")
+                        if isinstance(task_type, str) and isinstance(instruction, str):
+                            keys.add((task_type, instruction))
+                    except json.JSONDecodeError:
+                        continue
+        except FileNotFoundError:
+            return set()
+        return keys
+
+    def _try_load_failure_intersection(self) -> tuple[Set[str] | None, Set[Tuple[str, str]] | None]:
+        """Attempt to load and intersect failure sets from known files.
+
+        Returns a tuple (ids_intersection, pairs_intersection). Exactly one of the
+        values will be non-None when both files are found and share a compatible
+        format. If either file is missing, returns (None, None).
+        """
+        o3_path = os.environ.get("O3_FAILURES_PATH", DEFAULT_O3_FAILURES_PATH)
+        uitars_path = os.environ.get("UITARS_FAILURES_PATH", DEFAULT_UITARS_FAILURES_PATH)
+
+        o3_exists = os.path.exists(o3_path)
+        u_exists = os.path.exists(uitars_path)
+        if not (o3_exists and u_exists):
+            logger.info(
+                "Failure lists not found (o3=%s, uitars=%s). Loading all seeds.",
+                o3_exists,
+                u_exists,
+            )
+            return None, None
+
+        # Prefer id-based if available in both
+        o3_ids = self._read_failed_task_ids(o3_path)
+        u_ids = self._read_failed_task_ids(uitars_path)
+        if o3_ids and u_ids:
+            ids_intersection = o3_ids.intersection(u_ids)
+            logger.info(
+                "Using id-based failure intersection: o3=%d, uitars=%d, intersection=%d",
+                len(o3_ids),
+                len(u_ids),
+                len(ids_intersection),
+            )
+            return ids_intersection, None
+
+        # Fallback to pair-based (task_type,instruction)
+        o3_pairs = self._read_failed_task_pairs(o3_path)
+        u_pairs = self._read_failed_task_pairs(uitars_path)
+        if o3_pairs and u_pairs:
+            intersection = o3_pairs.intersection(u_pairs)
+            logger.info(
+                "Using pair-based failure intersection: o3=%d, uitars=%d, intersection=%d",
+                len(o3_pairs),
+                len(u_pairs),
+                len(intersection),
+            )
+            return None, intersection
+
+        logger.info("Failure lists present but unrecognized/empty; loading all seeds.")
+        return None, None
+
+    def _log_insufficient_seeds(self, available: int, requested: int) -> None:
+        if available < requested:
+            logger.info(
+                "Requested %d seed scenarios but only %d available after filtering; using all",
+                requested,
+                available,
+            )
+
+    def _sample_seed_trajectories_by_type(
+        self,
+        candidates: List[SeedTrajectory],
+        counts_by_type: Dict[str, int],
+        rng: random.Random,
+    ) -> List[SeedTrajectory]:
+        """Sample up to N per task_type from candidates.
+
+        - If a type isn't in counts_by_type, take 0.
+        - If available < requested, take all available.
+        """
+        grouped: Dict[str, List[SeedTrajectory]] = {}
+        for st in candidates:
+            grouped.setdefault(st.task_type, []).append(st)
+
+        selected: List[SeedTrajectory] = []
+        for task_type, group in grouped.items():
+            n = counts_by_type.get(task_type, 0)
+            if n <= 0:
+                continue
+            if len(group) <= n:
+                selected.extend(group)
+            else:
+                selected.extend(rng.sample(group, n))
+        return selected
+
+    # ---------------------------
+    # Validation
+    # ---------------------------
+
+    def _assert_required_counts_available(
+        self,
+        candidates: List[SeedTrajectory],
+        counts_by_type: Dict[str, int],
+    ) -> None:
+        """Raise if any required per-type count cannot be met by candidates.
+
+        Checks availability AFTER failure-intersection filtering.
+        """
+        # Count available per type
+        available: Dict[str, int] = {}
+        for st in candidates:
+            available[st.task_type] = available.get(st.task_type, 0) + 1
+
+        shortages: Dict[str, Tuple[int, int]] = {}
+        for task_type, required in counts_by_type.items():
+            if required <= 0:
+                continue
+            have = available.get(task_type, 0)
+            if have < required:
+                shortages[task_type] = (have, required)
+
+        if shortages:
+            details = ", ".join(f"{t} {have}/{req}" for t, (have, req) in sorted(shortages.items()))
+            msg = (
+                "Insufficient seed trajectories after filtering; cannot satisfy per-type requirements: "
+                + details
+            )
+            raise RuntimeError(msg)
 
 
 # ============================================================================
