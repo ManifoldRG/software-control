@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+from perturbation_engine.curriculum.curriculum_config import CurriculumConfig
+
 
 # Constants for clean code
 class Constants:
@@ -140,7 +142,7 @@ class ScenarioSpec:
     task_type: str
     scenario_type: str
     difficulty_level: int
-    task_config: Dict[str, Any]
+    seed_trajectory: SeedTrajectory
 
     # Trajectory information
     trajectory_file_path: str
@@ -158,13 +160,22 @@ class ScenarioSpec:
     seed_index: int
     scenario_count: int
 
+    # Optional curriculum configuration for runtime curriculum generation
+    curriculum_config: Optional["CurriculumConfig"] = None
+
     def __post_init__(self):
         """Ensure all data is serializable."""
         if not isinstance(self.parameters, dict):
             self.parameters = dict(self.parameters) if self.parameters else {}
 
-        if not isinstance(self.task_config, dict):
-            self.task_config = dict(self.task_config) if self.task_config else {}
+        if not isinstance(self.seed_trajectory, SeedTrajectory):
+            self.seed_trajectory = SeedTrajectory(
+                task_type=self.seed_trajectory.task_type,
+                task_instruction=self.seed_trajectory.task_instruction,
+                config=self.seed_trajectory.config,
+                gt_actions_file_path=self.seed_trajectory.gt_actions_file_path,
+                gt_actions=self.seed_trajectory.gt_actions,
+            )
 
     def to_difficulty_level(self) -> "DifficultyLevel":
         """Convert to DifficultyLevel without recreation."""
@@ -174,6 +185,18 @@ class ScenarioSpec:
             perturbation_count=self.perturbation_count,
             parameters=self.parameters,
         )
+
+
+@dataclass
+class EnvironmentState:
+    """Environment state extracted from first observation"""
+
+    dom_tree: str
+    a11y_tree: str
+    app_type: str
+    current_url: str
+    window_state: Dict[str, Any]
+    task_instruction: str
 
 
 @dataclass

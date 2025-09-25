@@ -71,7 +71,40 @@ class PerturbationController(PythonController, SetupController):
         return perturbation_type in [PerturbationType.UI_VISUAL, PerturbationType.VISUAL_DISTRACTOR]
 
     def apply_perturbation(self, spec: PerturbationSpec, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Apply UI perturbations using Gemini based on perturbation type"""
+        """Apply UI perturbations using LLM-generated code or Gemini fallback"""
+        try:
+            # Check if this is LLM-generated code
+            if "llm_generated_code" in spec.parameters:
+                return self._apply_llm_perturbation(spec)
+            else:
+                return self._apply_gemini_perturbation(spec)
+
+        except Exception as e:
+            self.logger.error(f"Error applying perturbation: {e}")
+            return {"applied": False, "error": str(e)}
+
+    def _apply_llm_perturbation(self, spec: PerturbationSpec) -> Dict[str, Any]:
+        """Apply LLM-generated perturbation code"""
+        try:
+            llm_code = spec.parameters.get("llm_generated_code")
+            if not llm_code:
+                return {"applied": False, "error": "No LLM code provided"}
+
+            success = self.execute_js_on_page(llm_code)
+
+            return {
+                "applied": success,
+                "method": "llm_generated",
+                "js_code": llm_code,
+                "parameters": spec.parameters,
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error executing LLM code: {e}")
+            return {"applied": False, "error": str(e)}
+
+    def _apply_gemini_perturbation(self, spec: PerturbationSpec) -> Dict[str, Any]:
+        """Apply Gemini-based perturbation (original approach)"""
         try:
             nav_html = self.get_interactable_html()
             if not nav_html:
@@ -97,7 +130,7 @@ class PerturbationController(PythonController, SetupController):
             }
 
         except Exception as e:
-            self.logger.error(f"Error applying VLM perturbation: {e}")
+            self.logger.error(f"Error applying Gemini perturbation: {e}")
             return {"applied": False, "error": str(e)}
 
     def _determine_action(self, spec: PerturbationSpec) -> str:

@@ -19,15 +19,17 @@ from multiprocessing import Queue, current_process
 from perturbation_engine.data_types import ExecutionConfig
 from perturbation_engine.pipeline.perturbation_desktop_env import PerturbationDesktopEnv
 from perturbation_engine.pipeline.trajectory_generator import TrajectoryGenerator
+from perturbation_engine.simple_llm_orchestra import SimpleLLMOrchestra
 
 
 class ParallelExecutionEngine:
     """Manages parallel execution of trajectory generation tasks"""
 
-    def __init__(self, config: ExecutionConfig):
+    def __init__(self, config: ExecutionConfig, llm_orchestra=None):
         self.config = config
         self.logger = logging.getLogger(__name__)
         self.trajectory_generator = TrajectoryGenerator()
+        self.llm_orchestra = llm_orchestra or SimpleLLMOrchestra()
 
     def run_vm_tasks(self, scenario_queue: Queue, shared_results: list):
         """Run trajectory generation scenarios in a single VM process"""
@@ -59,12 +61,13 @@ class ParallelExecutionEngine:
                     break
 
                 try:
-                    # TODO: Execute the scenario with the perturbation scenario
-                    result = self.trajectory_generator.execute_trajectory(
+                    # Execute trajectory with runtime scenario generation
+                    result = self.trajectory_generator.execute_trajectory_with_runtime_scenarios(
                         env,
                         scenario,
                         self.config.max_steps,
                         self.config.sleep_after_execution,
+                        self.llm_orchestra,
                     )
                     shared_results.append(result)
                 except Exception as e:
@@ -96,11 +99,3 @@ class ParallelExecutionEngine:
                     self.logger.error(f"Error closing environment in {current_process().name}: {e}")
 
         self.logger.info(f"{current_process().name} finished.")
-
-
-if __name__ == "__main__":
-    from perturbation_engine.data_types import ExecutionConfig
-
-    config = ExecutionConfig()
-    engine = ParallelExecutionEngine(config)
-    engine.run_vm_tasks(Queue(), [])

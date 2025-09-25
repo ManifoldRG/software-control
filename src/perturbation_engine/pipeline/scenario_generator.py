@@ -2,36 +2,77 @@ import logging
 from typing import Dict, List
 
 from perturbation_engine.data_types import Constants, GenerationConfig, ScenarioSpec, SeedTrajectory
+from perturbation_engine.llm_orchestra import ApprovedVariation, LLMOrchestra
 from perturbation_engine.scenarios.scenario_factory import ScenarioFactory, create_default_factory
 
 
 class ScenarioGenerator:
     """Generates perturbation scenario specifications from seed trajectories."""
 
-    def __init__(self, scenario_factory: ScenarioFactory = None):
+    def __init__(self, scenario_factory: ScenarioFactory = None, llm_orchestra: LLMOrchestra = None):
         self._logger = logging.getLogger(__name__)
         self._scenario_factory = scenario_factory or create_default_factory()
+        self.llm_orchestra = llm_orchestra
 
     def generate_scenarios(
         self,
         seed_trajectories: List[SeedTrajectory],
         generation_config: GenerationConfig,
         result_base_dir: str = "./perturbation_results",
+        env=None,
     ) -> List[ScenarioSpec]:
         """
         Generate a curriculum of perturbation scenarios from given seed trajectories.
 
-        Design: Loop through task types, then scenario types, then difficulty levels.
-        For each task type + scenario type combination, use the factory to create scenarios.
+        Uses LLM orchestra if available, otherwise falls back to static factory approach.
 
         Args:
             seed_trajectories: List of seed trajectories with different task types
             generation_config: Generation configuration with per-task-type settings
             result_base_dir: Base directory to save perturbation results
+            env: Optional environment for runtime state extraction
 
         Returns:
             List of scenario specifications
         """
+        if self.llm_orchestra:
+            return self._generate_llm_scenarios(seed_trajectories, generation_config, result_base_dir, env)
+        else:
+            return self._generate_static_scenarios(seed_trajectories, generation_config, result_base_dir)
+
+    def _generate_llm_scenarios(
+        self,
+        seed_trajectories: List[SeedTrajectory],
+        generation_config: GenerationConfig,
+        result_base_dir: str,
+        env=None,
+    ) -> List[ScenarioSpec]:
+        """Generate scenarios using LLM orchestra"""
+        scenario_specs = []
+
+        for seed_idx, seed_trajectory in enumerate(seed_trajectories):
+            self._logger.info(f"Processing seed trajectory {seed_idx} with LLM orchestra")
+
+            # Use LLM orchestra to generate variations (pass env for runtime extraction)
+            approved_variations = self.llm_orchestra.process_seed_trajectory(seed_trajectory, env)
+
+            # Convert to scenario specs
+            for var_idx, variation in enumerate(approved_variations):
+                scenario_spec = self._create_llm_scenario_spec(
+                    seed_trajectory, variation, seed_idx, var_idx, result_base_dir
+                )
+                scenario_specs.append(scenario_spec)
+
+        self._logger.info(f"Generated {len(scenario_specs)} LLM-based scenario specifications")
+        return scenario_specs
+
+    def _generate_static_scenarios(
+        self,
+        seed_trajectories: List[SeedTrajectory],
+        generation_config: GenerationConfig,
+        result_base_dir: str,
+    ) -> List[ScenarioSpec]:
+        """Generate scenarios using static factory (original approach)"""
         scenario_specs = []
 
         # Group seed trajectories by task type
@@ -116,7 +157,7 @@ class ScenarioGenerator:
             task_type=task_type,
             scenario_type=scenario_type,
             difficulty_level=difficulty_level.level,
-            task_config=seed_trajectory.config,
+            seed_trajectory=seed_trajectory,
             trajectory_file_path=seed_trajectory.gt_actions_file_path,
             perturbation_scenario_class=scenario_class_name,
             intensity=difficulty_level.intensity,
@@ -137,3 +178,37 @@ class ScenarioGenerator:
             if not scenario_class:
                 return "ChromeInvarianceScenario"  # Default fallback
         return scenario_class.__name__
+
+    def _create_llm_scenario_spec(
+        self,
+        seed_trajectory: SeedTrajectory,
+        variation: ApprovedVariation,
+        seed_idx: int,
+        var_idx: int,
+        result_base_dir: str,
+    ) -> ScenarioSpec:
+        """Create scenario spec from LLM-generated variation"""
+        scenario_id = f"seed_{seed_idx}_llm_{var_idx}_{variation.instruction.type}"
+
+        return ScenarioSpec(
+            scenario_id=scenario_id,
+            task_id=seed_trajectory.config["id"],
+            task_type=seed_trajectory.task_type,
+            scenario_type="llm_generated",
+            difficulty_level=1,  # LLM variations are always level 1
+            seed_trajectory=seed_trajectory,
+            trajectory_file_path=seed_trajectory.gt_actions_file_path,
+            perturbation_scenario_class="LLMGeneratedScenario",
+            intensity=0.5,  # Default intensity for LLM variations
+            perturbation_count=1,
+            parameters={
+                "llm_generated_code": variation.code.code,
+                "instruction_variation": variation.instruction.instruction,
+                "quality_score": variation.quality_score,
+                "environment_dependencies": variation.environment_dependencies,
+                "selectors_used": variation.code.selectors_used,
+            },
+            result_dir=f"{result_base_dir}/{scenario_id}",
+            seed_index=seed_idx,
+            scenario_count=var_idx,
+        )
