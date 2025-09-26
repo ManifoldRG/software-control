@@ -32,4 +32,10 @@ def download_osworld_verified_traj_from_hf(hf_file_name: str):
 
 if __name__ == "__main__":
     # download_agentnet_from_hf()
-    download_osworld_verified_traj_from_hf("UI-TARS-0717-100step")
+
+    download_osworld_verified_traj_from_hf("o3_gta1_100steps")
+    # download_osworld_verified_traj_from_hf("jedi-7b-o3-100steps")
+    download_osworld_verified_traj_from_hf("uitars15-7b-100step-1")
+    # download_osworld_verified_traj_from_hf("opencua_agent-opencua_32b-cot_l2-action_history-3image-Ubuntu-100steps")
+    # download_osworld_verified_traj_from_hf("uitars-72b-dpo-100step")
+    # download_osworld_verified_traj_from_hf("opencua_agent-opencua_7b-cot_l2-action_history-3image-Ubuntu-50steps")
