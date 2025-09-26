@@ -1,21 +1,6 @@
-# Portions of this code are adapted from the OSWorld repository
-# https://github.com/xlang-ai/OSWorld
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """
-Refactored generate_trajectories.py: Environment-First Curriculum Generation
-Eliminates redundancy between static and curriculum generation
+generate_trajectories.py: Entry point with dependency injection
+Clean main flow following the data flow specification
 """
 
 import json
@@ -28,20 +13,17 @@ from typing import List
 from dotenv import load_dotenv
 
 from perturbation_engine.configure_logging import configure_logging
-from perturbation_engine.data_types import ExecutionConfig, SeedTrajectory
-from perturbation_engine.unified_generator import UnifiedGenerator
+from perturbation_engine.pipeline_refactored.data_models import (
+    CurriculumConfig,
+    ExecutionConfig,
+    SeedTrajectory,
+)
+from perturbation_engine.pipeline_refactored.unified_generator import UnifiedGenerator
 
-load_dotenv()
-configure_logging()
-logger = logging.getLogger(__name__)
-
+# Global state for graceful shutdown
 active_environments = []
 processes = []
 is_terminating = False
-
-# ============================================================================
-# Signal Handler
-# ============================================================================
 
 
 def signal_handler(signum, frame):
@@ -52,6 +34,7 @@ def signal_handler(signum, frame):
         return
 
     is_terminating = True
+    logger = logging.getLogger(__name__)
     logger.info(f"Received signal {signum}. Gracefully shutting down...")
 
     # Close environments and terminate processes
@@ -77,10 +60,10 @@ def load_seed_trajectories(config_base_dir: str, trajectory_base_dir: str) -> Li
 
     seed_trajectories = []
     config_path = Path(config_base_dir)
+    logger = logging.getLogger(__name__)
 
     # Find all task config JSON files in the evaluation examples
     if config_path.name == "evaluation_examples":
-        # Look in examples subdirectories
         examples_dir = config_path / "examples"
     else:
         examples_dir = config_path
@@ -123,8 +106,9 @@ def load_seed_trajectories(config_base_dir: str, trajectory_base_dir: str) -> Li
                     logger.warning(f"Trajectory file not found: {traj_file}")
                     continue
 
-                # Create seed trajectory with trajectory path
+                # Create seed trajectory
                 seed_trajectory = SeedTrajectory(
+                    task_id=task_id,
                     task_type=task_config.get("snapshot", "chrome"),
                     task_instruction=task_config["instruction"],
                     config=task_config,
@@ -144,73 +128,73 @@ def load_seed_trajectories(config_base_dir: str, trajectory_base_dir: str) -> Li
 
 
 def main():
-    """Main entry point for environment-first curriculum trajectory generation"""
-    os.environ["PROXY_CONFIG_FILE"] = "src/OSWorld/evaluation_examples/settings/proxy/dataimpulse.json"
+    """Main entry point for the perturbation pipeline"""
+    # Load environment variables
+    load_dotenv()
+    configure_logging()
+    logger = logging.getLogger(__name__)
 
     # Register signal handlers
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # Example usage
+    # Configuration
     execution_config = ExecutionConfig(
         # VM/Provider settings
         path_to_vm="/Users/lockewang/FIG/OSWorld/vmware_vm_data/Ubuntu0/Ubuntu0.vmx",
-        # path_to_vm=None,
-        # provider_name="aws",
         provider_name="vmware",
-        region=os.environ["AWS_REGION"],
-        # snapshot_name=os.environ["AWS_SNAPSHOT_NAME"],
+        region=os.environ.get("AWS_REGION", "us-east-1"),
         snapshot_name="chrome",
         # Environment settings
         headless=True,
         action_space="pyautogui",
-        observation_type="screenshot",
         screen_size=(1920, 1080),
         os_type="Ubuntu",
-        # client_password="osworld-public-evaluation",
         client_password="",
         # Execution settings
         max_steps=15,
         sleep_after_execution=0.0,
-        # Additional OSWorld settings
+        # Additional settings
         cache_dir="cache",
         require_a11y_tree=True,
         require_terminal=False,
         enable_proxy=False,
-        # Perturbation connection
         chromium_port=9222,
+    )
+
+    curriculum_config = CurriculumConfig(
+        scenario_count=10,
+        num_parallel_vms=1,
+        result_base_dir="./perturbation_results",
+        beginner_scenarios=3,
+        intermediate_scenarios=4,
+        advanced_scenarios=2,
     )
 
     # Initialize unified generator
     generator = UnifiedGenerator(execution_config)
 
-    # Test configuration
+    # Load seed trajectories
     task_config_base_dir = "src/OSWorld/evaluation_examples"
     trajectory_base_dir = "external_data/osworld-verified/jedi-7b-4o-15steps/jedi-7b-4o-15steps"
-    # result_base_dir = "/opt/manifold/results"
-    result_base_dir = "./perturbation_results"
 
-    # Load seed trajectories
     seed_trajectories = load_seed_trajectories(task_config_base_dir, trajectory_base_dir)
     seed_trajectories = seed_trajectories[:1]  # Limit for testing
 
-    logger.info("Starting environment-first curriculum generation")
+    logger.info("Starting perturbation pipeline")
     logger.info(f"Using {len(seed_trajectories)} seed trajectories")
 
-    # Generate trajectories using environment-first curriculum approach
-    results = []
+    # Generate trajectories using the complete pipeline
+    all_results = []
     for i, seed_trajectory in enumerate(seed_trajectories):
-        logger.info(
-            f"Processing seed trajectory {i + 1}/{len(seed_trajectories)}: {seed_trajectory.task_type}"
-        )
+        logger.info(f"Processing seed trajectory {i + 1}/{len(seed_trajectories)}: {seed_trajectory.task_id}")
 
         try:
             # Generate curriculum-based trajectories for this seed
-            # Each seed gets its own environment instance for fresh state
             trajectory_results = generator.generate_trajectories(
-                seed_trajectory=seed_trajectory, num_parallel_vms=1, result_base_dir=result_base_dir
+                seed_trajectory=seed_trajectory, curriculum_config=curriculum_config
             )
-            results.extend(trajectory_results)
+            all_results.extend(trajectory_results)
 
             logger.info(f"Generated {len(trajectory_results)} trajectories for seed {i + 1}")
 
@@ -218,12 +202,17 @@ def main():
             logger.error(f"Error processing seed trajectory {i + 1}: {e}")
             continue
 
-    logger.info(f"Total results: {len(results)}")
-    if results:
-        avg_score = sum(r.result_score for r in results) / len(results)
-        logger.info(f"Average result score: {avg_score:.2f}")
+    # Summary
+    logger.info(f"Total results: {len(all_results)}")
+    if all_results:
+        avg_score = sum(r.quality_score for r in all_results) / len(all_results)
+        success_count = sum(1 for r in all_results if r.success)
+        logger.info(f"Average quality score: {avg_score:.2f}")
+        logger.info(
+            f"Success rate: {success_count}/{len(all_results)} ({success_count / len(all_results) * 100:.1f}%)"
+        )
 
-    return results
+    return all_results
 
 
 if __name__ == "__main__":
