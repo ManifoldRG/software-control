@@ -25,7 +25,7 @@ from perturbation_engine.pipeline.data_models import (
 class BaseLLM(ABC):
     """Base class for all LLM components"""
 
-    def __init__(self, model_name: str = "gemini-2.0-flash-lite"):
+    def __init__(self, model_name: str = "gemini-2.0-flash"):
         self.model_name = model_name
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.api_key = os.getenv("GEMINI_API_KEY")
@@ -43,19 +43,26 @@ class BaseLLM(ABC):
 
     def _call_gemini(self, prompt: str) -> str:
         """Call Gemini API with prompt"""
-        if not self.client:
-            return self._get_mock_response()
+        retries = 0
+        while retries < 3:
+            if not self.client:
+                return self._get_mock_response()
 
-        try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(thinking_config=types.ThinkingConfig(thinking_budget=0)),
-            )
-            return response.text
-        except Exception as e:
-            self.logger.error(f"Error calling Gemini: {e}")
-            return self._get_mock_response()
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        thinking_config=types.ThinkingConfig(thinking_budget=0)
+                    ),
+                )
+                return response.text
+            except Exception as e:
+                self.logger.error(f"Error calling Gemini: {e}")
+                retries += 1
+
+        self.logger.error("Failed to call Gemini after 3 retries")
+        return self._get_mock_response()
 
     def _get_mock_response(self) -> str:
         """Get mock response when API is not available"""
@@ -165,6 +172,218 @@ class BaseLLM(ABC):
 class CurriculumLLM(BaseLLM):
     """Generate scenario specs from seed trajectory"""
 
+    def _build_common_prompt_sections(
+        self, app_name: str, executor_info: Dict[str, str], scenario_types: List[str], examples: List[str]
+    ) -> str:
+        """Build common prompt sections to reduce duplication"""
+
+        critical_requirements = """
+        CRITICAL REQUIREMENTS - VISUAL INVARIANCE LEARNING ONLY:
+        - NEVER interfere with main task functionality (target forms, buttons, navigation)
+        - ONLY modify visual appearance that affects screenshots and UI perception
+        - Focus on visual changes that teach agents to recognize UI elements despite visual variations
+        - Modify colors, fonts, layouts, themes that change visual appearance but not functionality
+        - Add visual elements that don't block functionality but change the visual interface
+        """
+
+        json_format = f"""
+        REQUIRED JSON FORMAT (exactly these fields):
+        {{
+            "target_app": "{app_name}",
+            "perturbation_trigger": "string describing when to trigger (e.g., 'when user interacts with the application', 'during data entry')",
+            "available_perturbation_actions": "string with {executor_info["language"]} code examples for visual manipulation",
+            "learning_objectives": "string describing what agent should learn about visual invariance - recognizing UI elements despite visual changes",
+            "target_components": ["array", "of", "visual", "components", "like", "buttons", "menus", "forms"],
+            "perturbation_types": ["theme", "layout", "content_variation", "ui_injection"]
+        }}
+        """
+
+        valid_types = """
+        VALID PERTURBATION TYPES: theme, layout, content_variation, ui_injection, notification, background_process, window_management, file_operations
+        """
+
+        scenario_types_section = "SCENARIO TYPES TO GENERATE (Visual Invariance Learning):\n"
+        for i, scenario_type in enumerate(scenario_types, 1):
+            scenario_types_section += f"        {i}. {scenario_type}\n"
+
+        examples_section = "        EXAMPLES (visual invariance learning only):\n"
+        for example in examples:
+            examples_section += f"        - {example}\n"
+
+        return f"""
+        {critical_requirements}
+
+        {scenario_types_section}
+
+        {json_format}
+
+        {valid_types}
+
+        {examples_section}
+        """
+
+    def _get_app_specific_config(self, app_name: str) -> Dict[str, Any]:
+        """Get app-specific configuration for prompt building"""
+        configs = {
+            "browser": {
+                "executor": {
+                    "name": "execute_js_on_page",
+                    "language": "JavaScript",
+                    "description": "Background UI component and layout modifications, theme changes, content variations",
+                },
+                "scenario_types": [
+                    "Visual Theme Changes: Change colors, fonts, spacing that affect screenshot appearance",
+                    "Layout Visual Variations: Modify visual layouts, positioning, sizing of non-critical elements",
+                    "Visual Content Changes: Add visual elements, change text appearance, modify visual styling",
+                ],
+                "examples": [
+                    "Visual theme changes: \"document.body.style.backgroundColor = '#f5f5f5'; document.querySelectorAll('header, footer').forEach(el => el.style.backgroundColor = '#e0e0e0');\"",
+                    "Visual content variations: \"document.querySelectorAll('h1, h2').forEach(h => h.style.fontFamily = 'Arial, sans-serif'); document.querySelectorAll('p').forEach(p => p.style.color = '#333');\"",
+                    "Visual layout changes: \"document.querySelectorAll('.sidebar, .aside').forEach(el => el.style.marginLeft = '20px'); document.querySelectorAll('.header').forEach(el => el.style.padding = '15px');\"",
+                ],
+            },
+            "libreoffice_calc": {
+                "executor": {
+                    "name": "execute_uno_command",
+                    "language": "UNO Python",
+                    "description": "Spreadsheet visual styling, cell formatting, grid appearance, toolbar themes",
+                },
+                "scenario_types": [
+                    "Cell Visual Formatting: Change cell colors, fonts, borders, background colors",
+                    "Grid Visual Styling: Modify grid lines, colors, visibility, cell borders",
+                    "Toolbar Visual Changes: Change toolbar appearance, button styles, menu layouts",
+                    "Display Visual Settings: Modify zoom, view options, formula bar, status bar",
+                ],
+                "examples": [
+                    'Cell visual formatting: "doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); cell = sheet.getCellByPosition(0, 0); cell.CellBackColor = 0xF0F0F0; cell.CharColor = 0x000000; cell.CharWeight = 150;"',
+                    "Grid visual styling: \"doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowGrid', True); viewSettings.setPropertyValue('GridColor', 0xC0C0C0);\"",
+                    "Toolbar visual changes: \"doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowFormulaBar', False);\"",
+                ],
+            },
+            "libreoffice_impress": {
+                "executor": {
+                    "name": "execute_uno_command",
+                    "language": "UNO Python",
+                    "description": "Presentation visual styling, slide layouts, theme changes, view modes",
+                },
+                "scenario_types": [
+                    "Slide Visual Layouts: Change slide layouts, master slide themes, background colors",
+                    "View Visual Modes: Modify view modes, zoom levels, slide sorter appearance",
+                    "Toolbar Visual Changes: Change toolbar appearance, button styles, menu layouts",
+                    "Presentation Visual Themes: Modify slide themes, color schemes, font styles",
+                ],
+                "examples": [
+                    "Slide visual layouts: \"doc = desktop.getCurrentComponent(); slide = doc.getDrawPages().getByIndex(0); slide.setPropertyValue('BackgroundColor', 0xF0F0F0);\"",
+                    "View visual modes: \"doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ZoomType', 0);\"",
+                    "Presentation visual themes: \"doc = desktop.getCurrentComponent(); slide = doc.getDrawPages().getByIndex(0); slide.setPropertyValue('BackgroundColor', 0xE0E0E0);\"",
+                ],
+            },
+            "libreoffice_writer": {
+                "executor": {
+                    "name": "execute_uno_command",
+                    "language": "UNO Python",
+                    "description": "Document visual styling, text formatting, page layouts, view modes",
+                },
+                "scenario_types": [
+                    "Text Visual Formatting: Change text colors, fonts, styles, paragraph formatting",
+                    "Page Visual Layouts: Modify page layouts, margins, headers, footers",
+                    "View Visual Modes: Change view modes, zoom levels, ruler appearance",
+                    "Document Visual Themes: Modify document themes, color schemes, font styles",
+                ],
+                "examples": [
+                    "Text visual formatting: \"doc = desktop.getCurrentComponent(); text = doc.getText(); cursor = text.createTextCursor(); cursor.setPropertyValue('CharColor', 0x000000);\"",
+                    "Page visual layouts: \"doc = desktop.getCurrentComponent(); pageStyle = doc.getStyleFamilies().getByName('PageStyles').getByName('Standard'); pageStyle.setPropertyValue('HeaderIsOn', True);\"",
+                    "Document visual themes: \"doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowRuler', False);\"",
+                ],
+            },
+            "gimp": {
+                "executor": {
+                    "name": "execute_bash_command",
+                    "language": "bash",
+                    "description": "Desktop environment visual styling, system themes, background processes",
+                },
+                "scenario_types": [
+                    "Visual Theme Changes: Change colors, fonts, spacing that affect screenshot appearance",
+                    "Visual Layout Variations: Modify visual layouts, positioning, sizing of non-critical elements",
+                    "Visual Content Changes: Add visual elements, change text appearance, modify visual styling",
+                ],
+                "examples": [
+                    "Visual theme changes: \"gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'; gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark';\"",
+                    "Visual color changes: \"gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'; gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark';\"",
+                    "Visual font changes: \"gsettings set org.gnome.desktop.interface font-name 'Ubuntu 12'; gsettings set org.gnome.desktop.interface monospace-font-name 'Ubuntu Mono 12';\"",
+                ],
+            },
+            "file_manager": {
+                "executor": {
+                    "name": "execute_bash_command",
+                    "language": "bash",
+                    "description": "Desktop environment visual styling, system themes, background processes",
+                },
+                "scenario_types": [
+                    "Visual Theme Changes: Change colors, fonts, spacing that affect screenshot appearance",
+                    "Visual Layout Variations: Modify visual layouts, positioning, sizing of non-critical elements",
+                    "Visual Content Changes: Add visual elements, change text appearance, modify visual styling",
+                ],
+                "examples": [
+                    "Visual theme changes: \"gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'; gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark';\"",
+                    "Visual color changes: \"gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'; gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark';\"",
+                    "Visual font changes: \"gsettings set org.gnome.desktop.interface font-name 'Ubuntu 12'; gsettings set org.gnome.desktop.interface monospace-font-name 'Ubuntu Mono 12';\"",
+                ],
+            },
+            "terminal": {
+                "executor": {
+                    "name": "execute_bash_command",
+                    "language": "bash",
+                    "description": "Desktop environment visual styling, system themes, background processes",
+                },
+                "scenario_types": [
+                    "Visual Theme Changes: Change colors, fonts, spacing that affect screenshot appearance",
+                    "Visual Layout Variations: Modify visual layouts, positioning, sizing of non-critical elements",
+                    "Visual Content Changes: Add visual elements, change text appearance, modify visual styling",
+                ],
+                "examples": [
+                    "Visual theme changes: \"gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'; gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark';\"",
+                    "Visual color changes: \"gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'; gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark';\"",
+                    "Visual font changes: \"gsettings set org.gnome.desktop.interface font-name 'Ubuntu 12'; gsettings set org.gnome.desktop.interface monospace-font-name 'Ubuntu Mono 12';\"",
+                ],
+            },
+            "vs_code": {
+                "executor": {
+                    "name": "execute_python_command",
+                    "language": "Python",
+                    "description": "VS Code environment visual styling, background files, window management",
+                },
+                "scenario_types": [
+                    "Visual Theme Changes: Change colors, fonts, spacing that affect screenshot appearance",
+                    "Visual Layout Variations: Modify visual layouts, positioning, sizing of non-critical elements",
+                    "Visual Content Changes: Add visual elements, change text appearance, modify visual styling",
+                ],
+                "examples": [
+                    "Background files: \"import os; os.makedirs('/tmp/vscode_temp', exist_ok=True); open('/tmp/vscode_temp/debug.log', 'w').write('Background process started')\"",
+                    "Window management: \"wmctrl -r 'Visual Studio Code' -e 0,0,0,1200,800\"",
+                    "Settings: \"import json; settings = {'workbench.colorTheme': 'Dark+'}; print(json.dumps(settings))\"",
+                ],
+            },
+            "system": {
+                "executor": {
+                    "name": "execute_python_command",
+                    "language": "Python",
+                    "description": "System automation, background processes, desktop environment modifications",
+                },
+                "scenario_types": [
+                    "Visual Theme Changes: Change colors, fonts, spacing that affect screenshot appearance",
+                    "Visual Layout Variations: Modify visual layouts, positioning, sizing of non-critical elements",
+                    "Visual Content Changes: Add visual elements, change text appearance, modify visual styling",
+                ],
+                "examples": [
+                    "System notifications: \"import subprocess; subprocess.run(['notify-send', 'Background Process', 'System update running'])\"",
+                    "Background files: \"import os; os.makedirs('/tmp/background_work', exist_ok=True); open('/tmp/background_work/process.log', 'w').write('Background process started')\"",
+                    "Desktop settings: \"import subprocess; subprocess.run(['gsettings', 'set', 'org.gnome.desktop.interface', 'gtk-theme', 'Adwaita-dark'])\"",
+                ],
+            },
+        }
+        return configs.get(app_name, configs["browser"])  # Default to browser config
+
     def generate_scenario_specs(
         self,
         seed_trajectory: SeedTrajectory,
@@ -247,8 +466,12 @@ class CurriculumLLM(BaseLLM):
 
         if app_type == "browser":
             return self._generate_browser_scenarios(seed_trajectory, app_state, curriculum_config)
-        elif app_type == "libreoffice":
-            return self._generate_libreoffice_scenarios(seed_trajectory, app_state, curriculum_config)
+        elif app_type == "libreoffice_calc":
+            return self._generate_libreoffice_calc_scenarios(seed_trajectory, app_state, curriculum_config)
+        elif app_type == "libreoffice_impress":
+            return self._generate_libreoffice_impress_scenarios(seed_trajectory, app_state, curriculum_config)
+        elif app_type == "libreoffice_writer":
+            return self._generate_libreoffice_writer_scenarios(seed_trajectory, app_state, curriculum_config)
         elif app_type in ["gimp", "image_editor"]:
             return self._generate_image_editor_scenarios(seed_trajectory, app_state, curriculum_config)
         elif app_type in ["file_manager", "file_browser"]:
@@ -265,41 +488,25 @@ class CurriculumLLM(BaseLLM):
     ) -> List[ScenarioSpec]:
         """Generate browser-specific scenarios using JavaScript"""
 
+        config = self._get_app_specific_config("browser")
+        common_sections = self._build_common_prompt_sections(
+            "browser", config["executor"], config["scenario_types"], config["examples"]
+        )
+
         prompt = f"""
-        Generate browser perturbation scenarios for this GUI task:
+        Generate sophisticated browser perturbation scenarios for this GUI task:
 
         Task: {seed_trajectory.task_instruction}
         App State: {app_state}
 
         Generate 3 scenario specifications for browser manipulation using JavaScript:
 
-        AVAILABLE EXECUTOR: execute_js_on_page(js_code: str)
-        - Input: Raw JavaScript code (NO markdown, NO ```, NO language tags)
-        - Use: Background theme changes, non-intrusive UI modifications
-        - API Call: execute_js_on_page
+        AVAILABLE EXECUTOR: {config["executor"]["name"]}({config["executor"]["language"].lower()}_code: str)
+        - Input: Raw {config["executor"]["language"]} code (NO markdown, NO ```, NO language tags)
+        - Use: {config["executor"]["description"]}
+        - API Call: {config["executor"]["name"]}
 
-        IMPORTANT: Focus on BACKGROUND browser environment manipulation that won't interfere with the main task:
-        - Background color changes, non-critical UI styling
-        - Adding background elements that don't block main content
-        - Subtle theme modifications that don't affect functionality
-        - Background animations or effects that don't interfere with user interactions
-
-        REQUIRED JSON FORMAT (exactly these fields):
-        {{
-            "target_app": "browser",
-            "perturbation_trigger": "string describing when to trigger",
-            "available_perturbation_actions": "string with JavaScript code examples for background manipulation",
-            "learning_objectives": "string describing what agent should learn about robustness",
-            "target_components": ["array", "of", "background", "components"],
-            "perturbation_types": ["theme", "layout", "ui_injection"]
-        }}
-
-        VALID PERTURBATION TYPES: theme, layout, content_variation, ui_injection, notification, background_process, window_management, file_operations
-
-        EXAMPLES (background manipulation only):
-        - Background theme: "document.body.style.backgroundColor = '#f0f0f0'; document.body.style.transition = 'background-color 0.3s';"
-        - Background decoration: "const bg = document.createElement('div'); bg.style.position = 'fixed'; bg.style.top = '0'; bg.style.right = '0'; bg.style.width = '50px'; bg.style.height = '50px'; bg.style.backgroundColor = 'rgba(0,0,0,0.1)'; document.body.appendChild(bg);"
-        - Background animation: "document.body.style.animation = 'subtle-pulse 2s infinite';"
+        {common_sections}
 
         Return JSON array with a list of exactly 3 scenario objects.
         """
@@ -307,68 +514,123 @@ class CurriculumLLM(BaseLLM):
         scenarios_data = self.call_llm(prompt)
         return self._parse_scenarios(scenarios_data, "browser")
 
-    def _generate_libreoffice_scenarios(
+    def _generate_libreoffice_calc_scenarios(
         self, seed_trajectory: SeedTrajectory, app_state: Dict[str, Any], curriculum_config: CurriculumConfig
     ) -> List[ScenarioSpec]:
-        """Generate LibreOffice-specific scenarios using UNO commands"""
+        """Generate LibreOffice Calc-specific scenarios using UNO commands"""
 
-        self.logger.debug("_generate_libreoffice_scenarios called")
+        self.logger.debug("_generate_libreoffice_calc_scenarios called")
         self.logger.debug(f"seed_trajectory.task_instruction: {seed_trajectory.task_instruction}")
         self.logger.debug(f"app_state: {app_state}")
 
+        config = self._get_app_specific_config("libreoffice_calc")
+        common_sections = self._build_common_prompt_sections(
+            "libreoffice_calc", config["executor"], config["scenario_types"], config["examples"]
+        )
+
         prompt = f"""
-        Generate LibreOffice perturbation scenarios for this GUI task:
+        Generate sophisticated LibreOffice Calc perturbation scenarios for this GUI task:
 
         Task: {seed_trajectory.task_instruction}
         App State: {app_state}
 
-        Generate 3 scenario specifications for LibreOffice manipulation using UNO commands:
+        Generate 3 scenario specifications for LibreOffice Calc manipulation using UNO commands:
 
-        AVAILABLE EXECUTOR: execute_uno_command(uno_code: str, parameters: Dict)
-        - Input: Raw UNO Python code (NO markdown, NO ```, NO language tags)
-        - Use: Background document styling, non-critical UI modifications
-        - API Call: execute_uno_command
+        AVAILABLE EXECUTOR: {config["executor"]["name"]}({config["executor"]["language"].lower()}_code: str, parameters: Dict)
+        - Input: Raw {config["executor"]["language"]} code (NO markdown, NO ```, NO language tags)
+        - Use: {config["executor"]["description"]}
+        - API Call: {config["executor"]["name"]}
 
-        IMPORTANT: Focus on BACKGROUND LibreOffice environment manipulation that won't interfere with the main task:
-        - Background document styling, non-critical formatting changes
-        - UI theme modifications that don't affect functionality
-        - Background grid/display settings that don't impact data
-        - Subtle visual changes that don't interfere with user workflow
-
-        REQUIRED JSON FORMAT (exactly these fields):
-        {{
-            "target_app": "libreoffice",
-            "perturbation_trigger": "string describing when to trigger",
-            "available_perturbation_actions": "string with UNO code examples for background manipulation",
-            "learning_objectives": "string describing what agent should learn about robustness",
-            "target_components": ["array", "of", "background", "components"],
-            "perturbation_types": ["theme", "layout", "ui_injection"]
-        }}
-
-        VALID PERTURBATION TYPES: theme, layout, content_variation, ui_injection, notification, background_process, window_management, file_operations
-
-        EXAMPLES (background manipulation only):
-        - Background theme: "doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowGrid', False);"
-        - Background styling: "doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); column = sheet.getColumns().getByIndex(0); column.setPropertyValue('Width', 2000);"
-        - UI theme: "doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowFormulaBar', False);"
-        - Background color: "doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); cell = sheet.getCellByPosition(0, 0); cell.CellBackColor = 0xFFFF00;"
-        - Grid settings: "doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowGrid', True); viewSettings.setPropertyValue('GridVisible', True);"
-        - Cell formatting: "doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); cell = sheet.getCellByPosition(1, 1); cell.String = 'Background Data'; cell.CharWeight = 150;"
-        - Sheet properties: "doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); sheet.setPropertyValue('IsVisible', True);"
+        {common_sections}
 
         Return JSON array with a list of exactly 3 scenario objects.
         """
 
         scenarios_data = self.call_llm(prompt)
-        return self._parse_scenarios(scenarios_data, "libreoffice")
+        return self._parse_scenarios(scenarios_data, "libreoffice_calc")
+
+    def _generate_libreoffice_impress_scenarios(
+        self, seed_trajectory: SeedTrajectory, app_state: Dict[str, Any], curriculum_config: CurriculumConfig
+    ) -> List[ScenarioSpec]:
+        """Generate LibreOffice Impress-specific scenarios using UNO commands"""
+
+        self.logger.debug("_generate_libreoffice_impress_scenarios called")
+        self.logger.debug(f"seed_trajectory.task_instruction: {seed_trajectory.task_instruction}")
+        self.logger.debug(f"app_state: {app_state}")
+
+        config = self._get_app_specific_config("libreoffice_impress")
+        common_sections = self._build_common_prompt_sections(
+            "libreoffice_impress", config["executor"], config["scenario_types"], config["examples"]
+        )
+
+        prompt = f"""
+        Generate sophisticated LibreOffice Impress perturbation scenarios for this GUI task:
+
+        Task: {seed_trajectory.task_instruction}
+        App State: {app_state}
+
+        Generate 3 scenario specifications for LibreOffice Impress manipulation using UNO commands:
+
+        AVAILABLE EXECUTOR: {config["executor"]["name"]}({config["executor"]["language"].lower()}_code: str, parameters: Dict)
+        - Input: Raw {config["executor"]["language"]} code (NO markdown, NO ```, NO language tags)
+        - Use: {config["executor"]["description"]}
+        - API Call: {config["executor"]["name"]}
+
+        {common_sections}
+
+        Return JSON array with a list of exactly 3 scenario objects.
+        """
+
+        scenarios_data = self.call_llm(prompt)
+        return self._parse_scenarios(scenarios_data, "libreoffice_impress")
+
+    def _generate_libreoffice_writer_scenarios(
+        self, seed_trajectory: SeedTrajectory, app_state: Dict[str, Any], curriculum_config: CurriculumConfig
+    ) -> List[ScenarioSpec]:
+        """Generate LibreOffice Writer-specific scenarios using UNO commands"""
+
+        self.logger.debug("_generate_libreoffice_writer_scenarios called")
+        self.logger.debug(f"seed_trajectory.task_instruction: {seed_trajectory.task_instruction}")
+        self.logger.debug(f"app_state: {app_state}")
+
+        config = self._get_app_specific_config("libreoffice_writer")
+        common_sections = self._build_common_prompt_sections(
+            "libreoffice_writer", config["executor"], config["scenario_types"], config["examples"]
+        )
+
+        prompt = f"""
+        Generate sophisticated LibreOffice Writer perturbation scenarios for this GUI task:
+
+        Task: {seed_trajectory.task_instruction}
+        App State: {app_state}
+
+        Generate 3 scenario specifications for LibreOffice Writer manipulation using UNO commands:
+
+        AVAILABLE EXECUTOR: {config["executor"]["name"]}({config["executor"]["language"].lower()}_code: str, parameters: Dict)
+        - Input: Raw {config["executor"]["language"]} code (NO markdown, NO ```, NO language tags)
+        - Use: {config["executor"]["description"]}
+        - API Call: {config["executor"]["name"]}
+
+        {common_sections}
+
+        Return JSON array with a list of exactly 3 scenario objects.
+        """
+
+        scenarios_data = self.call_llm(prompt)
+        return self._parse_scenarios(scenarios_data, "libreoffice_writer")
 
     def _generate_image_editor_scenarios(
         self, seed_trajectory: SeedTrajectory, app_state: Dict[str, Any], curriculum_config: CurriculumConfig
     ) -> List[ScenarioSpec]:
         """Generate image editor scenarios using bash commands"""
 
+        config = self._get_app_specific_config("gimp")
+        common_sections = self._build_common_prompt_sections(
+            "gimp", config["executor"], config["scenario_types"], config["examples"]
+        )
+
         prompt = f"""
-        Generate image editor perturbation scenarios for this GUI task:
+        Generate sophisticated image editor perturbation scenarios for this GUI task:
 
         Task: {seed_trajectory.task_instruction}
         App State: {app_state}
@@ -376,34 +638,11 @@ class CurriculumLLM(BaseLLM):
         Generate 2 scenario specifications for image editor manipulation using bash commands:
 
         AVAILABLE EXECUTORS:
-        - execute_bash_command(command: str): Raw bash commands
+        - {config["executor"]["name"]}(command: str): Raw {config["executor"]["language"]} commands
         - manipulate_app_state(parameters: Dict): App management
-        - API Calls: execute_bash_command, manipulate_app_state
+        - API Calls: {config["executor"]["name"]}, manipulate_app_state
 
-        IMPORTANT: Focus on BACKGROUND desktop environment manipulation that won't interfere with the main task:
-        - Background file operations, temporary file creation
-        - Window management of OTHER applications (not the main task)
-        - System notifications, background processes
-        - Desktop environment modifications that don't affect the primary workflow
-
-        REQUIRED JSON FORMAT (exactly these fields):
-        {{
-            "target_app": "gimp",
-            "perturbation_trigger": "string describing when to trigger",
-            "available_perturbation_actions": "string with bash/state manipulation examples for background manipulation",
-            "learning_objectives": "string describing what agent should learn about robustness",
-            "target_components": ["array", "of", "background", "components"],
-            "perturbation_types": ["notification", "background_process", "file_operations"]
-        }}
-
-        VALID PERTURBATION TYPES: theme, layout, content_variation, ui_injection, notification, background_process, window_management, file_operations
-
-        EXAMPLES (background manipulation only):
-        - Background files: "mkdir -p /tmp/background_images && touch /tmp/background_images/temp.jpg"
-        - Other window management: "wmctrl -r 'Calculator' -e 0,100,100,300,200"
-        - System notifications: "notify-send 'Background Process' 'Image processing complete'"
-        - Background processes: "nohup sleep 30 > /dev/null 2>&1 &"
-        - Desktop wallpaper: "gsettings set org.gnome.desktop.background picture-uri 'file:///usr/share/backgrounds/gnome/adwaita-morning.jpg'"
+        {common_sections}
 
         Return JSON array with a list of exactly 2 scenario objects.
         """
@@ -416,8 +655,13 @@ class CurriculumLLM(BaseLLM):
     ) -> List[ScenarioSpec]:
         """Generate file manager scenarios using bash commands"""
 
+        config = self._get_app_specific_config("file_manager")
+        common_sections = self._build_common_prompt_sections(
+            "file_manager", config["executor"], config["scenario_types"], config["examples"]
+        )
+
         prompt = f"""
-        Generate file manager perturbation scenarios for this GUI task:
+        Generate sophisticated file manager perturbation scenarios for this GUI task:
 
         Task: {seed_trajectory.task_instruction}
         App State: {app_state}
@@ -425,34 +669,11 @@ class CurriculumLLM(BaseLLM):
         Generate 2 scenario specifications for file manager manipulation using bash commands:
 
         AVAILABLE EXECUTORS:
-        - execute_bash_command(command: str): Raw bash commands
+        - {config["executor"]["name"]}(command: str): Raw {config["executor"]["language"]} commands
         - execute_python_command(python_code: str): Python automation
-        - API Calls: execute_bash_command, execute_python_command
+        - API Calls: {config["executor"]["name"]}, execute_python_command
 
-        IMPORTANT: Focus on BACKGROUND desktop environment manipulation that won't interfere with the main task:
-        - Background file operations, temporary directory creation
-        - System notifications, background processes
-        - Window management of OTHER applications (not the main task)
-        - Desktop environment modifications that don't affect the primary workflow
-
-        REQUIRED JSON FORMAT (exactly these fields):
-        {{
-            "target_app": "file_manager",
-            "perturbation_trigger": "string describing when to trigger",
-            "available_perturbation_actions": "string with bash/python examples for background manipulation",
-            "learning_objectives": "string describing what agent should learn about robustness",
-            "target_components": ["array", "of", "background", "components"],
-            "perturbation_types": ["notification", "background_process", "file_operations"]
-        }}
-
-        VALID PERTURBATION TYPES: theme, layout, content_variation, ui_injection, notification, background_process, window_management, file_operations
-
-        EXAMPLES (background manipulation only):
-        - Background files: "mkdir -p /tmp/background_work && touch /tmp/background_work/process.log"
-        - System notifications: "notify-send 'Background Process' 'File sync complete'"
-        - Other window management: "wmctrl -r 'Calculator' -e 0,100,100,300,200"
-        - Background processes: "nohup find /tmp -name '*.tmp' -delete > /dev/null 2>&1 &"
-        - Desktop settings: "gsettings set org.gnome.desktop.interface clock-format '24h'"
+        {common_sections}
 
         Return JSON array with a list of exactly 2 scenario objects.
         """
@@ -465,6 +686,11 @@ class CurriculumLLM(BaseLLM):
     ) -> List[ScenarioSpec]:
         """Generate generic scenarios using Python commands"""
 
+        config = self._get_app_specific_config("system")
+        common_sections = self._build_common_prompt_sections(
+            "system", config["executor"], config["scenario_types"], config["examples"]
+        )
+
         prompt = f"""
         Generate generic perturbation scenarios for this GUI task:
 
@@ -472,10 +698,10 @@ class CurriculumLLM(BaseLLM):
 
         Generate {count} scenario specifications using Python automation:
 
-        AVAILABLE EXECUTOR: execute_python_command(python_code: str)
-        - Input: Raw Python code (NO markdown, NO ```, NO language tags)
-        - Use: Background system automation, non-intrusive modifications
-        - API Call: execute_python_command
+        AVAILABLE EXECUTOR: {config["executor"]["name"]}({config["executor"]["language"].lower()}_code: str)
+        - Input: Raw {config["executor"]["language"]} code (NO markdown, NO ```, NO language tags)
+        - Use: {config["executor"]["description"]}
+        - API Call: {config["executor"]["name"]}
 
         IMPORTANT: Focus on BACKGROUND desktop environment manipulation that won't interfere with the main task:
         - System notifications, background processes
@@ -483,24 +709,7 @@ class CurriculumLLM(BaseLLM):
         - Window management of OTHER applications (not the main task)
         - Background file operations, temporary data creation
 
-        REQUIRED JSON FORMAT (exactly these fields):
-        {{
-            "target_app": "system",
-            "perturbation_trigger": "string describing when to trigger",
-            "available_perturbation_actions": "string with Python code examples for background manipulation",
-            "learning_objectives": "string describing what agent should learn about robustness",
-            "target_components": ["array", "of", "background", "components"],
-            "perturbation_types": ["notification", "background_process", "window_management"]
-        }}
-
-        VALID PERTURBATION TYPES: theme, layout, content_variation, ui_injection, notification, background_process, window_management, file_operations
-
-        EXAMPLES (background manipulation only):
-        - System notifications: "import subprocess; subprocess.run(['notify-send', 'Background Process', 'System update running'])"
-        - Background files: "import os; os.makedirs('/tmp/background_work', exist_ok=True); open('/tmp/background_work/process.log', 'w').write('Background process started')"
-        - Other window management: "import subprocess; subprocess.run(['wmctrl', '-r', 'Calculator', '-e', '0,100,100,300,200'])"
-        - Background processes: "import subprocess; subprocess.Popen(['sleep', '60'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)"
-        - Desktop settings: "import subprocess; subprocess.run(['gsettings', 'set', 'org.gnome.desktop.interface', 'gtk-theme', 'Adwaita-dark'])"
+        {common_sections}
 
         Return JSON array with a list of exactly {count} scenario objects.
         """
@@ -513,6 +722,11 @@ class CurriculumLLM(BaseLLM):
     ) -> List[ScenarioSpec]:
         """Generate terminal-specific scenarios using bash commands"""
 
+        config = self._get_app_specific_config("terminal")
+        common_sections = self._build_common_prompt_sections(
+            "terminal", config["executor"], config["scenario_types"], config["examples"]
+        )
+
         prompt = f"""
         Generate terminal perturbation scenarios for this GUI task:
 
@@ -522,9 +736,9 @@ class CurriculumLLM(BaseLLM):
         Generate 2 scenario specifications for terminal manipulation using bash commands:
 
         AVAILABLE EXECUTORS:
-        - execute_bash_command(command: str): Raw bash commands
+        - {config["executor"]["name"]}(command: str): Raw {config["executor"]["language"]} commands
         - execute_python_command(python_code: str): Python automation
-        - API Calls: execute_bash_command, execute_python_command
+        - API Calls: {config["executor"]["name"]}, execute_python_command
 
         IMPORTANT: Focus on BACKGROUND desktop environment manipulation that won't interfere with the main task:
         - System notifications, background processes, desktop themes
@@ -532,25 +746,7 @@ class CurriculumLLM(BaseLLM):
         - Background file operations, system settings changes
         - Desktop environment modifications that don't affect the primary workflow
 
-        REQUIRED JSON FORMAT (exactly these fields):
-        {{
-            "target_app": "terminal",
-            "perturbation_trigger": "string describing when to trigger",
-            "available_perturbation_actions": "string with bash/python examples for background manipulation",
-            "learning_objectives": "string describing what agent should learn about robustness",
-            "target_components": ["array", "of", "background", "components"],
-            "perturbation_types": ["notification", "background_process", "window_management"]
-        }}
-
-        VALID PERTURBATION TYPES: theme, layout, content_variation, ui_injection, notification, background_process, window_management, file_operations
-
-        EXAMPLES (background manipulation only):
-        - System notifications: "notify-send 'Background Process' 'System update running'"
-        - Desktop theme: "gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'"
-        - Background files: "mkdir -p /tmp/background_work && touch /tmp/background_work/process.log"
-        - Other window management: "wmctrl -r 'Calculator' -e 0,100,100,300,200"
-        - Background processes: "nohup sleep 30 > /dev/null 2>&1 &"
-        - Desktop settings: "gsettings set org.gnome.desktop.interface clock-format '24h'"
+        {common_sections}
 
         Return JSON array with a list of exactly 2 scenario objects.
         """
@@ -563,6 +759,11 @@ class CurriculumLLM(BaseLLM):
     ) -> List[ScenarioSpec]:
         """Generate VS Code-specific scenarios using Python automation"""
 
+        config = self._get_app_specific_config("vs_code")
+        common_sections = self._build_common_prompt_sections(
+            "vs_code", config["executor"], config["scenario_types"], config["examples"]
+        )
+
         prompt = f"""
         Generate VS Code perturbation scenarios for this GUI task:
 
@@ -572,9 +773,9 @@ class CurriculumLLM(BaseLLM):
         Generate 2 scenario specifications for VS Code manipulation using Python automation:
 
         AVAILABLE EXECUTORS:
-        - execute_python_command(python_code: str): Python automation
+        - {config["executor"]["name"]}({config["executor"]["language"].lower()}_code: str): {config["executor"]["language"]} automation
         - execute_bash_command(command: str): Raw bash commands
-        - API Calls: execute_python_command, execute_bash_command
+        - API Calls: {config["executor"]["name"]}, execute_bash_command
 
         IMPORTANT: Focus on BACKGROUND VS Code environment manipulation that won't interfere with the main task:
         - Background file operations, temporary file creation
@@ -582,26 +783,7 @@ class CurriculumLLM(BaseLLM):
         - System notifications, background processes
         - Desktop environment modifications that don't affect the primary workflow
 
-        REQUIRED JSON FORMAT (exactly these fields):
-        {{
-            "target_app": "vs_code",
-            "perturbation_trigger": "string describing when to trigger",
-            "available_perturbation_actions": "string with python/bash examples for background manipulation",
-            "learning_objectives": "string describing what agent should learn about robustness",
-            "target_components": ["array", "of", "background", "components"],
-            "perturbation_types": ["notification", "background_process", "window_management"]
-        }}
-
-        VALID PERTURBATION TYPES: theme, layout, content_variation, ui_injection, notification, background_process, window_management, file_operations
-
-        EXAMPLES (background manipulation only):
-        - Background files: "import os; os.makedirs('/tmp/vscode_temp', exist_ok=True); open('/tmp/vscode_temp/debug.log', 'w').write('Background process started')"
-        - Window management: "wmctrl -r 'Visual Studio Code' -e 0,0,0,1200,800"
-        - Settings: "import json; settings = {{'workbench.colorTheme': 'Dark+'}}; print(json.dumps(settings))"
-        - System notifications: "import subprocess; subprocess.run(['notify-send', 'VS Code', 'Background process completed'])"
-        - Background processes: "import subprocess; subprocess.Popen(['sleep', '10'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)"
-        - Desktop settings: "import subprocess; subprocess.run(['gsettings', 'set', 'org.gnome.desktop.interface', 'gtk-theme', 'Adwaita-dark'])"
-        - Background cleanup: "import os; [os.remove(os.path.join('/tmp', f)) for f in os.listdir('/tmp') if f.endswith('.tmp')]"
+        {common_sections}
 
         Return JSON array with a list of exactly 2 scenario objects.
         """
@@ -714,6 +896,255 @@ class CurriculumLLM(BaseLLM):
 class PerturbationLLM(BaseLLM):
     """Decide when/how to perturb during runtime"""
 
+    def _build_common_perturbation_prompt_sections(
+        self, app_name: str, executor_info: Dict[str, str], focus_areas: List[str], examples: List[str]
+    ) -> str:
+        """Build common perturbation decision prompt sections to reduce duplication"""
+
+        current_state = """
+        CURRENT STATE:
+        - Step: {step_idx}
+        - Action: {current_action}
+        - Action History: {action_history}
+        - CoT Context: {cot_context}
+        - App States: {app_states}
+        - Task: {task_instruction}
+        """
+
+        scenario_spec = """
+        SCENARIO SPEC:
+        - Target App: {target_app}
+        - Trigger: {perturbation_trigger}
+        - Available Actions: {available_perturbation_actions}
+        - Learning Objectives: {learning_objectives}
+        - Target Components: {target_components}
+        - Perturbation Types: {perturbation_types}
+        """
+
+        executor_info_section = f"""
+        AVAILABLE EXECUTOR: {executor_info["name"]}({executor_info["language"].lower()}_code: str, parameters: Dict)
+        - Input: Raw {executor_info["language"]} code (NO markdown, NO ```, NO language tags)
+        - Use: {executor_info["description"]}
+        - CRITICAL: Only modify visual elements, never interfere with main task functionality
+        """
+
+        decision_criteria = """
+        DECISION CRITERIA:
+        1. Does the current step match the perturbation trigger conditions?
+        2. Is the target app active and relevant to the current action?
+        3. What specific visual perturbation should be applied?
+        4. Will this perturbation help the agent learn visual invariance without interfering with the task?
+        """
+
+        focus_areas_section = f"        VISUAL INVARIANCE LEARNING FOCUS ({app_name.title()}-Specific):\n"
+        for area in focus_areas:
+            focus_areas_section += f"        - {area}\n"
+
+        json_format = f"""
+        REQUIRED JSON FORMAT (exactly these fields):
+        {{
+            "should_apply": true/false,
+            "perturbation_type": "specific_type_based_on_app",
+            "target_app": "{app_name}",
+            "reasoning": "Brief explanation of why/why not to apply based on current context",
+            "generated_code": "RAW_{executor_info["language"].upper()}_CODE_WITHOUT_MARKDOWN",
+            "api_call": "{executor_info["name"]}",
+            "parameters": {{"target_app": "{app_name}"}}
+        }}
+        """
+
+        examples_section = f"        EXAMPLES ({app_name} visual invariance learning only):\n"
+        for example in examples:
+            examples_section += f"        - {example}\n"
+
+        return f"""
+        {current_state}
+
+        {scenario_spec}
+
+        {executor_info_section}
+
+        {decision_criteria}
+
+        {focus_areas_section}
+
+        {json_format}
+
+        {examples_section}
+        """
+
+    def _get_perturbation_app_config(self, app_name: str) -> Dict[str, Any]:
+        """Get app-specific configuration for perturbation decision prompts"""
+        configs = {
+            "browser": {
+                "executor": {
+                    "name": "execute_js_on_page",
+                    "language": "JavaScript",
+                    "description": "Background theme changes, non-intrusive UI modifications, content variations",
+                },
+                "focus_areas": [
+                    "Modify visual appearance of UI elements that affect screenshots",
+                    "Change colors, fonts, spacing, and styling that change visual perception",
+                    "Add visual elements that don't block functionality but change visual interface",
+                    "Modify visual layouts, positioning, and sizing of non-critical elements",
+                    "NEVER touch target forms, buttons, navigation, or main content areas",
+                ],
+                "examples": [
+                    "Visual theme changes: \"document.body.style.backgroundColor = '#f5f5f5'; document.querySelectorAll('header, footer').forEach(el => el.style.backgroundColor = '#e0e0e0');\"",
+                    "Visual element styling: \"document.querySelectorAll('button').forEach(btn => btn.style.backgroundColor = '#007bff'; btn.style.color = 'white');\"",
+                    "Visual layout changes: \"document.querySelectorAll('.sidebar, .aside').forEach(el => el.style.marginLeft = '20px');\"",
+                ],
+            },
+            "libreoffice_calc": {
+                "executor": {
+                    "name": "execute_uno_command",
+                    "language": "UNO Python",
+                    "description": "Spreadsheet visual styling, cell formatting, grid appearance, toolbar themes",
+                },
+                "focus_areas": [
+                    "Modify cell visual formatting (colors, fonts, borders) that affect screenshots",
+                    "Change grid visual styling (lines, colors, visibility) that change appearance",
+                    "Modify toolbar visual appearance (buttons, menus) that affect UI perception",
+                    "Change display visual settings (zoom, view options) that affect visual interface",
+                    "NEVER touch spreadsheet data, calculations, or formulas",
+                ],
+                "examples": [
+                    'Cell visual formatting: "doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); cell = sheet.getCellByPosition(0, 0); cell.CellBackColor = 0xF0F0F0;"',
+                    "Grid visual styling: \"doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowGrid', True);\"",
+                    "Toolbar visual changes: \"doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowFormulaBar', False);\"",
+                ],
+            },
+            "libreoffice_impress": {
+                "executor": {
+                    "name": "execute_uno_command",
+                    "language": "UNO Python",
+                    "description": "Presentation visual styling, slide layouts, theme changes, view modes",
+                },
+                "focus_areas": [
+                    "Modify slide visual layouts (backgrounds, themes) that affect screenshots",
+                    "Change view visual modes (zoom, slide sorter) that change appearance",
+                    "Modify toolbar visual appearance (buttons, menus) that affect UI perception",
+                    "Change presentation visual themes (colors, fonts) that affect visual interface",
+                    "NEVER touch slide content, text, or presentation structure",
+                ],
+                "examples": [
+                    "Slide visual layouts: \"doc = desktop.getCurrentComponent(); slide = doc.getDrawPages().getByIndex(0); slide.setPropertyValue('BackgroundColor', 0xF0F0F0);\"",
+                    "View visual modes: \"doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ZoomType', 0);\"",
+                    "Presentation visual themes: \"doc = desktop.getCurrentComponent(); slide = doc.getDrawPages().getByIndex(0); slide.setPropertyValue('BackgroundColor', 0xE0E0E0);\"",
+                ],
+            },
+            "libreoffice_writer": {
+                "executor": {
+                    "name": "execute_uno_command",
+                    "language": "UNO Python",
+                    "description": "Document visual styling, text formatting, page layouts, view modes",
+                },
+                "focus_areas": [
+                    "Modify text visual formatting (colors, fonts, styles) that affect screenshots",
+                    "Change page visual layouts (margins, headers, footers) that change appearance",
+                    "Modify view visual modes (zoom, ruler) that affect UI perception",
+                    "Change document visual themes (colors, fonts) that affect visual interface",
+                    "NEVER touch document content, text, or document structure",
+                ],
+                "examples": [
+                    "Text visual formatting: \"doc = desktop.getCurrentComponent(); text = doc.getText(); cursor = text.createTextCursor(); cursor.setPropertyValue('CharColor', 0x000000);\"",
+                    "Page visual layouts: \"doc = desktop.getCurrentComponent(); pageStyle = doc.getStyleFamilies().getByName('PageStyles').getByName('Standard'); pageStyle.setPropertyValue('HeaderIsOn', True);\"",
+                    "Document visual themes: \"doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowRuler', False);\"",
+                ],
+            },
+            "gimp": {
+                "executor": {
+                    "name": "execute_bash_command",
+                    "language": "bash",
+                    "description": "Desktop environment visual styling, system themes, background processes",
+                },
+                "focus_areas": [
+                    "Modify visual appearance that affects screenshots and UI perception",
+                    "Change colors, fonts, spacing that change visual appearance but not functionality",
+                    "Add visual elements that don't impact functionality but change visual interface",
+                    "NEVER interfere with main task image editing or file operations",
+                ],
+                "examples": [
+                    "Visual theme changes: \"gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'; gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark';\"",
+                    "Visual color changes: \"gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'; gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark';\"",
+                    "Visual font changes: \"gsettings set org.gnome.desktop.interface font-name 'Ubuntu 12'; gsettings set org.gnome.desktop.interface monospace-font-name 'Ubuntu Mono 12';\"",
+                ],
+            },
+            "file_manager": {
+                "executor": {
+                    "name": "execute_bash_command",
+                    "language": "bash",
+                    "description": "Desktop environment visual styling, system themes, background processes",
+                },
+                "focus_areas": [
+                    "Modify visual appearance that affects screenshots and UI perception",
+                    "Change colors, fonts, spacing that change visual appearance but not functionality",
+                    "Add visual elements that don't impact functionality but change visual interface",
+                    "NEVER interfere with main task file operations or directory navigation",
+                ],
+                "examples": [
+                    "Visual theme changes: \"gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'; gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark';\"",
+                    "Visual color changes: \"gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'; gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark';\"",
+                    "Visual font changes: \"gsettings set org.gnome.desktop.interface font-name 'Ubuntu 12'; gsettings set org.gnome.desktop.interface monospace-font-name 'Ubuntu Mono 12';\"",
+                ],
+            },
+            "terminal": {
+                "executor": {
+                    "name": "execute_bash_command",
+                    "language": "bash",
+                    "description": "Desktop environment visual styling, system themes, background processes",
+                },
+                "focus_areas": [
+                    "Focus on BACKGROUND desktop environment manipulation that won't interfere with the main task",
+                    "System notifications, background processes, desktop themes",
+                    "Window management of OTHER applications (not the main task)",
+                    "Background file operations, system settings changes",
+                ],
+                "examples": [
+                    "System notifications: \"notify-send 'Background Process' 'System update running'\"",
+                    "Desktop theme: \"gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'\"",
+                    'Background files: "mkdir -p /tmp/background_work && touch /tmp/background_work/process.log"',
+                ],
+            },
+            "vs_code": {
+                "executor": {
+                    "name": "execute_python_command",
+                    "language": "Python",
+                    "description": "VS Code environment visual styling, background files, window management",
+                },
+                "focus_areas": [
+                    "Focus on BACKGROUND VS Code environment manipulation that won't interfere with the main task",
+                    "Background file operations, temporary file creation",
+                    "Window management, panel resizing, sidebar toggling",
+                    "Settings modifications that don't affect the primary workflow",
+                ],
+                "examples": [
+                    "Background files: \"import os; os.makedirs('/tmp/vscode_temp', exist_ok=True); open('/tmp/vscode_temp/debug.log', 'w').write('Background process started')\"",
+                    "Window management: \"wmctrl -r 'Visual Studio Code' -e 0,0,0,1200,800\"",
+                    "Settings: \"import json; settings = {'workbench.colorTheme': 'Dark+'}; print(json.dumps(settings))\"",
+                ],
+            },
+            "system": {
+                "executor": {
+                    "name": "execute_python_command",
+                    "language": "Python",
+                    "description": "System automation, background processes, desktop environment modifications",
+                },
+                "focus_areas": [
+                    "Focus on BACKGROUND desktop environment manipulation that won't interfere with the main task",
+                    "System notifications, background processes",
+                    "Desktop theme changes, background settings",
+                    "Window management of OTHER applications (not the main task)",
+                ],
+                "examples": [
+                    "System notifications: \"import subprocess; subprocess.run(['notify-send', 'Background Process', 'System update running'])\"",
+                    "Background files: \"import os; os.makedirs('/tmp/background_work', exist_ok=True); open('/tmp/background_work/process.log', 'w').write('Background process started')\"",
+                    "Desktop settings: \"import subprocess; subprocess.run(['gsettings', 'set', 'org.gnome.desktop.interface', 'gtk-theme', 'Adwaita-dark'])\"",
+                ],
+            },
+        }
+        return configs.get(app_name, configs["browser"])  # Default to browser config
+
     def decide_perturbation(
         self, execution_context: ExecutionContext, scenario_spec: ScenarioSpec
     ) -> Dict[str, Any]:
@@ -724,8 +1155,12 @@ class PerturbationLLM(BaseLLM):
 
         if target_app == "browser":
             return self._decide_browser_perturbation(execution_context, scenario_spec)
-        elif target_app == "libreoffice":
-            return self._decide_libreoffice_perturbation(execution_context, scenario_spec)
+        elif target_app == "libreoffice_calc":
+            return self._decide_libreoffice_calc_perturbation(execution_context, scenario_spec)
+        elif target_app == "libreoffice_impress":
+            return self._decide_libreoffice_impress_perturbation(execution_context, scenario_spec)
+        elif target_app == "libreoffice_writer":
+            return self._decide_libreoffice_writer_perturbation(execution_context, scenario_spec)
         elif target_app in ["gimp", "image_editor"]:
             return self._decide_image_editor_perturbation(execution_context, scenario_spec)
         elif target_app in ["file_manager", "file_browser"]:
@@ -742,49 +1177,32 @@ class PerturbationLLM(BaseLLM):
     ) -> Dict[str, Any]:
         """Decide browser-specific perturbations using JavaScript"""
 
+        config = self._get_perturbation_app_config("browser")
+        common_sections = self._build_common_perturbation_prompt_sections(
+            "browser", config["executor"], config["focus_areas"], config["examples"]
+        )
+
         prompt = f"""
-        Decide whether to apply a browser perturbation during GUI task execution.
+        Decide whether to apply a sophisticated browser perturbation during GUI task execution.
 
-        CURRENT STATE:
-        - Step: {execution_context.step_idx}
-        - Action: {execution_context.current_action}
-        - Action History: {execution_context.action_history[-3:] if execution_context.action_history else []}
-        - CoT Context: {execution_context.cot_context}
-        - App States: {execution_context.app_states}
-        - Task: {execution_context.task_instruction}
-
-        SCENARIO SPEC:
-        - Target App: {scenario_spec.target_app}
-        - Trigger: {scenario_spec.perturbation_trigger}
-        - Available Actions: {scenario_spec.available_perturbation_actions}
-        - Learning Objectives: {scenario_spec.learning_objectives}
-        - Target Components: {scenario_spec.target_components}
-        - Perturbation Types: {[pt.value for pt in scenario_spec.perturbation_types]}
-
-        AVAILABLE EXECUTOR: execute_js_on_page(js_code: str)
-        - Input: Raw JavaScript code (NO markdown, NO ```, NO language tags)
-        - Use: Theme changes, UI injection, element modification, layout changes
-
-        DECISION CRITERIA:
-        1. Does the current step match the perturbation trigger?
-        2. Is the browser active or relevant to the current action?
-        3. What specific JavaScript perturbation should be applied?
-
-        REQUIRED JSON FORMAT (exactly these fields):
-        {{
-            "should_apply": true/false,
-            "perturbation_type": "theme_change" | "ui_injection" | "layout_change" | "element_modification",
-            "target_app": "browser",
-            "reasoning": "Brief explanation of why/why not to apply",
-            "generated_code": "RAW_JAVASCRIPT_CODE_WITHOUT_MARKDOWN",
-            "api_call": "execute_js_on_page",
-            "parameters": {{"target_app": "browser"}}
-        }}
-
-        EXAMPLES:
-        - Theme change: "document.body.style.backgroundColor = 'darkblue'; document.querySelector('button').style.color = 'white';"
-        - UI injection: "const newDiv = document.createElement('div'); newDiv.innerHTML = 'New Element'; document.body.appendChild(newDiv);"
-        - Layout change: "document.querySelector('.container').style.flexDirection = 'column';"
+        {
+            common_sections.format(
+                step_idx=execution_context.step_idx,
+                current_action=execution_context.current_action,
+                action_history=execution_context.action_history[-3:]
+                if execution_context.action_history
+                else [],
+                cot_context=execution_context.cot_context,
+                app_states=execution_context.app_states,
+                task_instruction=execution_context.task_instruction,
+                target_app=scenario_spec.target_app,
+                perturbation_trigger=scenario_spec.perturbation_trigger,
+                available_perturbation_actions=scenario_spec.available_perturbation_actions,
+                learning_objectives=scenario_spec.learning_objectives,
+                target_components=scenario_spec.target_components,
+                perturbation_types=[pt.value for pt in scenario_spec.perturbation_types],
+            )
+        }
 
         Return JSON object with exactly the required fields.
         """
@@ -792,54 +1210,113 @@ class PerturbationLLM(BaseLLM):
         response = self.call_llm(prompt)
         return self._validate_perturbation_decision(response)
 
-    def _decide_libreoffice_perturbation(
+    def _decide_libreoffice_calc_perturbation(
         self, execution_context: ExecutionContext, scenario_spec: ScenarioSpec
     ) -> Dict[str, Any]:
-        """Decide LibreOffice-specific perturbations using UNO commands"""
+        """Decide LibreOffice Calc-specific perturbations using UNO commands"""
+
+        config = self._get_perturbation_app_config("libreoffice_calc")
+        common_sections = self._build_common_perturbation_prompt_sections(
+            "libreoffice_calc", config["executor"], config["focus_areas"], config["examples"]
+        )
 
         prompt = f"""
-        Decide whether to apply a LibreOffice perturbation during GUI task execution.
+        Decide whether to apply a sophisticated LibreOffice Calc perturbation during GUI task execution.
 
-        CURRENT STATE:
-        - Step: {execution_context.step_idx}
-        - Action: {execution_context.current_action}
-        - Action History: {execution_context.action_history[-3:] if execution_context.action_history else []}
-        - CoT Context: {execution_context.cot_context}
-        - App States: {execution_context.app_states}
-        - Task: {execution_context.task_instruction}
+        {
+            common_sections.format(
+                step_idx=execution_context.step_idx,
+                current_action=execution_context.current_action,
+                action_history=execution_context.action_history[-3:]
+                if execution_context.action_history
+                else [],
+                cot_context=execution_context.cot_context,
+                app_states=execution_context.app_states,
+                task_instruction=execution_context.task_instruction,
+                target_app=scenario_spec.target_app,
+                perturbation_trigger=scenario_spec.perturbation_trigger,
+                available_perturbation_actions=scenario_spec.available_perturbation_actions,
+                learning_objectives=scenario_spec.learning_objectives,
+                target_components=scenario_spec.target_components,
+                perturbation_types=[pt.value for pt in scenario_spec.perturbation_types],
+            )
+        }
 
-        SCENARIO SPEC:
-        - Target App: {scenario_spec.target_app}
-        - Trigger: {scenario_spec.perturbation_trigger}
-        - Available Actions: {scenario_spec.available_perturbation_actions}
-        - Learning Objectives: {scenario_spec.learning_objectives}
-        - Target Components: {scenario_spec.target_components}
-        - Perturbation Types: {[pt.value for pt in scenario_spec.perturbation_types]}
+        Return JSON object with exactly the required fields.
+        """
 
-        AVAILABLE EXECUTOR: execute_uno_command(uno_code: str, parameters: Dict)
-        - Input: Raw UNO Python code (NO markdown, NO ```, NO language tags)
-        - Use: Spreadsheet operations, document changes, cell manipulation
+        response = self.call_llm(prompt)
+        return self._validate_perturbation_decision(response)
 
-        DECISION CRITERIA:
-        1. Does the current step match the perturbation trigger?
-        2. Is LibreOffice active or relevant to the current action?
-        3. What specific UNO perturbation should be applied?
+    def _decide_libreoffice_impress_perturbation(
+        self, execution_context: ExecutionContext, scenario_spec: ScenarioSpec
+    ) -> Dict[str, Any]:
+        """Decide LibreOffice Impress-specific perturbations using UNO commands"""
 
-        REQUIRED JSON FORMAT (exactly these fields):
-        {{
-            "should_apply": true/false,
-            "perturbation_type": "cell_manipulation" | "theme_change" | "layout_change" | "content_variation",
-            "target_app": "libreoffice",
-            "reasoning": "Brief explanation of why/why not to apply",
-            "generated_code": "RAW_UNO_PYTHON_CODE_WITHOUT_MARKDOWN",
-            "api_call": "execute_uno_command",
-            "parameters": {{"target_app": "libreoffice"}}
-        }}
+        config = self._get_perturbation_app_config("libreoffice_impress")
+        common_sections = self._build_common_perturbation_prompt_sections(
+            "libreoffice_impress", config["executor"], config["focus_areas"], config["examples"]
+        )
 
-        EXAMPLES:
-        - Cell manipulation: "doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); cell = sheet.getCellByPosition(0, 0); cell.setString('Hello');"
-        - Theme change: "doc = desktop.getCurrentComponent(); doc.getCurrentController().getViewSettings().setPropertyValue('ShowGrid', False);"
-        - Layout change: "doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); sheet.getColumns().getByIndex(0).setPropertyValue('Width', 2000);"
+        prompt = f"""
+        Decide whether to apply a sophisticated LibreOffice Impress perturbation during GUI task execution.
+
+        {
+            common_sections.format(
+                step_idx=execution_context.step_idx,
+                current_action=execution_context.current_action,
+                action_history=execution_context.action_history[-3:]
+                if execution_context.action_history
+                else [],
+                cot_context=execution_context.cot_context,
+                app_states=execution_context.app_states,
+                task_instruction=execution_context.task_instruction,
+                target_app=scenario_spec.target_app,
+                perturbation_trigger=scenario_spec.perturbation_trigger,
+                available_perturbation_actions=scenario_spec.available_perturbation_actions,
+                learning_objectives=scenario_spec.learning_objectives,
+                target_components=scenario_spec.target_components,
+                perturbation_types=[pt.value for pt in scenario_spec.perturbation_types],
+            )
+        }
+
+        Return JSON object with exactly the required fields.
+        """
+
+        response = self.call_llm(prompt)
+        return self._validate_perturbation_decision(response)
+
+    def _decide_libreoffice_writer_perturbation(
+        self, execution_context: ExecutionContext, scenario_spec: ScenarioSpec
+    ) -> Dict[str, Any]:
+        """Decide LibreOffice Writer-specific perturbations using UNO commands"""
+
+        config = self._get_perturbation_app_config("libreoffice_writer")
+        common_sections = self._build_common_perturbation_prompt_sections(
+            "libreoffice_writer", config["executor"], config["focus_areas"], config["examples"]
+        )
+
+        prompt = f"""
+        Decide whether to apply a sophisticated LibreOffice Writer perturbation during GUI task execution.
+
+        {
+            common_sections.format(
+                step_idx=execution_context.step_idx,
+                current_action=execution_context.current_action,
+                action_history=execution_context.action_history[-3:]
+                if execution_context.action_history
+                else [],
+                cot_context=execution_context.cot_context,
+                app_states=execution_context.app_states,
+                task_instruction=execution_context.task_instruction,
+                target_app=scenario_spec.target_app,
+                perturbation_trigger=scenario_spec.perturbation_trigger,
+                available_perturbation_actions=scenario_spec.available_perturbation_actions,
+                learning_objectives=scenario_spec.learning_objectives,
+                target_components=scenario_spec.target_components,
+                perturbation_types=[pt.value for pt in scenario_spec.perturbation_types],
+            )
+        }
 
         Return JSON object with exactly the required fields.
         """
@@ -852,49 +1329,32 @@ class PerturbationLLM(BaseLLM):
     ) -> Dict[str, Any]:
         """Decide image editor perturbations using bash commands and app state manipulation"""
 
+        config = self._get_perturbation_app_config("gimp")
+        common_sections = self._build_common_perturbation_prompt_sections(
+            "gimp", config["executor"], config["focus_areas"], config["examples"]
+        )
+
         prompt = f"""
         Decide whether to apply an image editor perturbation during GUI task execution.
 
-        CURRENT STATE:
-        - Step: {execution_context.step_idx}
-        - Action: {execution_context.current_action}
-        - Action History: {execution_context.action_history[-3:] if execution_context.action_history else []}
-        - CoT Context: {execution_context.cot_context}
-        - App States: {execution_context.app_states}
-        - Task: {execution_context.task_instruction}
-
-        SCENARIO SPEC:
-        - Target App: {scenario_spec.target_app}
-        - Trigger: {scenario_spec.perturbation_trigger}
-        - Available Actions: {scenario_spec.available_perturbation_actions}
-        - Learning Objectives: {scenario_spec.learning_objectives}
-        - Target Components: {scenario_spec.target_components}
-        - Perturbation Types: {[pt.value for pt in scenario_spec.perturbation_types]}
-
-        AVAILABLE EXECUTORS:
-        - execute_bash_command(command: str): Raw bash commands
-        - manipulate_app_state(parameters: Dict): App management
-
-        DECISION CRITERIA:
-        1. Does the current step match the perturbation trigger?
-        2. Is the image editor active or relevant to the current action?
-        3. What specific perturbation should be applied?
-
-        REQUIRED JSON FORMAT (exactly these fields):
-        {{
-            "should_apply": true/false,
-            "perturbation_type": "window_resize" | "app_switch" | "file_operation" | "layout_change",
-            "target_app": "gimp",
-            "reasoning": "Brief explanation of why/why not to apply",
-            "generated_code": "RAW_BASH_COMMAND_OR_EMPTY_FOR_APP_STATE",
-            "api_call": "execute_bash_command" | "manipulate_app_state",
-            "parameters": {{"target_app": "gimp", "operation": "resize_window", "width": 800, "height": 600}}
-        }}
-
-        EXAMPLES:
-        - Window resize: "wmctrl -r 'GIMP' -e 0,0,0,800,600"
-        - App switch: Use manipulate_app_state with {{"operation": "switch_to_app", "target_app": "gimp"}}
-        - File operations: "cp /path/to/image.jpg /tmp/backup.jpg"
+        {
+            common_sections.format(
+                step_idx=execution_context.step_idx,
+                current_action=execution_context.current_action,
+                action_history=execution_context.action_history[-3:]
+                if execution_context.action_history
+                else [],
+                cot_context=execution_context.cot_context,
+                app_states=execution_context.app_states,
+                task_instruction=execution_context.task_instruction,
+                target_app=scenario_spec.target_app,
+                perturbation_trigger=scenario_spec.perturbation_trigger,
+                available_perturbation_actions=scenario_spec.available_perturbation_actions,
+                learning_objectives=scenario_spec.learning_objectives,
+                target_components=scenario_spec.target_components,
+                perturbation_types=[pt.value for pt in scenario_spec.perturbation_types],
+            )
+        }
 
         Return JSON object with exactly the required fields.
         """
@@ -907,49 +1367,32 @@ class PerturbationLLM(BaseLLM):
     ) -> Dict[str, Any]:
         """Decide file manager perturbations using bash and Python commands"""
 
+        config = self._get_perturbation_app_config("file_manager")
+        common_sections = self._build_common_perturbation_prompt_sections(
+            "file_manager", config["executor"], config["focus_areas"], config["examples"]
+        )
+
         prompt = f"""
         Decide whether to apply a file manager perturbation during GUI task execution.
 
-        CURRENT STATE:
-        - Step: {execution_context.step_idx}
-        - Action: {execution_context.current_action}
-        - Action History: {execution_context.action_history[-3:] if execution_context.action_history else []}
-        - CoT Context: {execution_context.cot_context}
-        - App States: {execution_context.app_states}
-        - Task: {execution_context.task_instruction}
-
-        SCENARIO SPEC:
-        - Target App: {scenario_spec.target_app}
-        - Trigger: {scenario_spec.perturbation_trigger}
-        - Available Actions: {scenario_spec.available_perturbation_actions}
-        - Learning Objectives: {scenario_spec.learning_objectives}
-        - Target Components: {scenario_spec.target_components}
-        - Perturbation Types: {[pt.value for pt in scenario_spec.perturbation_types]}
-
-        AVAILABLE EXECUTORS:
-        - execute_bash_command(command: str): Raw bash commands
-        - execute_python_command(python_code: str): Python automation
-
-        DECISION CRITERIA:
-        1. Does the current step match the perturbation trigger?
-        2. Is the file manager active or relevant to the current action?
-        3. What specific perturbation should be applied?
-
-        REQUIRED JSON FORMAT (exactly these fields):
-        {{
-            "should_apply": true/false,
-            "perturbation_type": "file_operation" | "window_management" | "automation" | "layout_change",
-            "target_app": "file_manager",
-            "reasoning": "Brief explanation of why/why not to apply",
-            "generated_code": "RAW_BASH_OR_PYTHON_CODE_WITHOUT_MARKDOWN",
-            "api_call": "execute_bash_command" | "execute_python_command",
-            "parameters": {{"target_app": "file_manager"}}
-        }}
-
-        EXAMPLES:
-        - File operations: "mkdir -p /tmp/test_dir && touch /tmp/test_dir/file.txt"
-        - Python automation: "import os; os.makedirs('/tmp/python_dir', exist_ok=True)"
-        - Window management: "wmctrl -r 'Files' -e 0,0,0,1000,700"
+        {
+            common_sections.format(
+                step_idx=execution_context.step_idx,
+                current_action=execution_context.current_action,
+                action_history=execution_context.action_history[-3:]
+                if execution_context.action_history
+                else [],
+                cot_context=execution_context.cot_context,
+                app_states=execution_context.app_states,
+                task_instruction=execution_context.task_instruction,
+                target_app=scenario_spec.target_app,
+                perturbation_trigger=scenario_spec.perturbation_trigger,
+                available_perturbation_actions=scenario_spec.available_perturbation_actions,
+                learning_objectives=scenario_spec.learning_objectives,
+                target_components=scenario_spec.target_components,
+                perturbation_types=[pt.value for pt in scenario_spec.perturbation_types],
+            )
+        }
 
         Return JSON object with exactly the required fields.
         """
@@ -962,49 +1405,32 @@ class PerturbationLLM(BaseLLM):
     ) -> Dict[str, Any]:
         """Decide generic perturbations using Python commands"""
 
+        config = self._get_perturbation_app_config("system")
+        common_sections = self._build_common_perturbation_prompt_sections(
+            "system", config["executor"], config["focus_areas"], config["examples"]
+        )
+
         prompt = f"""
         Decide whether to apply a generic perturbation during GUI task execution.
 
-        CURRENT STATE:
-        - Step: {execution_context.step_idx}
-        - Action: {execution_context.current_action}
-        - Action History: {execution_context.action_history[-3:] if execution_context.action_history else []}
-        - CoT Context: {execution_context.cot_context}
-        - App States: {execution_context.app_states}
-        - Task: {execution_context.task_instruction}
-
-        SCENARIO SPEC:
-        - Target App: {scenario_spec.target_app}
-        - Trigger: {scenario_spec.perturbation_trigger}
-        - Available Actions: {scenario_spec.available_perturbation_actions}
-        - Learning Objectives: {scenario_spec.learning_objectives}
-        - Target Components: {scenario_spec.target_components}
-        - Perturbation Types: {[pt.value for pt in scenario_spec.perturbation_types]}
-
-        AVAILABLE EXECUTOR: execute_python_command(python_code: str)
-        - Input: Raw Python code (NO markdown, NO ```, NO language tags)
-        - Use: System automation, data processing, general manipulation
-
-        DECISION CRITERIA:
-        1. Does the current step match the perturbation trigger?
-        2. Is the target app active or relevant to the current action?
-        3. What specific Python perturbation should be applied?
-
-        REQUIRED JSON FORMAT (exactly these fields):
-        {{
-            "should_apply": true/false,
-            "perturbation_type": "system_automation" | "data_processing" | "window_management" | "general_manipulation",
-            "target_app": "{scenario_spec.target_app}",
-            "reasoning": "Brief explanation of why/why not to apply",
-            "generated_code": "RAW_PYTHON_CODE_WITHOUT_MARKDOWN",
-            "api_call": "execute_python_command",
-            "parameters": {{"target_app": "{scenario_spec.target_app}"}}
-        }}
-
-        EXAMPLES:
-        - System automation: "import subprocess; subprocess.run(['notify-send', 'Perturbation Applied'])"
-        - Data processing: "import json; data = {{'perturbation': 'applied'}}; print(json.dumps(data))"
-        - Window management: "import subprocess; subprocess.run(['wmctrl', '-a', 'Terminal'])"
+        {
+            common_sections.format(
+                step_idx=execution_context.step_idx,
+                current_action=execution_context.current_action,
+                action_history=execution_context.action_history[-3:]
+                if execution_context.action_history
+                else [],
+                cot_context=execution_context.cot_context,
+                app_states=execution_context.app_states,
+                task_instruction=execution_context.task_instruction,
+                target_app=scenario_spec.target_app,
+                perturbation_trigger=scenario_spec.perturbation_trigger,
+                available_perturbation_actions=scenario_spec.available_perturbation_actions,
+                learning_objectives=scenario_spec.learning_objectives,
+                target_components=scenario_spec.target_components,
+                perturbation_types=[pt.value for pt in scenario_spec.perturbation_types],
+            )
+        }
 
         Return JSON object with exactly the required fields.
         """
@@ -1017,56 +1443,32 @@ class PerturbationLLM(BaseLLM):
     ) -> Dict[str, Any]:
         """Decide terminal perturbations using bash and Python commands"""
 
+        config = self._get_perturbation_app_config("terminal")
+        common_sections = self._build_common_perturbation_prompt_sections(
+            "terminal", config["executor"], config["focus_areas"], config["examples"]
+        )
+
         prompt = f"""
         Decide whether to apply a terminal perturbation during GUI task execution.
 
-        CURRENT STATE:
-        - Step: {execution_context.step_idx}
-        - Action: {execution_context.current_action}
-        - Action History: {execution_context.action_history[-3:] if execution_context.action_history else []}
-        - CoT Context: {execution_context.cot_context}
-        - App States: {execution_context.app_states}
-        - Task: {execution_context.task_instruction}
-
-        SCENARIO SPEC:
-        - Target App: {scenario_spec.target_app}
-        - Trigger: {scenario_spec.perturbation_trigger}
-        - Available Actions: {scenario_spec.available_perturbation_actions}
-        - Learning Objectives: {scenario_spec.learning_objectives}
-        - Target Components: {scenario_spec.target_components}
-        - Perturbation Types: {[pt.value for pt in scenario_spec.perturbation_types]}
-
-        AVAILABLE EXECUTORS:
-        - execute_bash_command(command: str): Raw bash commands
-        - execute_python_command(python_code: str): Python automation
-
-        IMPORTANT: Focus on BACKGROUND desktop environment manipulation that won't interfere with the main task:
-        - System notifications, background processes, desktop themes
-        - Window management of OTHER applications (not the main task)
-        - Background file operations, system settings changes
-        - Desktop environment modifications that don't affect the primary workflow
-
-        DECISION CRITERIA:
-        1. Does the current step match the perturbation trigger?
-        2. Is the terminal active or relevant to the current action?
-        3. What specific background perturbation should be applied?
-
-        REQUIRED JSON FORMAT (exactly these fields):
-        {{
-            "should_apply": true/false,
-            "perturbation_type": "system_notification" | "background_process" | "desktop_theme" | "other_window_management",
-            "target_app": "terminal",
-            "reasoning": "Brief explanation of why/why not to apply",
-            "generated_code": "RAW_BASH_OR_PYTHON_CODE_WITHOUT_MARKDOWN",
-            "api_call": "execute_bash_command" | "execute_python_command",
-            "parameters": {{"target_app": "terminal"}}
-        }}
-
-        EXAMPLES (background manipulation only):
-        - System notifications: "notify-send 'Background Process' 'System update running'"
-        - Desktop theme: "gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'"
-        - Background files: "mkdir -p /tmp/background_work && touch /tmp/background_work/process.log"
-        - Other window management: "wmctrl -r 'Calculator' -e 0,100,100,300,200"
+        {
+            common_sections.format(
+                step_idx=execution_context.step_idx,
+                current_action=execution_context.current_action,
+                action_history=execution_context.action_history[-3:]
+                if execution_context.action_history
+                else [],
+                cot_context=execution_context.cot_context,
+                app_states=execution_context.app_states,
+                task_instruction=execution_context.task_instruction,
+                target_app=scenario_spec.target_app,
+                perturbation_trigger=scenario_spec.perturbation_trigger,
+                available_perturbation_actions=scenario_spec.available_perturbation_actions,
+                learning_objectives=scenario_spec.learning_objectives,
+                target_components=scenario_spec.target_components,
+                perturbation_types=[pt.value for pt in scenario_spec.perturbation_types],
+            )
+        }
 
         Return JSON object with exactly the required fields.
         """
@@ -1079,56 +1481,32 @@ class PerturbationLLM(BaseLLM):
     ) -> Dict[str, Any]:
         """Decide VS Code perturbations using Python automation and bash commands"""
 
+        config = self._get_perturbation_app_config("vs_code")
+        common_sections = self._build_common_perturbation_prompt_sections(
+            "vs_code", config["executor"], config["focus_areas"], config["examples"]
+        )
+
         prompt = f"""
         Decide whether to apply a VS Code perturbation during GUI task execution.
 
-        CURRENT STATE:
-        - Step: {execution_context.step_idx}
-        - Action: {execution_context.current_action}
-        - Action History: {execution_context.action_history[-3:] if execution_context.action_history else []}
-        - CoT Context: {execution_context.cot_context}
-        - App States: {execution_context.app_states}
-        - Task: {execution_context.task_instruction}
-
-        SCENARIO SPEC:
-        - Target App: {scenario_spec.target_app}
-        - Trigger: {scenario_spec.perturbation_trigger}
-        - Available Actions: {scenario_spec.available_perturbation_actions}
-        - Learning Objectives: {scenario_spec.learning_objectives}
-        - Target Components: {scenario_spec.target_components}
-        - Perturbation Types: {[pt.value for pt in scenario_spec.perturbation_types]}
-
-        AVAILABLE EXECUTORS:
-        - execute_python_command(python_code: str): Python automation
-        - execute_bash_command(command: str): Raw bash commands
-
-        IMPORTANT: Focus on BACKGROUND VS Code environment manipulation that won't interfere with the main task:
-        - Theme changes, extension settings, workspace configurations
-        - Background file operations, temporary file creation
-        - Window management, panel resizing, sidebar toggling
-        - Settings modifications that don't affect the primary workflow
-
-        DECISION CRITERIA:
-        1. Does the current step match the perturbation trigger?
-        2. Is VS Code active or relevant to the current action?
-        3. What specific background perturbation should be applied?
-
-        REQUIRED JSON FORMAT (exactly these fields):
-        {{
-            "should_apply": true/false,
-            "perturbation_type": "theme_change" | "background_files" | "window_management" | "settings_modification",
-            "target_app": "vs_code",
-            "reasoning": "Brief explanation of why/why not to apply",
-            "generated_code": "RAW_PYTHON_OR_BASH_CODE_WITHOUT_MARKDOWN",
-            "api_call": "execute_python_command" | "execute_bash_command",
-            "parameters": {{"target_app": "vs_code"}}
-        }}
-
-        EXAMPLES (background manipulation only):
-        - Theme change: "import subprocess; subprocess.run(['code', '--install-extension', 'theme-extension'])"
-        - Background files: "import os; os.makedirs('/tmp/vscode_temp', exist_ok=True)"
-        - Window management: "wmctrl -r 'Visual Studio Code' -e 0,0,0,1200,800"
-        - Settings: "import json; settings = {{'workbench.colorTheme': 'Dark+'}}; print(json.dumps(settings))"
+        {
+            common_sections.format(
+                step_idx=execution_context.step_idx,
+                current_action=execution_context.current_action,
+                action_history=execution_context.action_history[-3:]
+                if execution_context.action_history
+                else [],
+                cot_context=execution_context.cot_context,
+                app_states=execution_context.app_states,
+                task_instruction=execution_context.task_instruction,
+                target_app=scenario_spec.target_app,
+                perturbation_trigger=scenario_spec.perturbation_trigger,
+                available_perturbation_actions=scenario_spec.available_perturbation_actions,
+                learning_objectives=scenario_spec.learning_objectives,
+                target_components=scenario_spec.target_components,
+                perturbation_types=[pt.value for pt in scenario_spec.perturbation_types],
+            )
+        }
 
         Return JSON object with exactly the required fields.
         """

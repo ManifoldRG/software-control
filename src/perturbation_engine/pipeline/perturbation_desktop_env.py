@@ -149,9 +149,12 @@ class PerturbationDesktopEnv(DesktopEnv):
                 if not elements:
                     continue
 
+                app_type = self._detect_app_type_from_name(app_name)
+                if app_type == "unknown":
+                    continue
                 # Create app state for this application
                 app_state = {
-                    "app_type": self._detect_app_type_from_name(app_name),
+                    "app_type": app_type,
                     "current_view": self._detect_current_view(elements),
                     "key_elements": self._extract_key_elements_for_app(elements),
                     "task_context": f"Application: {app_name}",

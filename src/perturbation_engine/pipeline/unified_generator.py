@@ -18,6 +18,7 @@ from perturbation_engine.pipeline.perturbation_desktop_env import PerturbationDe
 from perturbation_engine.pipeline.quality_evaluator import QualityEvaluator
 from perturbation_engine.pipeline.shared_execution_engine import SharedExecutionEngine
 from perturbation_engine.pipeline.trajectory_generator import TrajectoryGenerator
+from perturbation_engine.utils.memory_utils import force_garbage_collection, log_memory_usage
 
 
 class UnifiedGenerator:
@@ -39,6 +40,7 @@ class UnifiedGenerator:
         """Generate trajectories using the complete pipeline"""
 
         self.logger.info(f"Starting trajectory generation for {seed_trajectory.task_id}")
+        log_memory_usage("Start of trajectory generation", self.logger)
 
         try:
             # Step 1: Extract environment state
@@ -64,6 +66,10 @@ class UnifiedGenerator:
             app_states = env.get_app_states_from_accessibility_tree()
             env.close()
             time.sleep(5)
+
+            # Force garbage collection after environment cleanup
+            force_garbage_collection(self.logger)
+            log_memory_usage("After environment cleanup", self.logger)
 
             if app_states == []:
                 self.logger.error("No app states found")
@@ -98,6 +104,10 @@ class UnifiedGenerator:
                     generated_trajectories[i] = trajectory
 
             self.logger.info(f"Generated {len(generated_trajectories)} trajectories")
+
+            # Final cleanup and memory check
+            force_garbage_collection(self.logger)
+            log_memory_usage("End of trajectory generation", self.logger)
             return generated_trajectories
 
         except Exception as e:

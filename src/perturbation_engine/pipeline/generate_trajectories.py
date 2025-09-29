@@ -19,6 +19,7 @@ from perturbation_engine.pipeline.data_models import (
     SeedTrajectory,
 )
 from perturbation_engine.pipeline.unified_generator import UnifiedGenerator
+from perturbation_engine.utils.memory_utils import force_garbage_collection, log_memory_usage
 
 # Global state for graceful shutdown
 active_environments = []
@@ -141,11 +142,13 @@ def main():
     # Configuration
     execution_config = ExecutionConfig(
         # VM/Provider settings
-        # path_to_vm="/Users/lockewang/FIG/OSWorld/vmware_vm_data/Ubuntu0/Ubuntu0.vmx",
+        # path_to_vm="~/FIG/OSWorld/vmware_vm_data/Ubuntu0/Ubuntu0.vmx",
         path_to_vm=None,
         provider_name="aws",
+        # provider_name="vmware",
         region=os.environ.get("AWS_REGION", "us-east-1"),
         snapshot_name=os.environ.get("AWS_SNAPSHOT_NAME", "chrome"),
+        # snapshot_name="chrome",
         # Environment settings
         headless=True,
         action_space="pyautogui",
@@ -164,12 +167,12 @@ def main():
     )
 
     curriculum_config = CurriculumConfig(
-        scenario_count=10,
+        scenario_count=1,
         num_parallel_vms=1,
         result_base_dir="./perturbation_results",
-        beginner_scenarios=3,
-        intermediate_scenarios=4,
-        advanced_scenarios=2,
+        beginner_scenarios=0,
+        intermediate_scenarios=1,
+        advanced_scenarios=0,
     )
 
     # Initialize unified generator
@@ -190,6 +193,9 @@ def main():
     for i, seed_trajectory in enumerate(seed_trajectories):
         logger.info(f"Processing seed trajectory {i + 1}/{len(seed_trajectories)}: {seed_trajectory.task_id}")
 
+        # Log memory usage before each trajectory
+        log_memory_usage(f"Before trajectory {i + 1}", logger, threshold_mb=3000)
+
         try:
             # Generate curriculum-based trajectories for this seed
             trajectory_results = generator.generate_trajectories(
@@ -198,6 +204,9 @@ def main():
             all_results.extend(trajectory_results)
 
             logger.info(f"Generated {len(trajectory_results)} trajectories for seed {i + 1}")
+
+            # Force garbage collection after each trajectory
+            force_garbage_collection(logger)
 
         except Exception as e:
             logger.error(f"Error processing seed trajectory {i + 1}: {e}")

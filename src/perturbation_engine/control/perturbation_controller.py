@@ -44,7 +44,7 @@ class PerturbationController(PythonController, SetupController):
     def execute_perturbation(
         self, perturbation_type: str, generated_code: str, api_call: str, parameters: Dict[str, Any]
     ) -> ManipulationResult:
-        """Execute perturbation using generated code"""
+        """Execute perturbation using generated code with sophisticated handling"""
         try:
             success = False
             result_data = {}
@@ -65,6 +65,11 @@ class PerturbationController(PythonController, SetupController):
             elif api_call == "manipulate_app_state":
                 success = self._manipulate_app_state(parameters)
                 result_data = {"api_call": api_call, "parameters": parameters}
+            elif api_call == "execute_system_perturbation":
+                # Handle sophisticated system-level perturbations
+                system_type = parameters.get("system_type", "desktop_theme")
+                success = self.execute_system_perturbation(system_type, parameters)
+                result_data = {"api_call": api_call, "system_type": system_type, "parameters": parameters}
             else:
                 self.logger.warning(f"Unknown API call: {api_call}")
                 success = False
@@ -108,12 +113,22 @@ class PerturbationController(PythonController, SetupController):
             return False
 
     def execute_bash_command(self, command: str) -> bool:
-        """Execute bash command"""
+        """Execute bash command with improved error handling"""
         try:
-            result = self.execute_python_command(
-                f"import subprocess; subprocess.run(['bash', '-c', '{command}'])"
-            )
-            return result.get("success", False)
+            # Clean up the command if it contains markdown
+            if "```" in command:
+                command = command.split("```")[1].removeprefix("bash").strip()
+
+                # Execute with proper error handling
+                result = self.execute_python_command(
+                    f"import subprocess; result = subprocess.run(['bash', '-c', '{command}'], capture_output=True, text=True); print(f'STDOUT: {{result.stdout}}'); print(f'STDERR: {{result.stderr}}'); print(f'Return code: {{result.returncode}}')"
+                )
+            success = result.get("success", False)
+            if success:
+                self.logger.info(f"Bash command executed: {command[:100]}...")
+            else:
+                self.logger.warning(f"Bash command failed: {command[:100]}...")
+            return success
         except Exception as e:
             self.logger.error(f"Error executing bash command: {e}")
             return False
@@ -263,6 +278,58 @@ except Exception as e:
             return result.get("success", False)
         except Exception as e:
             self.logger.error(f"Error closing app {app_name}: {e}")
+            return False
+
+    def execute_system_perturbation(self, perturbation_type: str, parameters: Dict[str, Any]) -> bool:
+        """Execute sophisticated system-level perturbations"""
+        try:
+            if perturbation_type == "desktop_theme":
+                theme = parameters.get("theme", "Adwaita-dark")
+                icon_theme = parameters.get("icon_theme", "Papirus-Dark")
+                commands = [
+                    f"gsettings set org.gnome.desktop.interface gtk-theme '{theme}'",
+                    f"gsettings set org.gnome.desktop.interface icon-theme '{icon_theme}'",
+                ]
+                for cmd in commands:
+                    self.execute_bash_command(cmd)
+                return True
+
+            elif perturbation_type == "desktop_wallpaper":
+                wallpaper = parameters.get("wallpaper", "/usr/share/backgrounds/gnome/adwaita-morning.jpg")
+                self.execute_bash_command(
+                    f"gsettings set org.gnome.desktop.background picture-uri 'file://{wallpaper}'"
+                )
+                return True
+
+            elif perturbation_type == "system_notification":
+                title = parameters.get("title", "Background Process")
+                message = parameters.get("message", "System update running")
+                self.execute_bash_command(f"notify-send '{title}' '{message}'")
+                return True
+
+            elif perturbation_type == "background_files":
+                base_dir = parameters.get("base_dir", "/tmp/background_work")
+                task_id = parameters.get("task_id", "unknown")
+                self.execute_bash_command(
+                    f"mkdir -p {base_dir}/{task_id} && touch {base_dir}/{task_id}/process.log"
+                )
+                return True
+
+            elif perturbation_type == "window_management":
+                app_name = parameters.get("app_name", "Calculator")
+                x = parameters.get("x", 100)
+                y = parameters.get("y", 100)
+                width = parameters.get("width", 300)
+                height = parameters.get("height", 200)
+                self.execute_bash_command(f"wmctrl -r '{app_name}' -e 0,{x},{y},{width},{height}")
+                return True
+
+            else:
+                self.logger.warning(f"Unknown system perturbation type: {perturbation_type}")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Error executing system perturbation: {e}")
             return False
 
     def _get_page(self) -> Optional[Page]:

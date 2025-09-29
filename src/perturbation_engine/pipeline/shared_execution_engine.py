@@ -16,6 +16,7 @@ from perturbation_engine.pipeline.data_models import (
 )
 from perturbation_engine.pipeline.perturbation_desktop_env import PerturbationDesktopEnv
 from perturbation_engine.pipeline.trajectory_generator import TrajectoryGenerator
+from perturbation_engine.utils.memory_utils import force_garbage_collection, log_memory_usage
 
 
 def run_vm_tasks_worker(execution_config: ExecutionConfig, scenario_queue: Queue, shared_results: list):
@@ -99,7 +100,7 @@ class ParallelExecutionEngine:
             # Initialize environment
             env = PerturbationDesktopEnv(
                 path_to_vm=self.config.path_to_vm,
-                # path_to_vm="/Users/lockewang/Virtual Machines.localized/Ubuntu1.vmwarevm/Ubuntu1.vmx",
+                # path_to_vm="~/Virtual Machines.localized/Ubuntu1.vmwarevm/Ubuntu1.vmx",
                 action_space=self.config.action_space,
                 provider_name=self.config.provider_name,
                 region=self.config.region,
@@ -157,5 +158,9 @@ class ParallelExecutionEngine:
                     self.logger.info(f"Environment closed for {current_process().name}")
                 except Exception as e:
                     self.logger.error(f"Error closing environment in {current_process().name}: {e}")
+
+            # Force garbage collection to free memory
+            force_garbage_collection(self.logger)
+            log_memory_usage(f"End of {current_process().name}", self.logger)
 
         self.logger.info(f"{current_process().name} finished")

@@ -22,6 +22,7 @@ from perturbation_engine.pipeline.data_models import (
 from perturbation_engine.pipeline.llm_services import PerturbationLLM
 from perturbation_engine.pipeline.perturbation_desktop_env import PerturbationDesktopEnv
 from perturbation_engine.pipeline.trajectory_replayer import TrajectoryReplayer
+from perturbation_engine.utils.memory_utils import force_garbage_collection, log_memory_usage
 
 
 class TrajectoryGenerator:
@@ -30,6 +31,11 @@ class TrajectoryGenerator:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         self.perturbation_llm = PerturbationLLM()
+        log_memory_usage("TrajectoryGenerator initialized", self.logger)
+
+    def _cleanup_resources(self):
+        """Clean up resources to prevent memory leaks"""
+        force_garbage_collection(self.logger)
 
     def _reset_environment_in_thread(self, env: PerturbationDesktopEnv, task_config: Dict[str, Any]) -> Any:
         """Reset environment in a separate thread to avoid asyncio loop conflicts with Playwright"""
@@ -153,6 +159,8 @@ class TrajectoryGenerator:
                         info,
                         obs,
                         perturbation_decision.get("should_apply", False),
+                        task_instruction=seed_trajectory.task_instruction,
+                        app_states=app_states,
                     )
 
                     if done:
@@ -166,7 +174,7 @@ class TrajectoryGenerator:
             generation_time = time.time() - start_time
 
             # Stop recording
-            env.controller.end_recording(f"trajectories/{trajectory_id}/recording.mp4")
+            env.controller.end_recording(f"/opt/manifold/results/{trajectory_id}/recording.mp4")
 
             # Create generated trajectory
             generated_trajectory = GeneratedTrajectory(
@@ -176,11 +184,14 @@ class TrajectoryGenerator:
                 success=result > 0,
                 quality_score=result,
                 generation_time=generation_time,
-                trajectory_file_path=f"trajectories/{trajectory_id}.jsonl",
+                trajectory_file_path=f"/opt/manifold/results/{trajectory_id}.jsonl",
                 perturbation_log=perturbation_log,
             )
 
             self.logger.info(f"Trajectory {trajectory_id} completed: success={result > 0}, score={result}")
+
+            # Clean up resources after trajectory completion
+            self._cleanup_resources()
             return generated_trajectory
 
         except Exception as e:
@@ -231,39 +242,50 @@ class TrajectoryGenerator:
         info: Dict[str, Any],
         obs: Dict[str, Any],
         perturbation_applied: bool,
+        task_instruction: str = "",
+        app_states: list = None,
     ):
-        """Save individual trajectory step data"""
+        """Save individual trajectory step data with full screenshot and metadata"""
         try:
             # Create trajectory directory
-            trajectory_dir = f"trajectories/{trajectory_id}"
+            trajectory_dir = f"/opt/manifold/results/{trajectory_id}"
             os.makedirs(trajectory_dir, exist_ok=True)
 
-            # Save screenshot
-            if "screenshot" in obs:
-                with open(os.path.join(trajectory_dir, f"step_{step_num}_{timestamp}.png"), "wb") as f:
+            # Always save screenshot (user requested)
+            screenshot_saved = False
+            if "screenshot" in obs and obs["screenshot"] is not None:
+                screenshot_path = os.path.join(trajectory_dir, f"step_{step_num}_{timestamp}.png")
+                with open(screenshot_path, "wb") as f:
                     f.write(obs["screenshot"])
+                screenshot_saved = True
+                self.logger.debug(f"Saved screenshot: {screenshot_path}")
 
-            # Save trajectory data
+            # Save trajectory data with full information
+            trajectory_data = {
+                "step_num": step_num,
+                "action_timestamp": timestamp,
+                "action": action,  # Keep original action format
+                "reward": reward,
+                "done": done,
+                "perturbation_applied": perturbation_applied,
+            }
+
+            if info:
+                trajectory_data["info"] = info
+
+            if response:
+                trajectory_data["response"] = response
+
+            if task_instruction:
+                trajectory_data["task_instruction"] = task_instruction
+            if app_states:
+                trajectory_data["app_states"] = app_states
+
+            if screenshot_saved:
+                trajectory_data["screenshot_file"] = f"step_{step_num}_{timestamp}.png"
+
             with open(os.path.join(trajectory_dir, "traj.jsonl"), "a") as f:
-                if step_num == 1:
-                    f.write(json.dumps({"task_instruction": info.get("task_instruction", "")}))
-                    f.write("\n")
-
-                f.write(
-                    json.dumps(
-                        {
-                            "step_num": step_num,
-                            "action_timestamp": timestamp,
-                            "action": action,
-                            "response": response,
-                            "reward": reward,
-                            "done": done,
-                            "info": info,
-                            "screenshot_file": f"step_{step_num}_{timestamp}.png",
-                            "perturbation_applied": perturbation_applied,
-                        }
-                    )
-                )
+                f.write(json.dumps(trajectory_data))
                 f.write("\n")
 
         except Exception as e:
