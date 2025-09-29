@@ -18,6 +18,7 @@ from perturbation_engine.pipeline.data_models import (
     SeedTrajectory,
 )
 from perturbation_engine.pipeline.llm_services import PerturbationLLM
+from perturbation_engine.pipeline.perturbation_desktop_env import PerturbationDesktopEnv
 from perturbation_engine.pipeline.trajectory_replayer import TrajectoryReplayer
 
 
@@ -29,7 +30,7 @@ class TrajectoryGenerator:
         self.perturbation_llm = PerturbationLLM()
 
     def execute_trajectory(
-        self, env, seed_trajectory: SeedTrajectory, scenario_spec: ScenarioSpec, max_steps: int = 15
+        self, env: PerturbationDesktopEnv, seed_trajectory: SeedTrajectory, scenario_spec: ScenarioSpec, max_steps: int = 15
     ) -> GeneratedTrajectory:
         """Execute trajectory with runtime perturbation"""
 
@@ -124,7 +125,7 @@ class TrajectoryGenerator:
             generation_time = time.time() - start_time
 
             # Stop recording
-            env.controller.stop_recording()
+            env.controller.end_recording(f"trajectories/{trajectory_id}/recording.mp4")
 
             # Create generated trajectory
             generated_trajectory = GeneratedTrajectory(

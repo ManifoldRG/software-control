@@ -89,7 +89,7 @@ class SeedTrajectory:
     gt_actions: Optional[List[Dict[str, Any]]] = None
 
 
-@dataclass(frozen=True)
+@dataclass
 class GeneratedTrajectory:
     """Output trajectory + quality score - immutable result"""
 

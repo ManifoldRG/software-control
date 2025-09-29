@@ -94,7 +94,7 @@ class UnifiedGenerator:
                         trajectory, scenario_specs[i]
                     )
                     # Update trajectory with quality score
-                    trajectory = trajectory._replace(quality_score=quality_score)
+                    trajectory.quality_score = quality_score
                     generated_trajectories[i] = trajectory
 
             self.logger.info(f"Generated {len(generated_trajectories)} trajectories")

@@ -98,8 +98,8 @@ class ParallelExecutionEngine:
         try:
             # Initialize environment
             env = PerturbationDesktopEnv(
-                # path_to_vm=self.config.path_to_vm,
-                path_to_vm="/Users/lockewang/Virtual Machines.localized/Ubuntu1.vmwarevm/Ubuntu1.vmx",
+                path_to_vm=self.config.path_to_vm,
+                # path_to_vm="/Users/lockewang/Virtual Machines.localized/Ubuntu1.vmwarevm/Ubuntu1.vmx",
                 action_space=self.config.action_space,
                 provider_name=self.config.provider_name,
                 region=self.config.region,
