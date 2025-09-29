@@ -3,10 +3,12 @@ TrajectoryGenerator: Single trajectory execution
 Seed + spec → perturbed trajectory
 """
 
+import asyncio
 import datetime
 import json
 import logging
 import os
+import threading
 import time
 from typing import Any, Dict
 
@@ -29,8 +31,47 @@ class TrajectoryGenerator:
         self.logger = logging.getLogger(__name__)
         self.perturbation_llm = PerturbationLLM()
 
+    def _reset_environment_in_thread(self, env: PerturbationDesktopEnv, task_config: Dict[str, Any]) -> Any:
+        """Reset environment in a separate thread to avoid asyncio loop conflicts with Playwright"""
+
+        def reset_worker():
+            try:
+                # Create a new event loop for this thread
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    return env.reset(task_config=task_config)
+                finally:
+                    loop.close()
+            except Exception as e:
+                self.logger.error(f"Error in environment reset thread: {e}")
+                raise
+
+        # Run the reset in a separate thread
+        result_container = {}
+        exception_container = {}
+
+        def thread_worker():
+            try:
+                result_container["result"] = reset_worker()
+            except Exception as e:
+                exception_container["exception"] = e
+
+        thread = threading.Thread(target=thread_worker)
+        thread.start()
+        thread.join()
+
+        if "exception" in exception_container:
+            raise exception_container["exception"]
+
+        return result_container["result"]
+
     def execute_trajectory(
-        self, env: PerturbationDesktopEnv, seed_trajectory: SeedTrajectory, scenario_spec: ScenarioSpec, max_steps: int = 15
+        self,
+        env: PerturbationDesktopEnv,
+        seed_trajectory: SeedTrajectory,
+        scenario_spec: ScenarioSpec,
+        max_steps: int = 15,
     ) -> GeneratedTrajectory:
         """Execute trajectory with runtime perturbation"""
 
@@ -43,8 +84,8 @@ class TrajectoryGenerator:
             trajectory_replayer = TrajectoryReplayer()
             trajectory_replayer.load_trajectory(seed_trajectory.gt_actions_file_path)
 
-            # Reset environment
-            env.reset(task_config=seed_trajectory.config)
+            # Reset environment in separate thread to avoid asyncio loop conflicts
+            self._reset_environment_in_thread(env, seed_trajectory.config)
             env.controller.start_recording()
 
             # Initialize execution state
