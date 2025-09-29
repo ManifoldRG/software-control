@@ -18,6 +18,12 @@ from perturbation_engine.pipeline.perturbation_desktop_env import PerturbationDe
 from perturbation_engine.pipeline.trajectory_generator import TrajectoryGenerator
 
 
+def run_vm_tasks_worker(execution_config: ExecutionConfig, scenario_queue: Queue, shared_results: list):
+    """Worker function for parallel execution - creates objects in subprocess to avoid pickle issues"""
+    execution_engine = ParallelExecutionEngine(execution_config)
+    execution_engine.run_vm_tasks(scenario_queue, shared_results)
+
+
 class SharedExecutionEngine:
     """Parallel VM execution manager"""
 
@@ -43,12 +49,9 @@ class SharedExecutionEngine:
             # Start parallel processes
             processes = []
             for i in range(num_parallel_vms):
-                # TODO: initializie env here per process and reset it in the parallel execution engine
-
-                execution_engine = ParallelExecutionEngine(self.execution_config)
                 p = Process(
-                    target=execution_engine.run_vm_tasks,
-                    args=(scenario_queue, shared_results),
+                    target=run_vm_tasks_worker,
+                    args=(self.execution_config, scenario_queue, shared_results),
                     name=f"ExecutionProcess-{i + 1}",
                 )
                 p.daemon = True
@@ -86,15 +89,17 @@ class ParallelExecutionEngine:
     def __init__(self, config: ExecutionConfig):
         self.config = config
         self.logger = logging.getLogger(__name__)
-        self.trajectory_generator = TrajectoryGenerator()
 
     def run_vm_tasks(self, scenario_queue: Queue, shared_results: list):
         """Run trajectory generation scenarios in a single VM process"""
+        # Initialize trajectory generator in subprocess to avoid pickle issues
+        trajectory_generator = TrajectoryGenerator()
         env = None
         try:
             # Initialize environment
             env = PerturbationDesktopEnv(
-                path_to_vm=self.config.path_to_vm,
+                # path_to_vm=self.config.path_to_vm,
+                path_to_vm="/Users/lockewang/Virtual Machines.localized/Ubuntu1.vmwarevm/Ubuntu1.vmx",
                 action_space=self.config.action_space,
                 provider_name=self.config.provider_name,
                 region=self.config.region,
@@ -119,7 +124,7 @@ class ParallelExecutionEngine:
 
                 try:
                     # Execute trajectory with scenario
-                    result = self.trajectory_generator.execute_trajectory(
+                    result = trajectory_generator.execute_trajectory(
                         env, seed_trajectory, scenario_spec, self.config.max_steps
                     )
                     shared_results.append(result)

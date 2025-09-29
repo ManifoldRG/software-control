@@ -4,6 +4,7 @@ Clean interface for the entire pipeline
 """
 
 import logging
+import time
 from typing import List
 
 from perturbation_engine.pipeline.curriculum_planner import CurriculumPlanner
@@ -61,9 +62,8 @@ class UnifiedGenerator:
 
             env.reset(task_config=seed_trajectory.config)
             app_states = env.get_app_states_from_accessibility_tree()
-            # gracefully shutdown the environment, make sure all applications in the environment are closed
-            env._revert_to_snapshot()
             env.close()
+            time.sleep(5)
 
             if app_states == []:
                 self.logger.error("No app states found")
@@ -77,6 +77,10 @@ class UnifiedGenerator:
             if not scenario_specs:
                 self.logger.error("No scenario specs generated")
                 return []
+
+            # Wait for main process VM to fully clean up before starting parallel processes
+            self.logger.info("Waiting for main process VM cleanup to complete")
+            time.sleep(10)  # Give extra time for VM cleanup
 
             # Step 3: Execute scenarios in parallel
             generated_trajectories = self.shared_execution_engine.execute_scenarios_parallel(
