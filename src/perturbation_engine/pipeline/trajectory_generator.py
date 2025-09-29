@@ -10,14 +10,15 @@ import os
 import time
 from typing import Any, Dict
 
-from perturbation_engine.control_refactored.perturbation_controller import PerturbationController
-from perturbation_engine.pipeline_refactored.data_models import (
+from perturbation_engine.control.perturbation_controller import PerturbationController
+from perturbation_engine.pipeline.data_models import (
     ExecutionContext,
     GeneratedTrajectory,
     ScenarioSpec,
     SeedTrajectory,
 )
-from perturbation_engine.pipeline_refactored.llm_services import PerturbationLLM
+from perturbation_engine.pipeline.llm_services import PerturbationLLM
+from perturbation_engine.pipeline.trajectory_replayer import TrajectoryReplayer
 
 
 class TrajectoryGenerator:
@@ -38,9 +39,6 @@ class TrajectoryGenerator:
         self.logger.info(f"Executing trajectory {trajectory_id}")
 
         try:
-            # Initialize trajectory replayer
-            from perturbation_engine.pipeline_refactored.trajectory_replayer import TrajectoryReplayer
-
             trajectory_replayer = TrajectoryReplayer()
             trajectory_replayer.load_trajectory(seed_trajectory.gt_actions_file_path)
 

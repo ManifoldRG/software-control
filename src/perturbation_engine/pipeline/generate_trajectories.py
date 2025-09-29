@@ -13,12 +13,12 @@ from typing import List
 from dotenv import load_dotenv
 
 from perturbation_engine.configure_logging import configure_logging
-from perturbation_engine.pipeline_refactored.data_models import (
+from perturbation_engine.pipeline.data_models import (
     CurriculumConfig,
     ExecutionConfig,
     SeedTrajectory,
 )
-from perturbation_engine.pipeline_refactored.unified_generator import UnifiedGenerator
+from perturbation_engine.pipeline.unified_generator import UnifiedGenerator
 
 # Global state for graceful shutdown
 active_environments = []

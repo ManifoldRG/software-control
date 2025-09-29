@@ -15,6 +15,10 @@ class PerturbationType(Enum):
     LAYOUT = "layout"
     CONTENT_VARIATION = "content_variation"
     UI_INJECTION = "ui_injection"
+    NOTIFICATION = "notification"
+    BACKGROUND_PROCESS = "background_process"
+    WINDOW_MANAGEMENT = "window_management"
+    FILE_OPERATIONS = "file_operations"
 
 
 @dataclass(frozen=True)

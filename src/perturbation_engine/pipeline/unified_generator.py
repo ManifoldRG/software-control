@@ -6,17 +6,17 @@ Clean interface for the entire pipeline
 import logging
 from typing import List
 
-from perturbation_engine.pipeline_refactored.curriculum_planner import CurriculumPlanner
-from perturbation_engine.pipeline_refactored.data_models import (
+from perturbation_engine.pipeline.curriculum_planner import CurriculumPlanner
+from perturbation_engine.pipeline.data_models import (
     CurriculumConfig,
     ExecutionConfig,
     GeneratedTrajectory,
     SeedTrajectory,
 )
-from perturbation_engine.pipeline_refactored.perturbation_desktop_env import PerturbationDesktopEnv
-from perturbation_engine.pipeline_refactored.quality_evaluator import QualityEvaluator
-from perturbation_engine.pipeline_refactored.shared_execution_engine import SharedExecutionEngine
-from perturbation_engine.pipeline_refactored.trajectory_generator import TrajectoryGenerator
+from perturbation_engine.pipeline.perturbation_desktop_env import PerturbationDesktopEnv
+from perturbation_engine.pipeline.quality_evaluator import QualityEvaluator
+from perturbation_engine.pipeline.shared_execution_engine import SharedExecutionEngine
+from perturbation_engine.pipeline.trajectory_generator import TrajectoryGenerator
 
 
 class UnifiedGenerator:

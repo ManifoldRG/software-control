@@ -133,26 +133,72 @@ class PerturbationController(PythonController, SetupController):
             if "```" in uno_code:
                 uno_code = uno_code.split("```")[1].removeprefix("python").strip()
 
-            # Execute UNO code via Python
+            # Execute UNO code via Python with robust LibreOffice connection
             python_wrapper = f"""
 import uno
 import unohelper
+import subprocess
+import time
 from com.sun.star.uno import RuntimeException
 
+def identify_document_type(component):
+    if component.supportsService("com.sun.star.sheet.SpreadsheetDocument"):
+        return "Calc"
+    if component.supportsService("com.sun.star.text.TextDocument"):
+        return "Writer"
+    if component.supportsService("com.sun.star.sheet.PresentationDocument"):
+        return "Impress"
+    return None
+
 try:
+    # Clean up previous TCP connections
+    subprocess.run(
+        'echo "osworld-public-evaluation" | sudo -S ss --kill --tcp state TIME-WAIT sport = :2002',
+        shell=True,
+        check=False,
+        text=True,
+        capture_output=True
+    )
+
+    # Start LibreOffice headless
+    soffice_process = subprocess.Popen([
+        "soffice",
+        "--headless",
+        "--invisible",
+        "--accept=socket,host=localhost,port=2002;urp;StarOffice.Service"
+    ])
+
+    # Wait for LibreOffice to start
+    time.sleep(3)
+
     # Get LibreOffice context
     localContext = uno.getComponentContext()
-    resolver = localContext.ServiceManager.createInstanceWithContext("com.sun.star.bridge.UnoUrlResolver", localContext)
-    ctx = resolver.resolve("uno:socket,host=localhost,port=2083;urp;StarOffice.ComponentContext")
-    smgr = ctx.ServiceManager
-    desktop = smgr.createInstanceWithContext("com.sun.star.frame.Desktop", ctx)
+    resolver = localContext.ServiceManager.createInstanceWithContext(
+        "com.sun.star.bridge.UnoUrlResolver", localContext
+    )
+    context = resolver.resolve(
+        "uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext"
+    )
+    desktop = context.ServiceManager.createInstanceWithContext(
+        "com.sun.star.frame.Desktop", context
+    )
 
     # Execute the UNO code
     {uno_code}
 
     print("UNO command executed successfully")
+
+    # Clean up
+    soffice_process.terminate()
+    soffice_process.wait()
+
 except Exception as e:
     print(f"UNO command failed: {{e}}")
+    try:
+        soffice_process.terminate()
+        soffice_process.wait()
+    except:
+        pass
     raise
 """
 

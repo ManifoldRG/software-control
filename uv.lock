@@ -3332,6 +3332,7 @@ name = "software-control"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "dotenv" },
     { name = "playwright" },
 ]
 
@@ -3415,7 +3416,10 @@ osworld = [
 ]
 
 [package.metadata]
-requires-dist = [{ name = "playwright", specifier = ">=1.54.0" }]
+requires-dist = [
+    { name = "dotenv", specifier = ">=0.9.9" },
+    { name = "playwright", specifier = ">=1.54.0" },
+]
 
 [package.metadata.requires-dev]
 dev = [

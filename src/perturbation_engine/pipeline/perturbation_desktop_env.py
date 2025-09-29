@@ -10,7 +10,7 @@ from enum import Enum
 from typing import Any, Dict, List, Tuple
 
 from OSWorld.desktop_env.desktop_env import DesktopEnv
-from perturbation_engine.control_refactored.perturbation_controller import PerturbationController
+from perturbation_engine.control.perturbation_controller import PerturbationController
 
 
 class AppType(Enum):

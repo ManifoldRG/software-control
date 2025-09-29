@@ -8,14 +8,14 @@ import time
 from multiprocessing import Manager, Process, Queue, current_process
 from typing import List
 
-from perturbation_engine.pipeline_refactored.data_models import (
+from perturbation_engine.pipeline.data_models import (
     ExecutionConfig,
     GeneratedTrajectory,
     ScenarioSpec,
     SeedTrajectory,
 )
-from perturbation_engine.pipeline_refactored.perturbation_desktop_env import PerturbationDesktopEnv
-from perturbation_engine.pipeline_refactored.trajectory_generator import TrajectoryGenerator
+from perturbation_engine.pipeline.perturbation_desktop_env import PerturbationDesktopEnv
+from perturbation_engine.pipeline.trajectory_generator import TrajectoryGenerator
 
 
 class SharedExecutionEngine:
@@ -43,6 +43,8 @@ class SharedExecutionEngine:
             # Start parallel processes
             processes = []
             for i in range(num_parallel_vms):
+                # TODO: initializie env here per process and reset it in the parallel execution engine
+
                 execution_engine = ParallelExecutionEngine(self.execution_config)
                 p = Process(
                     target=execution_engine.run_vm_tasks,

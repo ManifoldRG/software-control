@@ -6,12 +6,12 @@ Clean interface for curriculum generation
 import logging
 from typing import Any, Dict, List
 
-from perturbation_engine.pipeline_refactored.data_models import (
+from perturbation_engine.pipeline.data_models import (
     CurriculumConfig,
     ScenarioSpec,
     SeedTrajectory,
 )
-from perturbation_engine.pipeline_refactored.llm_services import CurriculumLLM
+from perturbation_engine.pipeline.llm_services import CurriculumLLM
 
 
 class CurriculumPlanner:

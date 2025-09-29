@@ -6,14 +6,13 @@ Following single responsibility principle
 import json
 import logging
 import os
-import re
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List
 
 from google import genai
 from google.genai import types
 
-from perturbation_engine.pipeline_refactored.data_models import (
+from perturbation_engine.pipeline.data_models import (
     CurriculumConfig,
     ExecutionContext,
     GeneratedTrajectory,
@@ -26,7 +25,7 @@ from perturbation_engine.pipeline_refactored.data_models import (
 class BaseLLM(ABC):
     """Base class for all LLM components"""
 
-    def __init__(self, model_name: str = "gemini-1.5-flash-8b"):
+    def __init__(self, model_name: str = "gemini-2.0-flash-lite"):
         self.model_name = model_name
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.api_key = os.getenv("GEMINI_API_KEY")
@@ -62,39 +61,29 @@ class BaseLLM(ABC):
         """Get mock response when API is not available"""
         return '{"error": "Mock response - API not available"}'
 
-    def extract_json(self, response: str) -> Dict[str, Any]:
+    def extract_json(self, response: str) -> List[Dict[str, Any]]:
         """
         Extract JSON from LLM response with robust parsing.
         Handles various formats: code blocks, plain JSON, mixed content.
         """
+        self.logger.debug(f"extract_json called with response length: {len(response)}")
+        self.logger.debug(f"extract_json response preview: {response[:300]}...")
+
         try:
-            # Strategy 3: Find JSON-like structures using regex
-            # Look for objects or arrays that span multiple lines
-            patterns = [
-                r"\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}",  # Nested objects
-                r"\[[^\[\]]*(?:\[[^\[\]]*\][^\[\]]*)*\]",  # Nested arrays
-                r"\{.*?\}",  # Simple objects (non-greedy)
-                r"\[.*?\]",  # Simple arrays (non-greedy)
-            ]
-
-            for pattern in patterns:
-                matches = re.findall(pattern, response, re.DOTALL)
-                for match in matches:
-                    try:
-                        result = json.loads(match.strip())
-                        # Return the first valid JSON found
-                        if result:  # Don't return empty objects/arrays
-                            return result
-                    except json.JSONDecodeError:
-                        continue
-
-            # Strategy 4: Character-by-character parsing for complex cases
+            # Use character-by-character parsing to find complete JSON structures
+            # This avoids the overlapping regex pattern issue
+            results = []
             json_chars = {"{", "["}
-            for i, char in enumerate(response):
-                if char in json_chars:
+            processed_positions = set()  # Track processed positions to avoid duplicates
+
+            i = 0
+            while i < len(response):
+                char = response[i]
+                if char in json_chars and i not in processed_positions:
                     # Find matching closing bracket/brace
                     bracket_count = 0
                     closing_char = "}" if char == "{" else "]"
+                    start_pos = i
 
                     for j in range(i, len(response)):
                         if response[j] == char:
@@ -102,17 +91,75 @@ class BaseLLM(ABC):
                         elif response[j] == closing_char:
                             bracket_count -= 1
                             if bracket_count == 0:
+                                # Found complete JSON structure
                                 try:
-                                    return json.loads(response[i : j + 1])
-                                except json.JSONDecodeError:
-                                    break
+                                    json_str = response[start_pos : j + 1].strip()
+                                    parsed = json.loads(json_str)
+                                    self.logger.debug(
+                                        f"Found complete JSON at position {start_pos}-{j}: {type(parsed)}"
+                                    )
 
-            self.logger.error("No valid JSON found in LLM response")
-            return {}
+                                    # Add to results if it's valid
+                                    if isinstance(parsed, list) and len(parsed) > 0:
+                                        self.logger.debug(f"Found array with {len(parsed)} items")
+                                        results.append(parsed)
+                                        # Mark all positions in this range as processed
+                                        for pos in range(start_pos, j + 1):
+                                            processed_positions.add(pos)
+                                        # If we found an array, we're done (prioritize arrays)
+                                        break
+                                    elif isinstance(parsed, dict) and parsed:
+                                        self.logger.debug("Found object")
+                                        results.append(parsed)
+                                        # Mark all positions in this range as processed
+                                        for pos in range(start_pos, j + 1):
+                                            processed_positions.add(pos)
 
+                                except json.JSONDecodeError as e:
+                                    self.logger.debug(f"JSON decode error at position {start_pos}-{j}: {e}")
+
+                                # Move past this JSON structure
+                                i = j + 1
+                                break
+                    else:
+                        # No matching closing bracket found, move to next character
+                        i += 1
+                else:
+                    i += 1
+            if len(results) == 0:
+                self.logger.error("No valid JSON found in LLM response")
+                return []
+
+            self.logger.debug(f"extract_json returning {len(results)} results")
+            self.logger.debug(f"extract_json result types: {[type(r) for r in results]}")
+
+            # Prioritize arrays over individual objects
+            # If we found an array, use only that (it should contain all the scenario objects)
+            array_results = [r for r in results if isinstance(r, list)]
+            if array_results:
+                self.logger.debug(f"Found {len(array_results)} arrays, using the first one")
+                primary_array = array_results[0]
+                self.logger.debug(f"Primary array has {len(primary_array)} items")
+
+                # Extract individual dictionaries from the array
+                flattened_results = []
+                for item in primary_array:
+                    if isinstance(item, dict):
+                        flattened_results.append(item)
+                    else:
+                        self.logger.debug(f"Skipping non-dict item in array: {type(item)}")
+
+                self.logger.debug(f"extract_json final flattened results: {len(flattened_results)} items")
+                return flattened_results
+            else:
+                # No array found, use individual objects
+                self.logger.debug("No arrays found, using individual objects")
+                object_results = [r for r in results if isinstance(r, dict)]
+                self.logger.debug(f"extract_json final object results: {len(object_results)} items")
+                return object_results
         except Exception as e:
             self.logger.error(f"Unexpected error during JSON extraction: {e}")
-            return {}
+            return []
 
 
 class CurriculumLLM(BaseLLM):
@@ -131,8 +178,41 @@ class CurriculumLLM(BaseLLM):
         total_scenarios = curriculum_config.scenario_count
 
         # Distribute scenarios across app types
+        # save inputs to file for faster debugging iterations
+        # debug_inputs = []
+        # for app_state in app_states:
+        #     app_type = app_state.get("app_type", "unknown")
+        #     if app_type != "unknown":
+        #         seed_trajectory_dict = {
+        #             "task_id": seed_trajectory.task_id,
+        #             "task_type": seed_trajectory.task_type,
+        #             "task_instruction": seed_trajectory.task_instruction,
+        #             "config": seed_trajectory.config,
+        #             "gt_actions_file_path": seed_trajectory.gt_actions_file_path,
+        #             "gt_actions": seed_trajectory.gt_actions
+        #         }
+        #         curriculum_config_dict = {
+        #             "scenario_count": curriculum_config.scenario_count,
+        #             "num_parallel_vms": curriculum_config.num_parallel_vms,
+        #             "result_base_dir": curriculum_config.result_base_dir,
+        #             "beginner_scenarios": curriculum_config.beginner_scenarios,
+        #             "intermediate_scenarios": curriculum_config.intermediate_scenarios,
+        #             "advanced_scenarios": curriculum_config.advanced_scenarios
+        #         }
+        #         debug_inputs.append({
+        #             "app_type": app_type,
+        #             "seed_trajectory": seed_trajectory_dict,
+        #             "app_state": app_state,
+        #             "curriculum_config": curriculum_config_dict
+        #         })
+
+        # with open("inputs.json", "w") as f:
+        #     json.dump(debug_inputs, f, indent=2)
+
         for app_state in app_states:
             app_type = app_state.get("app_type", "unknown")
+            self.logger.debug(f"Processing app_state with app_type: {app_type}")
+            self.logger.debug(f"app_state: {app_state}")
             if app_type != "unknown":
                 app_scenarios[app_type] = self._generate_app_specific_scenarios(
                     app_type, seed_trajectory, app_state, curriculum_config
@@ -162,6 +242,9 @@ class CurriculumLLM(BaseLLM):
     ) -> List[ScenarioSpec]:
         """Generate scenarios specific to an app type"""
 
+        self.logger.debug(f"_generate_app_specific_scenarios called with app_type: {app_type}")
+        self.logger.debug(f"app_state: {app_state}")
+
         if app_type == "browser":
             return self._generate_browser_scenarios(seed_trajectory, app_state, curriculum_config)
         elif app_type == "libreoffice":
@@ -170,6 +253,10 @@ class CurriculumLLM(BaseLLM):
             return self._generate_image_editor_scenarios(seed_trajectory, app_state, curriculum_config)
         elif app_type in ["file_manager", "file_browser"]:
             return self._generate_file_manager_scenarios(seed_trajectory, app_state, curriculum_config)
+        elif app_type in ["terminal"]:
+            return self._generate_terminal_scenarios(seed_trajectory, app_state, curriculum_config)
+        elif app_type in ["vs_code"]:
+            return self._generate_vs_code_scenarios(seed_trajectory, app_state, curriculum_config)
         else:
             return self._generate_generic_scenarios(seed_trajectory, 2, curriculum_config)
 
@@ -188,24 +275,33 @@ class CurriculumLLM(BaseLLM):
 
         AVAILABLE EXECUTOR: execute_js_on_page(js_code: str)
         - Input: Raw JavaScript code (NO markdown, NO ```, NO language tags)
-        - Use: Theme changes, UI injection, element modification, layout changes
+        - Use: Background theme changes, non-intrusive UI modifications
+        - API Call: execute_js_on_page
+
+        IMPORTANT: Focus on BACKGROUND browser environment manipulation that won't interfere with the main task:
+        - Background color changes, non-critical UI styling
+        - Adding background elements that don't block main content
+        - Subtle theme modifications that don't affect functionality
+        - Background animations or effects that don't interfere with user interactions
 
         REQUIRED JSON FORMAT (exactly these fields):
         {{
             "target_app": "browser",
             "perturbation_trigger": "string describing when to trigger",
-            "available_perturbation_actions": "string with JavaScript code examples",
-            "learning_objectives": "string describing what agent should learn",
-            "target_components": ["array", "of", "ui", "components"],
-            "perturbation_types": ["array", "of", "perturbation", "types"]
+            "available_perturbation_actions": "string with JavaScript code examples for background manipulation",
+            "learning_objectives": "string describing what agent should learn about robustness",
+            "target_components": ["array", "of", "background", "components"],
+            "perturbation_types": ["theme", "layout", "ui_injection"]
         }}
 
-        EXAMPLES:
-        - Theme change: "document.body.style.backgroundColor = 'darkblue'; document.querySelector('button').style.color = 'white';"
-        - UI injection: "const newDiv = document.createElement('div'); newDiv.innerHTML = 'New Element'; document.body.appendChild(newDiv);"
-        - Layout change: "document.querySelector('.container').style.flexDirection = 'column';"
+        VALID PERTURBATION TYPES: theme, layout, content_variation, ui_injection, notification, background_process, window_management, file_operations
 
-        Return JSON array with exactly 3 scenario objects.
+        EXAMPLES (background manipulation only):
+        - Background theme: "document.body.style.backgroundColor = '#f0f0f0'; document.body.style.transition = 'background-color 0.3s';"
+        - Background decoration: "const bg = document.createElement('div'); bg.style.position = 'fixed'; bg.style.top = '0'; bg.style.right = '0'; bg.style.width = '50px'; bg.style.height = '50px'; bg.style.backgroundColor = 'rgba(0,0,0,0.1)'; document.body.appendChild(bg);"
+        - Background animation: "document.body.style.animation = 'subtle-pulse 2s infinite';"
+
+        Return JSON array with a list of exactly 3 scenario objects.
         """
 
         scenarios_data = self.call_llm(prompt)
@@ -215,6 +311,10 @@ class CurriculumLLM(BaseLLM):
         self, seed_trajectory: SeedTrajectory, app_state: Dict[str, Any], curriculum_config: CurriculumConfig
     ) -> List[ScenarioSpec]:
         """Generate LibreOffice-specific scenarios using UNO commands"""
+
+        self.logger.debug("_generate_libreoffice_scenarios called")
+        self.logger.debug(f"seed_trajectory.task_instruction: {seed_trajectory.task_instruction}")
+        self.logger.debug(f"app_state: {app_state}")
 
         prompt = f"""
         Generate LibreOffice perturbation scenarios for this GUI task:
@@ -226,24 +326,37 @@ class CurriculumLLM(BaseLLM):
 
         AVAILABLE EXECUTOR: execute_uno_command(uno_code: str, parameters: Dict)
         - Input: Raw UNO Python code (NO markdown, NO ```, NO language tags)
-        - Use: Spreadsheet operations, document changes, cell manipulation
+        - Use: Background document styling, non-critical UI modifications
+        - API Call: execute_uno_command
+
+        IMPORTANT: Focus on BACKGROUND LibreOffice environment manipulation that won't interfere with the main task:
+        - Background document styling, non-critical formatting changes
+        - UI theme modifications that don't affect functionality
+        - Background grid/display settings that don't impact data
+        - Subtle visual changes that don't interfere with user workflow
 
         REQUIRED JSON FORMAT (exactly these fields):
         {{
             "target_app": "libreoffice",
             "perturbation_trigger": "string describing when to trigger",
-            "available_perturbation_actions": "string with UNO code examples",
-            "learning_objectives": "string describing what agent should learn",
-            "target_components": ["array", "of", "ui", "components"],
-            "perturbation_types": ["array", "of", "perturbation", "types"]
+            "available_perturbation_actions": "string with UNO code examples for background manipulation",
+            "learning_objectives": "string describing what agent should learn about robustness",
+            "target_components": ["array", "of", "background", "components"],
+            "perturbation_types": ["theme", "layout", "ui_injection"]
         }}
 
-        EXAMPLES:
-        - Cell manipulation: "doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); cell = sheet.getCellByPosition(0, 0); cell.setString('Hello');"
-        - Theme change: "doc = desktop.getCurrentComponent(); doc.getCurrentController().getViewSettings().setPropertyValue('ShowGrid', False);"
-        - Layout change: "doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); sheet.getColumns().getByIndex(0).setPropertyValue('Width', 2000);"
+        VALID PERTURBATION TYPES: theme, layout, content_variation, ui_injection, notification, background_process, window_management, file_operations
 
-        Return JSON array with exactly 3 scenario objects.
+        EXAMPLES (background manipulation only):
+        - Background theme: "doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowGrid', False);"
+        - Background styling: "doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); column = sheet.getColumns().getByIndex(0); column.setPropertyValue('Width', 2000);"
+        - UI theme: "doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowFormulaBar', False);"
+        - Background color: "doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); cell = sheet.getCellByPosition(0, 0); cell.CellBackColor = 0xFFFF00;"
+        - Grid settings: "doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowGrid', True); viewSettings.setPropertyValue('GridVisible', True);"
+        - Cell formatting: "doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); cell = sheet.getCellByPosition(1, 1); cell.String = 'Background Data'; cell.CharWeight = 150;"
+        - Sheet properties: "doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); sheet.setPropertyValue('IsVisible', True);"
+
+        Return JSON array with a list of exactly 3 scenario objects.
         """
 
         scenarios_data = self.call_llm(prompt)
@@ -265,23 +378,34 @@ class CurriculumLLM(BaseLLM):
         AVAILABLE EXECUTORS:
         - execute_bash_command(command: str): Raw bash commands
         - manipulate_app_state(parameters: Dict): App management
+        - API Calls: execute_bash_command, manipulate_app_state
+
+        IMPORTANT: Focus on BACKGROUND desktop environment manipulation that won't interfere with the main task:
+        - Background file operations, temporary file creation
+        - Window management of OTHER applications (not the main task)
+        - System notifications, background processes
+        - Desktop environment modifications that don't affect the primary workflow
 
         REQUIRED JSON FORMAT (exactly these fields):
         {{
             "target_app": "gimp",
             "perturbation_trigger": "string describing when to trigger",
-            "available_perturbation_actions": "string with bash/state manipulation examples",
-            "learning_objectives": "string describing what agent should learn",
-            "target_components": ["array", "of", "ui", "components"],
-            "perturbation_types": ["array", "of", "perturbation", "types"]
+            "available_perturbation_actions": "string with bash/state manipulation examples for background manipulation",
+            "learning_objectives": "string describing what agent should learn about robustness",
+            "target_components": ["array", "of", "background", "components"],
+            "perturbation_types": ["notification", "background_process", "file_operations"]
         }}
 
-        EXAMPLES:
-        - Window resize: "wmctrl -r 'GIMP' -e 0,0,0,800,600"
-        - App switch: {{"operation": "switch_to_app", "target_app": "gimp"}}
-        - File operations: "cp /path/to/image.jpg /tmp/backup.jpg"
+        VALID PERTURBATION TYPES: theme, layout, content_variation, ui_injection, notification, background_process, window_management, file_operations
 
-        Return JSON array with exactly 2 scenario objects.
+        EXAMPLES (background manipulation only):
+        - Background files: "mkdir -p /tmp/background_images && touch /tmp/background_images/temp.jpg"
+        - Other window management: "wmctrl -r 'Calculator' -e 0,100,100,300,200"
+        - System notifications: "notify-send 'Background Process' 'Image processing complete'"
+        - Background processes: "nohup sleep 30 > /dev/null 2>&1 &"
+        - Desktop wallpaper: "gsettings set org.gnome.desktop.background picture-uri 'file:///usr/share/backgrounds/gnome/adwaita-morning.jpg'"
+
+        Return JSON array with a list of exactly 2 scenario objects.
         """
 
         scenarios_data = self.call_llm(prompt)
@@ -303,23 +427,34 @@ class CurriculumLLM(BaseLLM):
         AVAILABLE EXECUTORS:
         - execute_bash_command(command: str): Raw bash commands
         - execute_python_command(python_code: str): Python automation
+        - API Calls: execute_bash_command, execute_python_command
+
+        IMPORTANT: Focus on BACKGROUND desktop environment manipulation that won't interfere with the main task:
+        - Background file operations, temporary directory creation
+        - System notifications, background processes
+        - Window management of OTHER applications (not the main task)
+        - Desktop environment modifications that don't affect the primary workflow
 
         REQUIRED JSON FORMAT (exactly these fields):
         {{
             "target_app": "file_manager",
             "perturbation_trigger": "string describing when to trigger",
-            "available_perturbation_actions": "string with bash/python examples",
-            "learning_objectives": "string describing what agent should learn",
-            "target_components": ["array", "of", "ui", "components"],
-            "perturbation_types": ["array", "of", "perturbation", "types"]
+            "available_perturbation_actions": "string with bash/python examples for background manipulation",
+            "learning_objectives": "string describing what agent should learn about robustness",
+            "target_components": ["array", "of", "background", "components"],
+            "perturbation_types": ["notification", "background_process", "file_operations"]
         }}
 
-        EXAMPLES:
-        - File operations: "mkdir -p /tmp/test_dir && touch /tmp/test_dir/file.txt"
-        - Python automation: "import os; os.makedirs('/tmp/python_dir', exist_ok=True)"
-        - Window management: "wmctrl -r 'Files' -e 0,0,0,1000,700"
+        VALID PERTURBATION TYPES: theme, layout, content_variation, ui_injection, notification, background_process, window_management, file_operations
 
-        Return JSON array with exactly 2 scenario objects.
+        EXAMPLES (background manipulation only):
+        - Background files: "mkdir -p /tmp/background_work && touch /tmp/background_work/process.log"
+        - System notifications: "notify-send 'Background Process' 'File sync complete'"
+        - Other window management: "wmctrl -r 'Calculator' -e 0,100,100,300,200"
+        - Background processes: "nohup find /tmp -name '*.tmp' -delete > /dev/null 2>&1 &"
+        - Desktop settings: "gsettings set org.gnome.desktop.interface clock-format '24h'"
+
+        Return JSON array with a list of exactly 2 scenario objects.
         """
 
         scenarios_data = self.call_llm(prompt)
@@ -339,34 +474,160 @@ class CurriculumLLM(BaseLLM):
 
         AVAILABLE EXECUTOR: execute_python_command(python_code: str)
         - Input: Raw Python code (NO markdown, NO ```, NO language tags)
-        - Use: System automation, data processing, general manipulation
+        - Use: Background system automation, non-intrusive modifications
+        - API Call: execute_python_command
+
+        IMPORTANT: Focus on BACKGROUND desktop environment manipulation that won't interfere with the main task:
+        - System notifications, background processes
+        - Desktop theme changes, background settings
+        - Window management of OTHER applications (not the main task)
+        - Background file operations, temporary data creation
 
         REQUIRED JSON FORMAT (exactly these fields):
         {{
             "target_app": "system",
             "perturbation_trigger": "string describing when to trigger",
-            "available_perturbation_actions": "string with Python code examples",
-            "learning_objectives": "string describing what agent should learn",
-            "target_components": ["array", "of", "ui", "components"],
-            "perturbation_types": ["array", "of", "perturbation", "types"]
+            "available_perturbation_actions": "string with Python code examples for background manipulation",
+            "learning_objectives": "string describing what agent should learn about robustness",
+            "target_components": ["array", "of", "background", "components"],
+            "perturbation_types": ["notification", "background_process", "window_management"]
         }}
 
-        EXAMPLES:
-        - System automation: "import subprocess; subprocess.run(['notify-send', 'Perturbation Applied'])"
-        - Data processing: "import json; data = {{'perturbation': 'applied'}}; print(json.dumps(data))"
-        - Window management: "import subprocess; subprocess.run(['wmctrl', '-a', 'Terminal'])"
+        VALID PERTURBATION TYPES: theme, layout, content_variation, ui_injection, notification, background_process, window_management, file_operations
 
-        Return JSON array with exactly {count} scenario objects.
+        EXAMPLES (background manipulation only):
+        - System notifications: "import subprocess; subprocess.run(['notify-send', 'Background Process', 'System update running'])"
+        - Background files: "import os; os.makedirs('/tmp/background_work', exist_ok=True); open('/tmp/background_work/process.log', 'w').write('Background process started')"
+        - Other window management: "import subprocess; subprocess.run(['wmctrl', '-r', 'Calculator', '-e', '0,100,100,300,200'])"
+        - Background processes: "import subprocess; subprocess.Popen(['sleep', '60'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)"
+        - Desktop settings: "import subprocess; subprocess.run(['gsettings', 'set', 'org.gnome.desktop.interface', 'gtk-theme', 'Adwaita-dark'])"
+
+        Return JSON array with a list of exactly {count} scenario objects.
         """
 
         scenarios_data = self.call_llm(prompt)
         return self._parse_scenarios(scenarios_data, "system")
 
+    def _generate_terminal_scenarios(
+        self, seed_trajectory: SeedTrajectory, app_state: Dict[str, Any], curriculum_config: CurriculumConfig
+    ) -> List[ScenarioSpec]:
+        """Generate terminal-specific scenarios using bash commands"""
+
+        prompt = f"""
+        Generate terminal perturbation scenarios for this GUI task:
+
+        Task: {seed_trajectory.task_instruction}
+        App State: {app_state}
+
+        Generate 2 scenario specifications for terminal manipulation using bash commands:
+
+        AVAILABLE EXECUTORS:
+        - execute_bash_command(command: str): Raw bash commands
+        - execute_python_command(python_code: str): Python automation
+        - API Calls: execute_bash_command, execute_python_command
+
+        IMPORTANT: Focus on BACKGROUND desktop environment manipulation that won't interfere with the main task:
+        - System notifications, background processes, desktop themes
+        - Window management of OTHER applications (not the main task)
+        - Background file operations, system settings changes
+        - Desktop environment modifications that don't affect the primary workflow
+
+        REQUIRED JSON FORMAT (exactly these fields):
+        {{
+            "target_app": "terminal",
+            "perturbation_trigger": "string describing when to trigger",
+            "available_perturbation_actions": "string with bash/python examples for background manipulation",
+            "learning_objectives": "string describing what agent should learn about robustness",
+            "target_components": ["array", "of", "background", "components"],
+            "perturbation_types": ["notification", "background_process", "window_management"]
+        }}
+
+        VALID PERTURBATION TYPES: theme, layout, content_variation, ui_injection, notification, background_process, window_management, file_operations
+
+        EXAMPLES (background manipulation only):
+        - System notifications: "notify-send 'Background Process' 'System update running'"
+        - Desktop theme: "gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'"
+        - Background files: "mkdir -p /tmp/background_work && touch /tmp/background_work/process.log"
+        - Other window management: "wmctrl -r 'Calculator' -e 0,100,100,300,200"
+        - Background processes: "nohup sleep 30 > /dev/null 2>&1 &"
+        - Desktop settings: "gsettings set org.gnome.desktop.interface clock-format '24h'"
+
+        Return JSON array with a list of exactly 2 scenario objects.
+        """
+
+        scenarios_data = self.call_llm(prompt)
+        return self._parse_scenarios(scenarios_data, "terminal")
+
+    def _generate_vs_code_scenarios(
+        self, seed_trajectory: SeedTrajectory, app_state: Dict[str, Any], curriculum_config: CurriculumConfig
+    ) -> List[ScenarioSpec]:
+        """Generate VS Code-specific scenarios using Python automation"""
+
+        prompt = f"""
+        Generate VS Code perturbation scenarios for this GUI task:
+
+        Task: {seed_trajectory.task_instruction}
+        App State: {app_state}
+
+        Generate 2 scenario specifications for VS Code manipulation using Python automation:
+
+        AVAILABLE EXECUTORS:
+        - execute_python_command(python_code: str): Python automation
+        - execute_bash_command(command: str): Raw bash commands
+        - API Calls: execute_python_command, execute_bash_command
+
+        IMPORTANT: Focus on BACKGROUND VS Code environment manipulation that won't interfere with the main task:
+        - Background file operations, temporary file creation
+        - Window management, panel resizing, sidebar toggling
+        - System notifications, background processes
+        - Desktop environment modifications that don't affect the primary workflow
+
+        REQUIRED JSON FORMAT (exactly these fields):
+        {{
+            "target_app": "vs_code",
+            "perturbation_trigger": "string describing when to trigger",
+            "available_perturbation_actions": "string with python/bash examples for background manipulation",
+            "learning_objectives": "string describing what agent should learn about robustness",
+            "target_components": ["array", "of", "background", "components"],
+            "perturbation_types": ["notification", "background_process", "window_management"]
+        }}
+
+        VALID PERTURBATION TYPES: theme, layout, content_variation, ui_injection, notification, background_process, window_management, file_operations
+
+        EXAMPLES (background manipulation only):
+        - Background files: "import os; os.makedirs('/tmp/vscode_temp', exist_ok=True); open('/tmp/vscode_temp/debug.log', 'w').write('Background process started')"
+        - Window management: "wmctrl -r 'Visual Studio Code' -e 0,0,0,1200,800"
+        - Settings: "import json; settings = {{'workbench.colorTheme': 'Dark+'}}; print(json.dumps(settings))"
+        - System notifications: "import subprocess; subprocess.run(['notify-send', 'VS Code', 'Background process completed'])"
+        - Background processes: "import subprocess; subprocess.Popen(['sleep', '10'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)"
+        - Desktop settings: "import subprocess; subprocess.run(['gsettings', 'set', 'org.gnome.desktop.interface', 'gtk-theme', 'Adwaita-dark'])"
+        - Background cleanup: "import os; [os.remove(os.path.join('/tmp', f)) for f in os.listdir('/tmp') if f.endswith('.tmp')]"
+
+        Return JSON array with a list of exactly 2 scenario objects.
+        """
+
+        scenarios_data = self.call_llm(prompt)
+        return self._parse_scenarios(scenarios_data, "vs_code")
+
     def _parse_scenarios(self, scenarios_data: List[Dict[str, Any]], default_app: str) -> List[ScenarioSpec]:
         """Parse and validate scenario data with consistent format"""
 
+        self.logger.debug(f"_parse_scenarios called with scenarios_data type: {type(scenarios_data)}")
+        self.logger.debug(
+            f"scenarios_data length: {len(scenarios_data) if isinstance(scenarios_data, list) else 'N/A'}"
+        )
+        self.logger.debug(f"default_app: {default_app}")
+
         scenario_specs = []
         for i, scenario_data in enumerate(scenarios_data):
+            self.logger.debug(f"Processing scenario {i}, type: {type(scenario_data)}")
+            self.logger.debug(f"scenario_data content: {scenario_data}")
+
+            # Defensive check: if scenario_data is still a list, skip it
+            if isinstance(scenario_data, list):
+                self.logger.warning(f"Skipping scenario {i} because it's still a list after flattening")
+                continue
+
             try:
                 # Ensure all required fields exist with defaults
                 scenario_data = self._ensure_required_fields(scenario_data, default_app)
@@ -398,6 +659,28 @@ class CurriculumLLM(BaseLLM):
     def _ensure_required_fields(self, scenario_data: Dict[str, Any], default_app: str) -> Dict[str, Any]:
         """Ensure all required fields exist with proper defaults"""
 
+        # Check if scenario_data is unexpectedly a list
+        if isinstance(scenario_data, list):
+            self.logger.warning("_ensure_required_fields received LIST instead of DICT!")
+            self.logger.warning(f"scenario_data type: {type(scenario_data)}")
+            self.logger.warning(
+                f"scenario_data length: {len(scenario_data) if isinstance(scenario_data, list) else 'N/A'}"
+            )
+            self.logger.warning(f"scenario_data content: {scenario_data}")
+            self.logger.warning(f"default_app: {default_app}")
+
+            # Try to handle the list case by taking the first element
+            if len(scenario_data) > 0:
+                self.logger.warning(f"Taking first element from list: {scenario_data[0]}")
+                scenario_data = scenario_data[0]
+            else:
+                self.logger.warning("Empty list, creating default dict")
+                scenario_data = {}
+        elif not isinstance(scenario_data, dict):
+            self.logger.warning(f"_ensure_required_fields received unexpected type: {type(scenario_data)}")
+            self.logger.warning(f"scenario_data content: {scenario_data}")
+            scenario_data = {}
+
         # Required fields with defaults
         defaults = {
             "target_app": default_app,
@@ -415,10 +698,17 @@ class CurriculumLLM(BaseLLM):
 
         return scenario_data
 
-    def call_llm(self, prompt: str, **kwargs) -> Dict[str, Any]:
+    def call_llm(self, prompt: str, **kwargs) -> List[Dict[str, Any]]:
         """Call LLM to generate scenario specs"""
         response = self._call_gemini(prompt)
-        return self.extract_json(response)
+        self.logger.debug(f"call_llm raw response: {response[:200]}...")
+        result = self.extract_json(response)
+        self.logger.debug(f"call_llm extract_json result type: {type(result)}")
+        self.logger.debug(
+            f"call_llm extract_json result length: {len(result) if isinstance(result, list) else 'N/A'}"
+        )
+        self.logger.debug(f"call_llm extract_json result content: {result}")
+        return result
 
 
 class PerturbationLLM(BaseLLM):
@@ -440,6 +730,10 @@ class PerturbationLLM(BaseLLM):
             return self._decide_image_editor_perturbation(execution_context, scenario_spec)
         elif target_app in ["file_manager", "file_browser"]:
             return self._decide_file_manager_perturbation(execution_context, scenario_spec)
+        elif target_app == "terminal":
+            return self._decide_terminal_perturbation(execution_context, scenario_spec)
+        elif target_app == "vs_code":
+            return self._decide_vs_code_perturbation(execution_context, scenario_spec)
         else:
             return self._decide_generic_perturbation(execution_context, scenario_spec)
 
@@ -718,12 +1012,138 @@ class PerturbationLLM(BaseLLM):
         response = self.call_llm(prompt)
         return self._validate_perturbation_decision(response)
 
+    def _decide_terminal_perturbation(
+        self, execution_context: ExecutionContext, scenario_spec: ScenarioSpec
+    ) -> Dict[str, Any]:
+        """Decide terminal perturbations using bash and Python commands"""
+
+        prompt = f"""
+        Decide whether to apply a terminal perturbation during GUI task execution.
+
+        CURRENT STATE:
+        - Step: {execution_context.step_idx}
+        - Action: {execution_context.current_action}
+        - Action History: {execution_context.action_history[-3:] if execution_context.action_history else []}
+        - CoT Context: {execution_context.cot_context}
+        - App States: {execution_context.app_states}
+        - Task: {execution_context.task_instruction}
+
+        SCENARIO SPEC:
+        - Target App: {scenario_spec.target_app}
+        - Trigger: {scenario_spec.perturbation_trigger}
+        - Available Actions: {scenario_spec.available_perturbation_actions}
+        - Learning Objectives: {scenario_spec.learning_objectives}
+        - Target Components: {scenario_spec.target_components}
+        - Perturbation Types: {[pt.value for pt in scenario_spec.perturbation_types]}
+
+        AVAILABLE EXECUTORS:
+        - execute_bash_command(command: str): Raw bash commands
+        - execute_python_command(python_code: str): Python automation
+
+        IMPORTANT: Focus on BACKGROUND desktop environment manipulation that won't interfere with the main task:
+        - System notifications, background processes, desktop themes
+        - Window management of OTHER applications (not the main task)
+        - Background file operations, system settings changes
+        - Desktop environment modifications that don't affect the primary workflow
+
+        DECISION CRITERIA:
+        1. Does the current step match the perturbation trigger?
+        2. Is the terminal active or relevant to the current action?
+        3. What specific background perturbation should be applied?
+
+        REQUIRED JSON FORMAT (exactly these fields):
+        {{
+            "should_apply": true/false,
+            "perturbation_type": "system_notification" | "background_process" | "desktop_theme" | "other_window_management",
+            "target_app": "terminal",
+            "reasoning": "Brief explanation of why/why not to apply",
+            "generated_code": "RAW_BASH_OR_PYTHON_CODE_WITHOUT_MARKDOWN",
+            "api_call": "execute_bash_command" | "execute_python_command",
+            "parameters": {{"target_app": "terminal"}}
+        }}
+
+        EXAMPLES (background manipulation only):
+        - System notifications: "notify-send 'Background Process' 'System update running'"
+        - Desktop theme: "gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'"
+        - Background files: "mkdir -p /tmp/background_work && touch /tmp/background_work/process.log"
+        - Other window management: "wmctrl -r 'Calculator' -e 0,100,100,300,200"
+
+        Return JSON object with exactly the required fields.
+        """
+
+        response = self.call_llm(prompt)
+        return self._validate_perturbation_decision(response)
+
+    def _decide_vs_code_perturbation(
+        self, execution_context: ExecutionContext, scenario_spec: ScenarioSpec
+    ) -> Dict[str, Any]:
+        """Decide VS Code perturbations using Python automation and bash commands"""
+
+        prompt = f"""
+        Decide whether to apply a VS Code perturbation during GUI task execution.
+
+        CURRENT STATE:
+        - Step: {execution_context.step_idx}
+        - Action: {execution_context.current_action}
+        - Action History: {execution_context.action_history[-3:] if execution_context.action_history else []}
+        - CoT Context: {execution_context.cot_context}
+        - App States: {execution_context.app_states}
+        - Task: {execution_context.task_instruction}
+
+        SCENARIO SPEC:
+        - Target App: {scenario_spec.target_app}
+        - Trigger: {scenario_spec.perturbation_trigger}
+        - Available Actions: {scenario_spec.available_perturbation_actions}
+        - Learning Objectives: {scenario_spec.learning_objectives}
+        - Target Components: {scenario_spec.target_components}
+        - Perturbation Types: {[pt.value for pt in scenario_spec.perturbation_types]}
+
+        AVAILABLE EXECUTORS:
+        - execute_python_command(python_code: str): Python automation
+        - execute_bash_command(command: str): Raw bash commands
+
+        IMPORTANT: Focus on BACKGROUND VS Code environment manipulation that won't interfere with the main task:
+        - Theme changes, extension settings, workspace configurations
+        - Background file operations, temporary file creation
+        - Window management, panel resizing, sidebar toggling
+        - Settings modifications that don't affect the primary workflow
+
+        DECISION CRITERIA:
+        1. Does the current step match the perturbation trigger?
+        2. Is VS Code active or relevant to the current action?
+        3. What specific background perturbation should be applied?
+
+        REQUIRED JSON FORMAT (exactly these fields):
+        {{
+            "should_apply": true/false,
+            "perturbation_type": "theme_change" | "background_files" | "window_management" | "settings_modification",
+            "target_app": "vs_code",
+            "reasoning": "Brief explanation of why/why not to apply",
+            "generated_code": "RAW_PYTHON_OR_BASH_CODE_WITHOUT_MARKDOWN",
+            "api_call": "execute_python_command" | "execute_bash_command",
+            "parameters": {{"target_app": "vs_code"}}
+        }}
+
+        EXAMPLES (background manipulation only):
+        - Theme change: "import subprocess; subprocess.run(['code', '--install-extension', 'theme-extension'])"
+        - Background files: "import os; os.makedirs('/tmp/vscode_temp', exist_ok=True)"
+        - Window management: "wmctrl -r 'Visual Studio Code' -e 0,0,0,1200,800"
+        - Settings: "import json; settings = {{'workbench.colorTheme': 'Dark+'}}; print(json.dumps(settings))"
+
+        Return JSON object with exactly the required fields.
+        """
+
+        response = self.call_llm(prompt)
+        return self._validate_perturbation_decision(response)
+
     def call_llm(self, prompt: str, **kwargs) -> Dict[str, Any]:
         """Call LLM to make perturbation decision"""
         response = self._call_gemini(prompt)
         result = self.extract_json(response)
 
         # Validate and clean the response
+        if isinstance(result, list) and len(result) > 0:
+            result = result[0]  # Take the first result if it's a list
         if isinstance(result, dict):
             result = self._validate_perturbation_decision(result)
 
@@ -844,4 +1264,30 @@ class QualityEvaluationLLM(BaseLLM):
     def call_llm(self, prompt: str, **kwargs) -> Dict[str, Any]:
         """Call LLM to evaluate trajectory quality"""
         response = self._call_gemini(prompt)
-        return self.extract_json(response)
+        result = self.extract_json(response)
+
+        # Handle case where extract_json returns a list
+        if isinstance(result, list) and len(result) > 0:
+            return result[0]  # Take the first result if it's a list
+        return result
+
+
+if __name__ == "__main__":
+    llm = CurriculumLLM()
+
+    with open("inputs.json", "r") as f:
+        inputs = json.load(f)
+
+    app_states = []
+
+    for input in inputs:
+        app_type = input["app_type"]
+        seed_trajectory = input["seed_trajectory"]
+        seed_trajectory = SeedTrajectory(**seed_trajectory)
+        app_state = input["app_state"]
+        curriculum_config = input["curriculum_config"]
+        curriculum_config = CurriculumConfig(**curriculum_config)
+
+        app_states.append(app_state)
+
+    llm.generate_scenario_specs(seed_trajectory, app_states, curriculum_config)

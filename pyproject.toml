@@ -3,6 +3,7 @@ name = "software-control"
 version = "0.1.0"
 requires-python = ">=3.11,<3.12"
 dependencies = [
+    "dotenv>=0.9.9",
     "playwright>=1.54.0",
 ]
 
