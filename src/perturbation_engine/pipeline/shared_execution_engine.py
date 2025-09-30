@@ -8,6 +8,7 @@ import time
 from multiprocessing import Manager, Process, Queue, current_process
 from typing import List
 
+from perturbation_engine.configure_logging import configure_logging
 from perturbation_engine.pipeline.data_models import (
     ExecutionConfig,
     GeneratedTrajectory,
@@ -75,7 +76,7 @@ class SharedExecutionEngine:
                 while True:
                     alive_count = sum(1 for p in processes if p.is_alive())
                     if scenario_queue.empty():
-                        self.logger.info("All tasks finished")
+                        self.logger.info("Scenario queue is empty")
                         break
                     if alive_count == 0:
                         self.logger.error("All processes died, exiting")
@@ -103,14 +104,31 @@ class ParallelExecutionEngine:
 
     def run_vm_tasks(self, scenario_queue: Queue, shared_results: list):
         """Run trajectory generation scenarios in a single VM process"""
+        # Use multiprocessing's built-in logging to stderr (shows in main process)
+        import multiprocessing
+
+        multiprocessing.log_to_stderr()
+
+        # Configure logging for subprocess
+
+        configure_logging()
+
+        process_name = current_process().name
+        self.logger = logging.getLogger(f"Subprocess-{process_name}")
+        self.logger.info(f"Starting trajectory generation in {process_name}")
+
         # Initialize trajectory generator in subprocess to avoid pickle issues
         trajectory_generator = TrajectoryGenerator()
         env = None
         try:
             # Initialize environment - each process gets its own environment
+            if self.config.provider_name == "vmware":
+                # for local testing
+                path_to_vm = "/Users/lockewang/Virtual Machines.localized/Ubuntu1.vmwarevm/Ubuntu1.vmx"
+            else:
+                path_to_vm = self.config.path_to_vm
             env = PerturbationDesktopEnv(
-                path_to_vm=self.config.path_to_vm,
-                # path_to_vm="~/Virtual Machines.localized/Ubuntu1.vmwarevm/Ubuntu1.vmx",
+                path_to_vm=path_to_vm,
                 action_space=self.config.action_space,
                 provider_name=self.config.provider_name,
                 region=self.config.region,

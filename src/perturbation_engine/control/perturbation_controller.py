@@ -28,6 +28,12 @@ class PerturbationController(PythonController, SetupController):
     """Execute perturbation code with clean interface"""
 
     def __init__(self, vm_ip: str, server_port: int, chromium_port: int = 9222, **kwargs):
+        # Ensure logging is configured for subprocess (only if not already configured)
+        if not logging.getLogger().handlers:
+            from perturbation_engine.configure_logging import configure_logging
+
+            configure_logging()
+
         PythonController.__init__(self, vm_ip, server_port, **kwargs)
         SetupController.__init__(self, vm_ip, server_port, chromium_port, **kwargs)
         self.vm_ip = vm_ip
@@ -57,7 +63,7 @@ class PerturbationController(PythonController, SetupController):
                 result_data = {"api_call": api_call, "command": generated_code}
             elif api_call == "execute_python_command":
                 result = self.execute_python_command(generated_code)
-                success = result.get("success", False)
+                success = result.get("status") == "success"
                 result_data = {"api_call": api_call, "result": result}
             elif api_call == "execute_uno_command":
                 success = self.execute_uno_command(generated_code, parameters)
@@ -119,15 +125,15 @@ class PerturbationController(PythonController, SetupController):
             if "```" in command:
                 command = command.split("```")[1].removeprefix("bash").strip()
 
-                # Execute with proper error handling
-                result = self.execute_python_command(
-                    f"import subprocess; result = subprocess.run(['bash', '-c', '{command}'], capture_output=True, text=True); print(f'STDOUT: {{result.stdout}}'); print(f'STDERR: {{result.stderr}}'); print(f'Return code: {{result.returncode}}')"
-                )
-            success = result.get("success", False)
+            # Execute with proper error handling
+            result = self.execute_python_command(
+                f"import subprocess; result = subprocess.run(['bash', '-c', '{command}'], capture_output=True, text=True); print(f'STDOUT: {{result.stdout}}'); print(f'STDERR: {{result.stderr}}'); print(f'Return code: {{result.returncode}}')"
+            )
+            success = result.get("status") == "success"
             if success:
-                self.logger.info(f"Bash command executed: {command[:100]}...")
+                self.logger.info(f"Bash command executed: {command}")
             else:
-                self.logger.warning(f"Bash command failed: {command[:100]}...")
+                self.logger.warning(f"Bash command failed: {command}")
             return success
         except Exception as e:
             self.logger.error(f"Error executing bash command: {e}")
@@ -136,10 +142,17 @@ class PerturbationController(PythonController, SetupController):
     def execute_python_command(self, python_code: str) -> Dict[str, Any]:
         """Execute Python code"""
         try:
-            return super().execute_python_command(python_code)
+            result = super().execute_python_command(python_code)
+            # Ensure the result has the correct structure
+            if "status" not in result:
+                if result.get("success", False):
+                    result["status"] = "success"
+                else:
+                    result["status"] = "error"
+            return result
         except Exception as e:
             self.logger.error(f"Error executing Python: {e}")
-            return {"success": False, "error": str(e)}
+            return {"status": "error", "error": str(e)}
 
     def execute_uno_command(self, uno_code: str, parameters: Dict[str, Any]) -> bool:
         """Execute UNO command for LibreOffice manipulation"""
@@ -218,7 +231,7 @@ except Exception as e:
 """
 
             result = self.execute_python_command(python_wrapper)
-            return result.get("success", False)
+            return result.get("status") == "success"
 
         except Exception as e:
             self.logger.error(f"Error executing UNO command: {e}")
@@ -251,7 +264,7 @@ except Exception as e:
             result = self.execute_python_command(
                 f"import subprocess; subprocess.run(['wmctrl', '-a', '{app_name}'])"
             )
-            return result.get("success", False)
+            return result.get("status") == "success"
         except Exception as e:
             self.logger.error(f"Error switching to app {app_name}: {e}")
             return False
@@ -264,7 +277,7 @@ except Exception as e:
             result = self.execute_python_command(
                 f"import subprocess; subprocess.run(['wmctrl', '-r', '{app_name}', '-e', '0,0,0,{width},{height}'])"
             )
-            return result.get("success", False)
+            return result.get("status") == "success"
         except Exception as e:
             self.logger.error(f"Error resizing window for {app_name}: {e}")
             return False
@@ -275,7 +288,7 @@ except Exception as e:
             result = self.execute_python_command(
                 f"import subprocess; subprocess.run(['pkill', '-f', '{app_name}'])"
             )
-            return result.get("success", False)
+            return result.get("status") == "success"
         except Exception as e:
             self.logger.error(f"Error closing app {app_name}: {e}")
             return False

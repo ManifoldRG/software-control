@@ -26,6 +26,12 @@ class BaseLLM(ABC):
     """Base class for all LLM components"""
 
     def __init__(self, model_name: str = "gemini-2.0-flash"):
+        # Ensure logging is configured for subprocess (only if not already configured)
+        if not logging.getLogger().handlers:
+            from perturbation_engine.configure_logging import configure_logging
+
+            configure_logging()
+
         self.model_name = model_name
         self.logger = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
         self.api_key = os.getenv("GEMINI_API_KEY")
@@ -101,6 +107,10 @@ class BaseLLM(ABC):
                                 # Found complete JSON structure
                                 try:
                                     json_str = response[start_pos : j + 1].strip()
+                                    # Clean up common JSON formatting issues
+                                    json_str = json_str.replace("\n", " ").replace("\r", " ")
+                                    # Remove extra whitespace
+                                    json_str = " ".join(json_str.split())
                                     parsed = json.loads(json_str)
                                     self.logger.debug(
                                         f"Found complete JSON at position {start_pos}-{j}: {type(parsed)}"
@@ -124,6 +134,28 @@ class BaseLLM(ABC):
 
                                 except json.JSONDecodeError as e:
                                     self.logger.debug(f"JSON decode error at position {start_pos}-{j}: {e}")
+                                    self.logger.debug(f"Problematic JSON string: {json_str[:200]}...")
+                                    # Try to fix common issues
+                                    try:
+                                        # Remove any trailing commas
+                                        json_str = json_str.replace(",}", "}").replace(",]", "]")
+                                        # Try parsing again
+                                        parsed = json.loads(json_str)
+                                        self.logger.debug("Successfully parsed after fixing trailing commas")
+                                        # Continue with the parsed result
+                                        if isinstance(parsed, list) and len(parsed) > 0:
+                                            self.logger.debug(f"Found array with {len(parsed)} items")
+                                            results.append(parsed)
+                                            for pos in range(start_pos, j + 1):
+                                                processed_positions.add(pos)
+                                            break
+                                        elif isinstance(parsed, dict) and parsed:
+                                            self.logger.debug("Found object")
+                                            results.append(parsed)
+                                            for pos in range(start_pos, j + 1):
+                                                processed_positions.add(pos)
+                                    except json.JSONDecodeError as e2:
+                                        self.logger.debug(f"Still failed after fixing: {e2}")
 
                                 # Move past this JSON structure
                                 i = j + 1
@@ -182,8 +214,14 @@ class CurriculumLLM(BaseLLM):
         - NEVER interfere with main task functionality (target forms, buttons, navigation)
         - ONLY modify visual appearance that affects screenshots and UI perception
         - Focus on visual changes that teach agents to recognize UI elements despite visual variations
+        - Generate DIVERSE, REALISTIC perturbations that randomize important visual features
+        - Use RANDOMIZATION and VARIATION to create realistic visual diversity
         - Modify colors, fonts, layouts, themes that change visual appearance but not functionality
         - Add visual elements that don't block functionality but change the visual interface
+        - Ensure perturbations are REALISTIC and reflect real-world visual variations
+        - BE CREATIVE: Generate UNIQUE, ORIGINAL commands - DO NOT simply copy examples
+        - AVOID REPETITION: Create novel perturbation approaches beyond basic examples
+        - INNOVATE: Combine different techniques and create sophisticated, multi-layered perturbations
         """
 
         json_format = f"""
@@ -191,8 +229,8 @@ class CurriculumLLM(BaseLLM):
         {{
             "target_app": "{app_name}",
             "perturbation_trigger": "string describing when to trigger (e.g., 'when user interacts with the application', 'during data entry')",
-            "available_perturbation_actions": "string with {executor_info["language"]} code examples for visual manipulation",
-            "learning_objectives": "string describing what agent should learn about visual invariance - recognizing UI elements despite visual changes",
+            "available_perturbation_actions": "string with CREATIVE, UNIQUE, ORIGINAL {executor_info["language"]} code that uses SOPHISTICATED RANDOMIZATION and VARIATION for visual manipulation - DO NOT copy examples, create novel approaches",
+            "learning_objectives": "string describing what agent should learn about visual invariance - recognizing UI elements despite DIVERSE visual changes",
             "target_components": ["array", "of", "visual", "components", "like", "buttons", "menus", "forms"],
             "perturbation_types": ["theme", "layout", "content_variation", "ui_injection"]
         }}
@@ -206,9 +244,22 @@ class CurriculumLLM(BaseLLM):
         for i, scenario_type in enumerate(scenario_types, 1):
             scenario_types_section += f"        {i}. {scenario_type}\n"
 
-        examples_section = "        EXAMPLES (visual invariance learning only):\n"
+        examples_section = (
+            "        EXAMPLES (visual invariance learning only) - USE AS INSPIRATION, DO NOT COPY:\n"
+        )
         for example in examples:
             examples_section += f"        - {example}\n"
+
+        creativity_instructions = """
+        CREATIVITY REQUIREMENTS:
+        - DO NOT copy the examples above - they are for INSPIRATION ONLY
+        - Create UNIQUE, ORIGINAL perturbation commands
+        - Combine multiple techniques in novel ways
+        - Use sophisticated randomization beyond simple examples
+        - Generate multi-layered, complex perturbations
+        - Avoid repetitive patterns from examples
+        - Be innovative and creative in your approach
+        """
 
         return f"""
         {critical_requirements}
@@ -220,6 +271,8 @@ class CurriculumLLM(BaseLLM):
         {valid_types}
 
         {examples_section}
+
+        {creativity_instructions}
         """
 
     def _get_app_specific_config(self, app_name: str) -> Dict[str, Any]:
@@ -229,156 +282,171 @@ class CurriculumLLM(BaseLLM):
                 "executor": {
                     "name": "execute_js_on_page",
                     "language": "JavaScript",
-                    "description": "Background UI component and layout modifications, theme changes, content variations",
+                    "description": "Dynamic visual modifications that change UI appearance without affecting functionality",
                 },
                 "scenario_types": [
-                    "Visual Theme Changes: Change colors, fonts, spacing that affect screenshot appearance",
-                    "Layout Visual Variations: Modify visual layouts, positioning, sizing of non-critical elements",
-                    "Visual Content Changes: Add visual elements, change text appearance, modify visual styling",
+                    "Visual Theme Variations: Randomize colors, fonts, spacing to teach UI element recognition despite visual changes",
+                    "Layout Visual Diversity: Modify positioning, sizing, and visual hierarchy to test layout invariance",
+                    "Content Visual Changes: Add/remove visual elements, change text styling to test content recognition",
+                    "Interactive Element Styling: Modify button appearances, form styling, navigation elements",
                 ],
                 "examples": [
-                    "Visual theme changes: \"document.body.style.backgroundColor = '#f5f5f5'; document.querySelectorAll('header, footer').forEach(el => el.style.backgroundColor = '#e0e0e0');\"",
-                    "Visual content variations: \"document.querySelectorAll('h1, h2').forEach(h => h.style.fontFamily = 'Arial, sans-serif'); document.querySelectorAll('p').forEach(p => p.style.color = '#333');\"",
-                    "Visual layout changes: \"document.querySelectorAll('.sidebar, .aside').forEach(el => el.style.marginLeft = '20px'); document.querySelectorAll('.header').forEach(el => el.style.padding = '15px');\"",
+                    "Dynamic color schemes: \"const colors = ['#f0f8ff', '#ffe4e1', '#f0fff0', '#fff8dc']; document.body.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)]; document.querySelectorAll('button, input, select').forEach(el => el.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)]);\"",
+                    "Font randomization: \"const fonts = ['Arial', 'Helvetica', 'Times New Roman', 'Courier New']; document.body.style.fontFamily = fonts[Math.floor(Math.random() * fonts.length)]; document.querySelectorAll('h1, h2, h3').forEach(h => h.style.fontSize = (Math.random() * 10 + 16) + 'px');\"",
+                    "Layout variations: \"document.querySelectorAll('.container, .wrapper').forEach(el => { el.style.padding = Math.random() * 20 + 'px'; el.style.margin = Math.random() * 15 + 'px'; }); document.querySelectorAll('button').forEach(btn => { btn.style.borderRadius = Math.random() * 10 + 'px'; btn.style.padding = Math.random() * 10 + 'px'; });\"",
+                    "Visual element injection: \"const overlay = document.createElement('div'); overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.1);pointer-events:none;z-index:9999;'; document.body.appendChild(overlay); setTimeout(() => overlay.remove(), 2000);\"",
                 ],
             },
             "libreoffice_calc": {
                 "executor": {
                     "name": "execute_uno_command",
                     "language": "UNO Python",
-                    "description": "Spreadsheet visual styling, cell formatting, grid appearance, toolbar themes",
+                    "description": "Spreadsheet visual and data modifications that change appearance without affecting calculations",
                 },
                 "scenario_types": [
-                    "Cell Visual Formatting: Change cell colors, fonts, borders, background colors",
-                    "Grid Visual Styling: Modify grid lines, colors, visibility, cell borders",
-                    "Toolbar Visual Changes: Change toolbar appearance, button styles, menu layouts",
-                    "Display Visual Settings: Modify zoom, view options, formula bar, status bar",
+                    "Cell Visual Diversity: Randomize cell colors, fonts, borders to test cell recognition despite visual changes",
+                    "Grid Visual Variations: Modify grid appearance, colors, line styles to test grid invariance",
+                    "Toolbar Visual Changes: Randomize toolbar appearance, button styles, menu layouts",
+                    "Data Visual Formatting: Change number formats, text styling, conditional formatting without affecting data",
                 ],
                 "examples": [
-                    'Cell visual formatting: "doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); cell = sheet.getCellByPosition(0, 0); cell.CellBackColor = 0xF0F0F0; cell.CharColor = 0x000000; cell.CharWeight = 150;"',
-                    "Grid visual styling: \"doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowGrid', True); viewSettings.setPropertyValue('GridColor', 0xC0C0C0);\"",
-                    "Toolbar visual changes: \"doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowFormulaBar', False);\"",
+                    "Random cell formatting: \"import random; doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); colors = [0xF0F0F0, 0xE0E0E0, 0xD0D0D0, 0xC0C0C0]; for row in range(10): [sheet.getCellByPosition(col, row).setPropertyValue('CellBackColor', random.choice(colors)) for col in range(10)]\"",
+                    "Dynamic grid styling: \"import random; doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowGrid', True); viewSettings.setPropertyValue('GridColor', random.randint(0x808080, 0xC0C0C0)); viewSettings.setPropertyValue('ShowPageBreaks', random.choice([True, False]))\"",
+                    "Toolbar randomization: \"import random; doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowFormulaBar', random.choice([True, False])); viewSettings.setPropertyValue('ShowStatusBar', random.choice([True, False])); viewSettings.setPropertyValue('ShowSheetTabs', random.choice([True, False]))\"",
+                    "Data format variations: \"import random; doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); formats = ['Standard', 'Number', 'Currency', 'Percentage']; [sheet.getCellByPosition(col, 0).setPropertyValue('NumberFormat', random.choice(formats)) for col in range(5)]\"",
                 ],
             },
             "libreoffice_impress": {
                 "executor": {
                     "name": "execute_uno_command",
                     "language": "UNO Python",
-                    "description": "Presentation visual styling, slide layouts, theme changes, view modes",
+                    "description": "Presentation visual modifications that change slide appearance without affecting content",
                 },
                 "scenario_types": [
-                    "Slide Visual Layouts: Change slide layouts, master slide themes, background colors",
-                    "View Visual Modes: Modify view modes, zoom levels, slide sorter appearance",
-                    "Toolbar Visual Changes: Change toolbar appearance, button styles, menu layouts",
-                    "Presentation Visual Themes: Modify slide themes, color schemes, font styles",
+                    "Slide Visual Diversity: Randomize slide backgrounds, themes, layouts to test slide recognition",
+                    "View Visual Variations: Modify presentation view modes, zoom levels, navigation appearance",
+                    "Toolbar Visual Changes: Randomize toolbar appearance, button styles, menu layouts",
+                    "Content Visual Styling: Change text formatting, object styling without affecting content",
                 ],
                 "examples": [
-                    "Slide visual layouts: \"doc = desktop.getCurrentComponent(); slide = doc.getDrawPages().getByIndex(0); slide.setPropertyValue('BackgroundColor', 0xF0F0F0);\"",
-                    "View visual modes: \"doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ZoomType', 0);\"",
-                    "Presentation visual themes: \"doc = desktop.getCurrentComponent(); slide = doc.getDrawPages().getByIndex(0); slide.setPropertyValue('BackgroundColor', 0xE0E0E0);\"",
+                    "Random slide backgrounds: \"import random; doc = desktop.getCurrentComponent(); colors = [0xF0F0F0, 0xE0E0E0, 0xD0D0D0, 0xC0C0C0, 0xB0B0B0]; [doc.getDrawPages().getByIndex(i).setPropertyValue('BackgroundColor', random.choice(colors)) for i in range(min(5, doc.getDrawPages().getCount()))]\"",
+                    "Dynamic view modes: \"import random; doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ZoomType', random.randint(0, 3)); viewSettings.setPropertyValue('ShowRuler', random.choice([True, False])); viewSettings.setPropertyValue('ShowSlidePane', random.choice([True, False]))\"",
+                    "Toolbar randomization: \"import random; doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowSlideSorter', random.choice([True, False])); viewSettings.setPropertyValue('ShowNotesPane', random.choice([True, False]))\"",
+                    "Content styling variations: \"import random; doc = desktop.getCurrentComponent(); slide = doc.getDrawPages().getByIndex(0); shapes = slide.getDrawPage().getShapes(); [shape.setPropertyValue('FillColor', random.randint(0x808080, 0xFFFFFF)) for shape in shapes if hasattr(shape, 'setPropertyValue')]\"",
                 ],
             },
             "libreoffice_writer": {
                 "executor": {
                     "name": "execute_uno_command",
                     "language": "UNO Python",
-                    "description": "Document visual styling, text formatting, page layouts, view modes",
+                    "description": "Document visual modifications that change text and layout appearance without affecting content",
                 },
                 "scenario_types": [
-                    "Text Visual Formatting: Change text colors, fonts, styles, paragraph formatting",
-                    "Page Visual Layouts: Modify page layouts, margins, headers, footers",
-                    "View Visual Modes: Change view modes, zoom levels, ruler appearance",
-                    "Document Visual Themes: Modify document themes, color schemes, font styles",
+                    "Text Visual Diversity: Randomize text colors, fonts, styles to test text recognition despite visual changes",
+                    "Page Visual Variations: Modify page layouts, margins, headers, footers to test layout invariance",
+                    "View Visual Changes: Randomize view modes, zoom levels, ruler appearance",
+                    "Document Visual Styling: Change document themes, color schemes, font styles without affecting content",
                 ],
                 "examples": [
-                    "Text visual formatting: \"doc = desktop.getCurrentComponent(); text = doc.getText(); cursor = text.createTextCursor(); cursor.setPropertyValue('CharColor', 0x000000);\"",
-                    "Page visual layouts: \"doc = desktop.getCurrentComponent(); pageStyle = doc.getStyleFamilies().getByName('PageStyles').getByName('Standard'); pageStyle.setPropertyValue('HeaderIsOn', True);\"",
-                    "Document visual themes: \"doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowRuler', False);\"",
+                    "Random text formatting: \"import random; doc = desktop.getCurrentComponent(); text = doc.getText(); cursor = text.createTextCursor(); colors = [0x000000, 0x333333, 0x666666, 0x999999]; cursor.setPropertyValue('CharColor', random.choice(colors)); cursor.setPropertyValue('CharWeight', random.choice([100, 150, 200])); cursor.setPropertyValue('CharHeight', random.uniform(10, 16))\"",
+                    "Dynamic page layouts: \"import random; doc = desktop.getCurrentComponent(); pageStyle = doc.getStyleFamilies().getByName('PageStyles').getByName('Standard'); pageStyle.setPropertyValue('HeaderIsOn', random.choice([True, False])); pageStyle.setPropertyValue('FooterIsOn', random.choice([True, False])); pageStyle.setPropertyValue('LeftMargin', random.randint(1000, 3000))\"",
+                    "View randomization: \"import random; doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowRuler', random.choice([True, False])); viewSettings.setPropertyValue('ShowStatusBar', random.choice([True, False])); viewSettings.setPropertyValue('ZoomType', random.randint(0, 3))\"",
+                    "Document theme variations: \"import random; doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowScrollbars', random.choice([True, False])); viewSettings.setPropertyValue('ShowTextBoundaries', random.choice([True, False]))\"",
                 ],
             },
             "gimp": {
                 "executor": {
-                    "name": "execute_bash_command",
-                    "language": "bash",
-                    "description": "Desktop environment visual styling, system themes, background processes",
+                    "name": "execute_system_perturbation",
+                    "language": "system",
+                    "description": "Desktop environment visual modifications that change system appearance without affecting functionality",
                 },
                 "scenario_types": [
-                    "Visual Theme Changes: Change colors, fonts, spacing that affect screenshot appearance",
-                    "Visual Layout Variations: Modify visual layouts, positioning, sizing of non-critical elements",
-                    "Visual Content Changes: Add visual elements, change text appearance, modify visual styling",
+                    "System Visual Diversity: Randomize desktop themes, colors, fonts to test UI recognition despite visual changes",
+                    "Window Visual Variations: Modify window appearances, decorations, title bars to test window recognition",
+                    "Background Visual Changes: Randomize wallpapers, desktop elements to test background invariance",
+                    "Notification Visual Styling: Change notification appearance, system dialogs without affecting functionality",
                 ],
                 "examples": [
-                    "Visual theme changes: \"gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'; gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark';\"",
-                    "Visual color changes: \"gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'; gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark';\"",
-                    "Visual font changes: \"gsettings set org.gnome.desktop.interface font-name 'Ubuntu 12'; gsettings set org.gnome.desktop.interface monospace-font-name 'Ubuntu Mono 12';\"",
+                    "Random desktop themes: \"themes=('Adwaita', 'Adwaita-dark', 'HighContrast', 'HighContrastInverse'); icons=('Papirus', 'Papirus-Dark', 'Yaru', 'Yaru-dark'); gsettings set org.gnome.desktop.interface gtk-theme \"${themes[$RANDOM % ${#themes[@]}]}\"; gsettings set org.gnome.desktop.interface icon-theme \"${icons[$RANDOM % ${#icons[@]}]}\";\"",
+                    "Dynamic window decorations: \"gsettings set org.gnome.desktop.wm.preferences titlebar-font 'Sans Bold '$(shuf -i 10-16 -n 1); gsettings set org.gnome.desktop.wm.preferences button-layout '$(shuf -e 'close,minimize,maximize:' 'close,minimize:' 'close:minimize,maximize' | head -1)';\"",
+                    "Random background changes: \"wallpapers=('/usr/share/backgrounds/gnome/adwaita-morning.jpg' '/usr/share/backgrounds/gnome/adwaita-day.jpg' '/usr/share/backgrounds/gnome/adwaita-evening.jpg'); gsettings set org.gnome.desktop.background picture-uri \"file://${wallpapers[$RANDOM % ${#wallpapers[@]}]}\";\"",
+                    "System notification styling: \"notify-send 'System Update' 'Background process running' --icon=system-software-update; sleep 2; notify-send 'File Sync' 'Synchronizing files...' --icon=folder-sync;\"",
                 ],
             },
             "file_manager": {
                 "executor": {
-                    "name": "execute_bash_command",
-                    "language": "bash",
-                    "description": "Desktop environment visual styling, system themes, background processes",
+                    "name": "execute_system_perturbation",
+                    "language": "system",
+                    "description": "Desktop environment visual modifications that change file manager appearance without affecting functionality",
                 },
                 "scenario_types": [
-                    "Visual Theme Changes: Change colors, fonts, spacing that affect screenshot appearance",
-                    "Visual Layout Variations: Modify visual layouts, positioning, sizing of non-critical elements",
-                    "Visual Content Changes: Add visual elements, change text appearance, modify visual styling",
+                    "File Manager Visual Diversity: Randomize file manager themes, icons, layouts to test file recognition",
+                    "Window Visual Variations: Modify file manager window appearance, toolbar styles, view modes",
+                    "Background File Operations: Create/delete background files to test file system invariance",
+                    "Desktop Visual Changes: Randomize desktop elements, folder icons, file associations",
                 ],
                 "examples": [
-                    "Visual theme changes: \"gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'; gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark';\"",
-                    "Visual color changes: \"gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'; gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark';\"",
-                    "Visual font changes: \"gsettings set org.gnome.desktop.interface font-name 'Ubuntu 12'; gsettings set org.gnome.desktop.interface monospace-font-name 'Ubuntu Mono 12';\"",
+                    "Random file manager themes: \"themes=('Adwaita', 'Adwaita-dark', 'HighContrast'); icons=('Papirus', 'Papirus-Dark', 'Yaru'); gsettings set org.gnome.desktop.interface gtk-theme \"${themes[$RANDOM % ${#themes[@]}]}\"; gsettings set org.gnome.desktop.interface icon-theme \"${icons[$RANDOM % ${#icons[@]}]}\";\"",
+                    'Dynamic file operations: "mkdir -p /tmp/background_files_$(date +%s); for i in {1..5}; do touch /tmp/background_files_$(date +%s)/file_$i.txt; done; sleep 3; rm -rf /tmp/background_files_*;"',
+                    "Window management: \"wmctrl -r 'Files' -e 0,$(shuf -i 0-800 -n 1),$(shuf -i 0-600 -n 1),$(shuf -i 400-1200 -n 1),$(shuf -i 300-800 -n 1) 2>/dev/null || true;\"",
+                    "Desktop element changes: \"gsettings set org.gnome.desktop.background picture-options '$(shuf -e zoom span scaled wallpaper centered | head -1)'; gsettings set org.gnome.desktop.interface font-name '$(shuf -e 'Ubuntu 10' 'Ubuntu 11' 'Ubuntu 12' 'Ubuntu 13' | head -1)';\"",
                 ],
             },
             "terminal": {
                 "executor": {
-                    "name": "execute_bash_command",
-                    "language": "bash",
-                    "description": "Desktop environment visual styling, system themes, background processes",
+                    "name": "execute_system_perturbation",
+                    "language": "system",
+                    "description": "Desktop environment visual modifications that change terminal appearance without affecting functionality",
                 },
                 "scenario_types": [
-                    "Visual Theme Changes: Change colors, fonts, spacing that affect screenshot appearance",
-                    "Visual Layout Variations: Modify visual layouts, positioning, sizing of non-critical elements",
-                    "Visual Content Changes: Add visual elements, change text appearance, modify visual styling",
+                    "Terminal Visual Diversity: Randomize terminal themes, colors, fonts to test terminal recognition",
+                    "System Visual Variations: Modify system themes, desktop elements to test system UI recognition",
+                    "Background Process Visual: Create background processes, notifications to test process recognition",
+                    "Window Visual Changes: Randomize window decorations, title bars, terminal appearance",
                 ],
                 "examples": [
-                    "Visual theme changes: \"gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'; gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark';\"",
-                    "Visual color changes: \"gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'; gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark';\"",
-                    "Visual font changes: \"gsettings set org.gnome.desktop.interface font-name 'Ubuntu 12'; gsettings set org.gnome.desktop.interface monospace-font-name 'Ubuntu Mono 12';\"",
+                    "Random terminal themes: \"themes=('Adwaita', 'Adwaita-dark', 'HighContrast'); colors=('prefer-dark', 'prefer-light'); gsettings set org.gnome.desktop.interface gtk-theme \"${themes[$RANDOM % ${#themes[@]}]}\"; gsettings set org.gnome.desktop.interface color-scheme \"${colors[$RANDOM % ${#colors[@]}]}\";\"",
+                    "Background process simulation: \"nohup bash -c 'for i in {1..10}; do echo \"Background process $i running\"; sleep 1; done' > /tmp/background.log 2>&1 &; notify-send 'Background Process' 'System maintenance running';\"",
+                    "Dynamic window management: \"wmctrl -r 'Terminal' -e 0,$(shuf -i 0-800 -n 1),$(shuf -i 0-600 -n 1),$(shuf -i 400-1000 -n 1),$(shuf -i 300-700 -n 1) 2>/dev/null || true;\"",
+                    "System notification variations: \"notify-send 'System Alert' 'Background task completed' --icon=terminal; sleep 1; notify-send 'Process Monitor' 'CPU usage normal' --icon=system-monitor;\"",
                 ],
             },
             "vs_code": {
                 "executor": {
-                    "name": "execute_python_command",
-                    "language": "Python",
-                    "description": "VS Code environment visual styling, background files, window management",
+                    "name": "execute_system_perturbation",
+                    "language": "system",
+                    "description": "VS Code environment visual modifications that change editor appearance without affecting functionality",
                 },
                 "scenario_types": [
-                    "Visual Theme Changes: Change colors, fonts, spacing that affect screenshot appearance",
-                    "Visual Layout Variations: Modify visual layouts, positioning, sizing of non-critical elements",
-                    "Visual Content Changes: Add visual elements, change text appearance, modify visual styling",
+                    "Editor Visual Diversity: Randomize VS Code themes, colors, fonts to test editor recognition",
+                    "Window Visual Variations: Modify editor window appearance, panel layouts, sidebar styles",
+                    "Background File Operations: Create/delete background files to test file system invariance",
+                    "Workspace Visual Changes: Randomize workspace appearance, editor settings, UI elements",
                 ],
                 "examples": [
-                    "Background files: \"import os; os.makedirs('/tmp/vscode_temp', exist_ok=True); open('/tmp/vscode_temp/debug.log', 'w').write('Background process started')\"",
-                    "Window management: \"wmctrl -r 'Visual Studio Code' -e 0,0,0,1200,800\"",
-                    "Settings: \"import json; settings = {'workbench.colorTheme': 'Dark+'}; print(json.dumps(settings))\"",
+                    "Random VS Code themes: \"themes=('Dark+', 'Light+', 'Monokai', 'Solarized Dark', 'Solarized Light'); gsettings set org.gnome.desktop.interface gtk-theme '$(shuf -e Adwaita Adwaita-dark HighContrast | head -1)';\"",
+                    "Dynamic file operations: \"mkdir -p /tmp/vscode_workspace_$(date +%s); for i in {1..3}; do echo 'Background file $i' > /tmp/vscode_workspace_$(date +%s)/temp_$i.py; done; sleep 2; rm -rf /tmp/vscode_workspace_*;\"",
+                    "Window management: \"wmctrl -r 'Visual Studio Code' -e 0,$(shuf -i 0-600 -n 1),$(shuf -i 0-400 -n 1),$(shuf -i 800-1400 -n 1),$(shuf -i 600-1000 -n 1) 2>/dev/null || true;\"",
+                    "System notifications: \"notify-send 'Code Analysis' 'Background linting completed' --icon=text-editor; sleep 1; notify-send 'Extension Update' 'Extensions synchronized' --icon=system-software-update;\"",
                 ],
             },
             "system": {
                 "executor": {
-                    "name": "execute_python_command",
-                    "language": "Python",
-                    "description": "System automation, background processes, desktop environment modifications",
+                    "name": "execute_system_perturbation",
+                    "language": "system",
+                    "description": "System-wide visual modifications that change desktop appearance without affecting functionality",
                 },
                 "scenario_types": [
-                    "Visual Theme Changes: Change colors, fonts, spacing that affect screenshot appearance",
-                    "Visual Layout Variations: Modify visual layouts, positioning, sizing of non-critical elements",
-                    "Visual Content Changes: Add visual elements, change text appearance, modify visual styling",
+                    "System Visual Diversity: Randomize desktop themes, colors, fonts to test system UI recognition",
+                    "Background Process Visual: Create background processes, notifications to test process recognition",
+                    "Desktop Visual Changes: Randomize wallpapers, desktop elements, system dialogs",
+                    "Window Visual Variations: Modify window decorations, title bars, system UI elements",
                 ],
                 "examples": [
-                    "System notifications: \"import subprocess; subprocess.run(['notify-send', 'Background Process', 'System update running'])\"",
-                    "Background files: \"import os; os.makedirs('/tmp/background_work', exist_ok=True); open('/tmp/background_work/process.log', 'w').write('Background process started')\"",
-                    "Desktop settings: \"import subprocess; subprocess.run(['gsettings', 'set', 'org.gnome.desktop.interface', 'gtk-theme', 'Adwaita-dark'])\"",
+                    "Comprehensive system theming: \"themes=('Adwaita', 'Adwaita-dark', 'HighContrast', 'HighContrastInverse'); icons=('Papirus', 'Papirus-Dark', 'Yaru', 'Yaru-dark'); colors=('prefer-dark', 'prefer-light'); gsettings set org.gnome.desktop.interface gtk-theme \"${themes[$RANDOM % ${#themes[@]}]}\"; gsettings set org.gnome.desktop.interface icon-theme \"${icons[$RANDOM % ${#icons[@]}]}\"; gsettings set org.gnome.desktop.interface color-scheme \"${colors[$RANDOM % ${#colors[@]}]}\";\"",
+                    'Background process simulation: "nohup bash -c \'for i in {1..5}; do echo "System process $i running"; notify-send "Background Task $i" "Process $i completed"; sleep 2; done\' > /tmp/system_process.log 2>&1 &;"',
+                    "Dynamic desktop changes: \"wallpapers=('/usr/share/backgrounds/gnome/adwaita-morning.jpg' '/usr/share/backgrounds/gnome/adwaita-day.jpg' '/usr/share/backgrounds/gnome/adwaita-evening.jpg' '/usr/share/backgrounds/gnome/adwaita-night.jpg'); gsettings set org.gnome.desktop.background picture-uri \"file://${wallpapers[$RANDOM % ${#wallpapers[@]}]}\"; gsettings set org.gnome.desktop.background picture-options '$(shuf -e zoom span scaled wallpaper centered | head -1)';\"",
+                    "System notification variations: \"notify-send 'System Update' 'Background maintenance running' --icon=system-software-update; sleep 1; notify-send 'File Sync' 'Synchronizing user files...' --icon=folder-sync; sleep 1; notify-send 'Security Scan' 'Background security check completed' --icon=security-high;\"",
                 ],
             },
         }
@@ -932,8 +1000,12 @@ class PerturbationLLM(BaseLLM):
         DECISION CRITERIA:
         1. Does the current step match the perturbation trigger conditions?
         2. Is the target app active and relevant to the current action?
-        3. What specific visual perturbation should be applied?
+        3. What CREATIVE, UNIQUE visual perturbation should be applied using SOPHISTICATED RANDOMIZATION?
         4. Will this perturbation help the agent learn visual invariance without interfering with the task?
+        5. Does the perturbation use VARIATION and RANDOMIZATION to create realistic visual diversity?
+        6. Is the perturbation REALISTIC and reflects real-world visual variations?
+        7. Is the perturbation ORIGINAL and not just copying examples?
+        8. Does the perturbation combine multiple techniques in novel ways?
         """
 
         focus_areas_section = f"        VISUAL INVARIANCE LEARNING FOCUS ({app_name.title()}-Specific):\n"
@@ -942,20 +1014,31 @@ class PerturbationLLM(BaseLLM):
 
         json_format = f"""
         REQUIRED JSON FORMAT (exactly these fields):
-        {{
+        {{{{
             "should_apply": true/false,
             "perturbation_type": "specific_type_based_on_app",
             "target_app": "{app_name}",
             "reasoning": "Brief explanation of why/why not to apply based on current context",
-            "generated_code": "RAW_{executor_info["language"].upper()}_CODE_WITHOUT_MARKDOWN",
+            "generated_code": "CREATIVE, UNIQUE, ORIGINAL RAW_{executor_info["language"].upper()}_CODE_WITHOUT_MARKDOWN_THAT_USES_SOPHISTICATED_RANDOMIZATION_AND_AVOIDS_COPYING_EXAMPLES",
             "api_call": "{executor_info["name"]}",
-            "parameters": {{"target_app": "{app_name}"}}
-        }}
+            "parameters": {{{{"target_app": "{app_name}"}}}}
+        }}}}
         """
 
-        examples_section = f"        EXAMPLES ({app_name} visual invariance learning only):\n"
+        examples_section = f"        EXAMPLES ({app_name} visual invariance learning only) - USE AS INSPIRATION, DO NOT COPY:\n"
         for example in examples:
             examples_section += f"        - {example}\n"
+
+        creativity_instructions = """
+        CREATIVITY REQUIREMENTS:
+        - DO NOT copy the examples above - they are for INSPIRATION ONLY
+        - Create UNIQUE, ORIGINAL perturbation commands
+        - Combine multiple techniques in novel ways
+        - Use sophisticated randomization beyond simple examples
+        - Generate multi-layered, complex perturbations
+        - Avoid repetitive patterns from examples
+        - Be innovative and creative in your approach
+        """
 
         return f"""
         {current_state}
@@ -971,6 +1054,8 @@ class PerturbationLLM(BaseLLM):
         {json_format}
 
         {examples_section}
+
+        {creativity_instructions}
         """
 
     def _get_perturbation_app_config(self, app_name: str) -> Dict[str, Any]:
@@ -980,19 +1065,20 @@ class PerturbationLLM(BaseLLM):
                 "executor": {
                     "name": "execute_js_on_page",
                     "language": "JavaScript",
-                    "description": "Background theme changes, non-intrusive UI modifications, content variations",
+                    "description": "Dynamic visual modifications that randomize UI appearance to test visual invariance",
                 },
                 "focus_areas": [
-                    "Modify visual appearance of UI elements that affect screenshots",
-                    "Change colors, fonts, spacing, and styling that change visual perception",
-                    "Add visual elements that don't block functionality but change visual interface",
-                    "Modify visual layouts, positioning, and sizing of non-critical elements",
+                    "Randomize visual appearance of UI elements to test recognition despite visual changes",
+                    "Change colors, fonts, spacing, and styling randomly to test visual perception robustness",
+                    "Add/remove visual elements that don't block functionality but change visual interface",
+                    "Modify visual layouts, positioning, and sizing randomly to test layout invariance",
                     "NEVER touch target forms, buttons, navigation, or main content areas",
                 ],
                 "examples": [
-                    "Visual theme changes: \"document.body.style.backgroundColor = '#f5f5f5'; document.querySelectorAll('header, footer').forEach(el => el.style.backgroundColor = '#e0e0e0');\"",
-                    "Visual element styling: \"document.querySelectorAll('button').forEach(btn => btn.style.backgroundColor = '#007bff'; btn.style.color = 'white');\"",
-                    "Visual layout changes: \"document.querySelectorAll('.sidebar, .aside').forEach(el => el.style.marginLeft = '20px');\"",
+                    "Random color schemes: \"const colors = ['#f0f8ff', '#ffe4e1', '#f0fff0', '#fff8dc', '#f5f5dc']; document.body.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)]; document.querySelectorAll('button, input').forEach(el => el.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)]);\"",
+                    "Dynamic font randomization: \"const fonts = ['Arial', 'Helvetica', 'Times New Roman', 'Courier New', 'Georgia']; document.body.style.fontFamily = fonts[Math.floor(Math.random() * fonts.length)]; document.querySelectorAll('h1, h2, h3').forEach(h => h.style.fontSize = (Math.random() * 8 + 14) + 'px');\"",
+                    "Random layout variations: \"document.querySelectorAll('.container, .wrapper').forEach(el => { el.style.padding = Math.random() * 30 + 'px'; el.style.margin = Math.random() * 20 + 'px'; el.style.borderRadius = Math.random() * 15 + 'px'; });\"",
+                    "Visual element injection: \"const overlay = document.createElement('div'); overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,' + (Math.random() * 0.3) + ');pointer-events:none;z-index:9999;'; document.body.appendChild(overlay); setTimeout(() => overlay.remove(), Math.random() * 3000 + 1000);\"",
                 ],
             },
             "libreoffice_calc": {
@@ -1517,19 +1603,46 @@ class PerturbationLLM(BaseLLM):
     def call_llm(self, prompt: str, **kwargs) -> Dict[str, Any]:
         """Call LLM to make perturbation decision"""
         response = self._call_gemini(prompt)
+        self.logger.debug(f"PerturbationLLM raw response: {response[:500]}...")
+
         result = self.extract_json(response)
+        self.logger.debug(f"PerturbationLLM extract_json result type: {type(result)}, value: {result}")
 
         # Validate and clean the response
         if isinstance(result, list) and len(result) > 0:
             result = result[0]  # Take the first result if it's a list
+            self.logger.debug(f"PerturbationLLM took first item from list: {result}")
+
         if isinstance(result, dict):
             result = self._validate_perturbation_decision(result)
+            self.logger.debug(f"PerturbationLLM validated result: {result}")
+        else:
+            self.logger.error(f"PerturbationLLM unexpected result type: {type(result)}, value: {result}")
+            # Return a safe default
+            result = {
+                "should_apply": False,
+                "reasoning": "Failed to parse LLM response",
+                "api_call": "execute_python_command",
+                "generated_code": "",
+                "perturbation_type": "unknown",
+            }
 
         return result
 
     def _validate_perturbation_decision(self, decision: Dict[str, Any]) -> Dict[str, Any]:
         """Validate and clean perturbation decision format"""
         try:
+            # Handle case where decision is not a dict
+            if not isinstance(decision, dict):
+                self.logger.error(f"Expected dict but got {type(decision)}: {decision}")
+                return {
+                    "should_apply": False,
+                    "reasoning": "Invalid decision format",
+                    "api_call": "execute_python_command",
+                    "generated_code": "",
+                    "perturbation_type": "unknown",
+                }
+
             # Ensure required fields exist
             if "should_apply" not in decision:
                 decision["should_apply"] = False
@@ -1651,21 +1764,70 @@ class QualityEvaluationLLM(BaseLLM):
 
 
 if __name__ == "__main__":
-    llm = CurriculumLLM()
+    llm = PerturbationLLM()
 
-    with open("inputs.json", "r") as f:
-        inputs = json.load(f)
+    execution_context = ExecutionContext(
+        step_idx=0,
+        current_action='# Click on the "Data" menu to explore options for creating a Pivot Table\npyautogui.click(458, 75)',
+        action_history=[],
+        cot_context="",
+        app_states=[
+            {
+                "app_type": "terminal",
+                "current_view": "main_view",
+                "key_elements": [],
+                "task_context": "Application: gnome-shell",
+                "element_count": 1897,
+                "app_name": "gnome-shell",
+            },
+            {
+                "app_type": "libreoffice_calc",
+                "current_view": "main_view",
+                "key_elements": [],
+                "task_context": "Application: Invoices.xlsx - LibreOffice Calc",
+                "element_count": 2886,
+                "app_name": "Invoices.xlsx - LibreOffice Calc",
+            },
+        ],
+        task_instruction='Create a Pivot Table in a new sheet (Sheet2) to count how many times each "Invoice No." appears.',
+        task_type="libreoffice_calc",
+        scenario_spec=ScenarioSpec(
+            scenario_id="scenario_1",
+            target_app="terminal",
+            perturbation_trigger="After application starts and before the user starts creating the pivot table.",
+            available_perturbation_actions="gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'; gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark'; gsettings set org.gnome.desktop.wm.preferences titlebar-font 'Sans Bold 12';",
+            learning_objectives="The agent should learn to recognize terminal elements (window, text, etc.) despite changes in the GTK theme, icon theme and titlebar font.",
+            target_components=["terminal window", "text input area", "window title bar", "menus"],
+            perturbation_types=[PerturbationType.THEME],
+        ),
+    )
 
-    app_states = []
+    scenario_spec = ScenarioSpec(
+        scenario_id="scenario_1",
+        target_app="terminal",
+        perturbation_trigger="After application starts and before the user starts creating the pivot table.",
+        available_perturbation_actions="gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'; gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark'; gsettings set org.gnome.desktop.wm.preferences titlebar-font 'Sans Bold 12';",
+        learning_objectives="The agent should learn to recognize terminal elements (window, text, etc.) despite changes in the GTK theme, icon theme and titlebar font.",
+        target_components=["terminal window", "text input area", "window title bar", "menus"],
+        perturbation_types=[PerturbationType.THEME],
+    )
 
-    for input in inputs:
-        app_type = input["app_type"]
-        seed_trajectory = input["seed_trajectory"]
-        seed_trajectory = SeedTrajectory(**seed_trajectory)
-        app_state = input["app_state"]
-        curriculum_config = input["curriculum_config"]
-        curriculum_config = CurriculumConfig(**curriculum_config)
+    llm._decide_terminal_perturbation(execution_context, scenario_spec)
 
-        app_states.append(app_state)
+    # llm = CurriculumLLM()
+    # with open("inputs.json", "r") as f:
+    #     inputs = json.load(f)
 
-    llm.generate_scenario_specs(seed_trajectory, app_states, curriculum_config)
+    # app_states = []
+
+    # for input in inputs:
+    #     app_type = input["app_type"]
+    #     seed_trajectory = input["seed_trajectory"]
+    #     seed_trajectory = SeedTrajectory(**seed_trajectory)
+    #     app_state = input["app_state"]
+    #     curriculum_config = input["curriculum_config"]
+    #     curriculum_config = CurriculumConfig(**curriculum_config)
+
+    #     app_states.append(app_state)
+
+    # llm.generate_scenario_specs(seed_trajectory, app_states, curriculum_config)

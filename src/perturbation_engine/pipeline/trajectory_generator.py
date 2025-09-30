@@ -27,6 +27,12 @@ class TrajectoryGenerator:
     """Execute single trajectory with perturbation injection"""
 
     def __init__(self):
+        # Ensure logging is configured for subprocess (only if not already configured)
+        if not logging.getLogger().handlers:
+            from perturbation_engine.configure_logging import configure_logging
+
+            configure_logging()
+
         self.logger = logging.getLogger(__name__)
         self.perturbation_llm = PerturbationLLM()
         log_memory_usage("TrajectoryGenerator initialized", self.logger)
@@ -105,14 +111,22 @@ class TrajectoryGenerator:
 
                             if perturbation_result.get("success", False):
                                 perturbation_successes += 1
+                                # Mark environment as used to force reset on next trajectory
+                                env.mark_perturbation_applied()
                                 self.logger.info(
                                     f"Perturbation applied successfully: {perturbation_decision.get('reasoning', '')}"
+                                )
+                                self.logger.debug(
+                                    f"Perturbation details: type={perturbation_decision.get('perturbation_type', 'unknown')}, "
+                                    f"target_app={perturbation_decision.get('target_app', 'unknown')}, "
+                                    f"api_call={perturbation_decision.get('api_call', 'unknown')}"
                                 )
                             else:
                                 perturbation_failures += 1
                                 self.logger.warning(
                                     f"Perturbation failed: {perturbation_result.get('error_message', 'Unknown error')}"
                                 )
+                                self.logger.debug(f"Failed perturbation details: {perturbation_decision}")
 
                             perturbation_log.append(
                                 {
@@ -125,6 +139,7 @@ class TrajectoryGenerator:
                         except Exception as e:
                             perturbation_failures += 1
                             self.logger.error(f"Perturbation execution error: {e}")
+                            self.logger.debug(f"Error details: {perturbation_decision}")
                             perturbation_log.append(
                                 {
                                     "step": step_idx + 1,
@@ -133,6 +148,11 @@ class TrajectoryGenerator:
                                     "result": {"success": False, "error": str(e)},
                                 }
                             )
+                    else:
+                        # Log why perturbation was not applied
+                        self.logger.debug(
+                            f"No perturbation applied: {perturbation_decision.get('reasoning', 'No reasoning provided')}"
+                        )
 
                     # Execute original action
                     obs, reward, done, info = env.step(action)

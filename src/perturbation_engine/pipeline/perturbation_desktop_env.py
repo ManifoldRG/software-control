@@ -52,6 +52,12 @@ class PerturbationDesktopEnv(DesktopEnv):
         client_password: str = "",
         chromium_port: int = 9222,
     ):
+        # Ensure logging is configured for subprocess (only if not already configured)
+        if not logging.getLogger().handlers:
+            from perturbation_engine.configure_logging import configure_logging
+
+            configure_logging()
+
         self.logger = logging.getLogger(__name__)
         self.chromium_port = chromium_port
 
@@ -82,6 +88,11 @@ class PerturbationDesktopEnv(DesktopEnv):
             vm_ip=self.vm_ip, server_port=self.server_port, chromium_port=self.chromium_port
         )
         self.logger.info("Replaced controller with PerturbationController")
+
+    def mark_perturbation_applied(self):
+        """Mark that a perturbation has been applied - forces reset on next trajectory"""
+        self.is_environment_used = True
+        self.logger.debug("Perturbation applied - environment marked as used (will reset on next trajectory)")
 
     def close(self) -> None:
         """Close both the perturbation controller and original environment"""

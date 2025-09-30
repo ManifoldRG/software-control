@@ -48,15 +48,18 @@ class CurriculumPlanner:
                 # Validate and filter scenario specs
                 valid_specs = self.validate_scenario_specs(scenario_specs)
 
-                if len(valid_specs) < len(scenario_specs) * 0.5:  # Less than 50% valid
+                # Enhanced validation for diversity and quality
+                diverse_specs = self._ensure_scenario_diversity(valid_specs)
+
+                if len(diverse_specs) < len(scenario_specs) * 0.4:  # Less than 40% valid and diverse
                     self.logger.warning(
-                        f"Attempt {attempt + 1}: Only {len(valid_specs)}/{len(scenario_specs)} scenarios valid"
+                        f"Attempt {attempt + 1}: Only {len(diverse_specs)}/{len(scenario_specs)} scenarios valid and diverse"
                     )
                     if attempt < max_retries - 1:
                         continue
 
-                self.logger.info(f"Generated {len(valid_specs)} valid scenario specifications")
-                return valid_specs
+                self.logger.info(f"Generated {len(diverse_specs)} valid and diverse scenario specifications")
+                return diverse_specs
 
             except Exception as e:
                 self.logger.error(f"Attempt {attempt + 1} failed: {e}")
@@ -95,3 +98,101 @@ class CurriculumPlanner:
 
         self.logger.info(f"Validated {len(valid_specs)}/{len(scenario_specs)} scenario specifications")
         return valid_specs
+
+    def _ensure_scenario_diversity(self, scenario_specs: List[ScenarioSpec]) -> List[ScenarioSpec]:
+        """Ensure scenario diversity by filtering out similar scenarios based on actual commands"""
+        diverse_specs = []
+        seen_commands = set()
+        seen_target_apps = set()
+
+        for spec in scenario_specs:
+            # Check for diversity in actual perturbation commands (not just types)
+            command_signature = self._extract_command_signature(spec.available_perturbation_actions)
+            if command_signature in seen_commands:
+                self.logger.debug(f"Skipping duplicate command signature: {command_signature[:50]}...")
+                continue
+
+            # Check for diversity in target apps (allow some overlap but not too much)
+            if spec.target_app in seen_target_apps and len(seen_target_apps) > 2:
+                self.logger.debug(f"Skipping duplicate target app: {spec.target_app}")
+                continue
+
+            # Check for meaningful learning objectives
+            if not spec.learning_objectives or len(spec.learning_objectives.strip()) < 20:
+                self.logger.debug(
+                    f"Skipping scenario with weak learning objectives: {spec.learning_objectives}"
+                )
+                continue
+
+            # Check for realistic perturbation actions
+            if (
+                not spec.available_perturbation_actions
+                or len(spec.available_perturbation_actions.strip()) < 30
+            ):
+                self.logger.debug(
+                    f"Skipping scenario with weak perturbation actions: {spec.available_perturbation_actions}"
+                )
+                continue
+
+            # Check for creativity - avoid scenarios that are too similar to examples
+            if self._is_too_similar_to_examples(spec.available_perturbation_actions):
+                self.logger.debug(
+                    f"Skipping scenario too similar to examples: {spec.available_perturbation_actions[:50]}..."
+                )
+                continue
+
+            diverse_specs.append(spec)
+            seen_commands.add(command_signature)
+            seen_target_apps.add(spec.target_app)
+
+        self.logger.info(
+            f"Ensured diversity: {len(diverse_specs)}/{len(scenario_specs)} scenarios are diverse"
+        )
+        return diverse_specs
+
+    def _extract_command_signature(self, perturbation_actions: str) -> str:
+        """Extract a signature from perturbation actions to detect duplicates"""
+        if not perturbation_actions:
+            return ""
+
+        # Extract key command patterns
+        import re
+
+        # Remove variable values and focus on command structure
+        signature = perturbation_actions.lower()
+
+        # Replace random values with placeholders
+        signature = re.sub(r"\d+", "N", signature)  # Numbers
+        signature = re.sub(r'"[^"]*"', '"STRING"', signature)  # Strings
+        signature = re.sub(r"'[^']*'", "'STRING'", signature)  # Single quotes
+        signature = re.sub(r"\[[^\]]*\]", "[ARRAY]", signature)  # Arrays
+        signature = re.sub(r"\([^)]*\)", "(PARAMS)", signature)  # Function calls
+
+        # Remove whitespace and normalize
+        signature = re.sub(r"\s+", " ", signature).strip()
+
+        return signature
+
+    def _is_too_similar_to_examples(self, perturbation_actions: str) -> bool:
+        """Check if perturbation actions are too similar to common examples"""
+        if not perturbation_actions:
+            return True
+
+        # Common example patterns to avoid
+        example_patterns = [
+            "gsettings set org.gnome.desktop.interface gtk-theme",
+            "document.body.style.backgroundColor",
+            "document.querySelectorAll('button')",
+            "gsettings set org.gnome.desktop.interface icon-theme",
+            "notify-send 'Background Process'",
+            "mkdir -p /tmp/background_work",
+        ]
+
+        action_lower = perturbation_actions.lower()
+        for pattern in example_patterns:
+            if pattern in action_lower:
+                # Check if it's just a simple copy
+                if len(perturbation_actions.strip()) < 100:  # Too short to be creative
+                    return True
+
+        return False

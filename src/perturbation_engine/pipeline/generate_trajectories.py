@@ -164,7 +164,7 @@ def main():
     # Configuration
     execution_config = ExecutionConfig(
         # VM/Provider settings
-        # path_to_vm="~/FIG/OSWorld/vmware_vm_data/Ubuntu0/Ubuntu0.vmx",
+        # path_to_vm="/Users/lockewang/FIG/OSWorld/vmware_vm_data/Ubuntu0/Ubuntu0.vmx",
         path_to_vm=None,
         provider_name="aws",
         # provider_name="vmware",
@@ -191,7 +191,7 @@ def main():
     curriculum_config = CurriculumConfig(
         scenario_count=1,
         num_parallel_vms=1,
-        result_base_dir="/opt/manifold/results/",
+        result_base_dir="/opt/manifold/results",
         beginner_scenarios=0,
         intermediate_scenarios=1,
         advanced_scenarios=0,
