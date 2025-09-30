@@ -3,12 +3,10 @@ TrajectoryGenerator: Single trajectory execution
 Seed + spec → perturbed trajectory
 """
 
-import asyncio
 import datetime
 import json
 import logging
 import os
-import threading
 import time
 from typing import Any, Dict
 
@@ -37,41 +35,6 @@ class TrajectoryGenerator:
         """Clean up resources to prevent memory leaks"""
         force_garbage_collection(self.logger)
 
-    def _reset_environment_in_thread(self, env: PerturbationDesktopEnv, task_config: Dict[str, Any]) -> Any:
-        """Reset environment in a separate thread to avoid asyncio loop conflicts with Playwright"""
-
-        def reset_worker():
-            try:
-                # Create a new event loop for this thread
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    return env.reset(task_config=task_config)
-                finally:
-                    loop.close()
-            except Exception as e:
-                self.logger.error(f"Error in environment reset thread: {e}")
-                raise
-
-        # Run the reset in a separate thread
-        result_container = {}
-        exception_container = {}
-
-        def thread_worker():
-            try:
-                result_container["result"] = reset_worker()
-            except Exception as e:
-                exception_container["exception"] = e
-
-        thread = threading.Thread(target=thread_worker)
-        thread.start()
-        thread.join()
-
-        if "exception" in exception_container:
-            raise exception_container["exception"]
-
-        return result_container["result"]
-
     def execute_trajectory(
         self,
         env: PerturbationDesktopEnv,
@@ -79,19 +42,23 @@ class TrajectoryGenerator:
         scenario_spec: ScenarioSpec,
         max_steps: int = 15,
     ) -> GeneratedTrajectory:
-        """Execute trajectory with runtime perturbation"""
+        """Execute trajectory with runtime perturbation and error handling"""
 
         start_time = time.time()
         trajectory_id = f"{seed_trajectory.task_id}_{scenario_spec.scenario_id}"
 
         self.logger.info(f"Executing trajectory {trajectory_id}")
 
+        # Track perturbation success rates
+        perturbation_attempts = 0
+        perturbation_successes = 0
+        perturbation_failures = 0
+
         try:
             trajectory_replayer = TrajectoryReplayer()
             trajectory_replayer.load_trajectory(seed_trajectory.gt_actions_file_path)
 
-            # Reset environment in separate thread to avoid asyncio loop conflicts
-            self._reset_environment_in_thread(env, seed_trajectory.config)
+            env.reset(task_config=seed_trajectory.config)
             env.controller.start_recording()
 
             # Initialize execution state
@@ -130,18 +97,42 @@ class TrajectoryGenerator:
 
                     # Apply perturbation if LLM decides to
                     if perturbation_decision.get("should_apply", False):
-                        perturbation_result = self._apply_perturbation(env.controller, perturbation_decision)
-                        perturbation_log.append(
-                            {
-                                "step": step_idx + 1,
-                                "timestamp": action_timestamp,
-                                "decision": perturbation_decision,
-                                "result": perturbation_result,
-                            }
-                        )
-                        self.logger.info(
-                            f"Applied perturbation: {perturbation_decision.get('reasoning', '')}"
-                        )
+                        perturbation_attempts += 1
+                        try:
+                            perturbation_result = self._apply_perturbation(
+                                env.controller, perturbation_decision
+                            )
+
+                            if perturbation_result.get("success", False):
+                                perturbation_successes += 1
+                                self.logger.info(
+                                    f"Perturbation applied successfully: {perturbation_decision.get('reasoning', '')}"
+                                )
+                            else:
+                                perturbation_failures += 1
+                                self.logger.warning(
+                                    f"Perturbation failed: {perturbation_result.get('error_message', 'Unknown error')}"
+                                )
+
+                            perturbation_log.append(
+                                {
+                                    "step": step_idx + 1,
+                                    "timestamp": action_timestamp,
+                                    "decision": perturbation_decision,
+                                    "result": perturbation_result,
+                                }
+                            )
+                        except Exception as e:
+                            perturbation_failures += 1
+                            self.logger.error(f"Perturbation execution error: {e}")
+                            perturbation_log.append(
+                                {
+                                    "step": step_idx + 1,
+                                    "timestamp": action_timestamp,
+                                    "decision": perturbation_decision,
+                                    "result": {"success": False, "error": str(e)},
+                                }
+                            )
 
                     # Execute original action
                     obs, reward, done, info = env.step(action)
@@ -176,6 +167,28 @@ class TrajectoryGenerator:
             # Stop recording
             env.controller.end_recording(f"/opt/manifold/results/{trajectory_id}/recording.mp4")
 
+            # Calculate perturbation success rate
+            perturbation_success_rate = (
+                (perturbation_successes / perturbation_attempts) if perturbation_attempts > 0 else 0.0
+            )
+
+            # Log perturbation statistics
+            self.logger.info(
+                f"Perturbation stats for {trajectory_id}: {perturbation_successes}/{perturbation_attempts} successful ({perturbation_success_rate:.2%})"
+            )
+
+            # Add perturbation stats to the log
+            perturbation_log.append(
+                {
+                    "summary": {
+                        "perturbation_attempts": perturbation_attempts,
+                        "perturbation_successes": perturbation_successes,
+                        "perturbation_failures": perturbation_failures,
+                        "perturbation_success_rate": perturbation_success_rate,
+                    }
+                }
+            )
+
             # Create generated trajectory
             generated_trajectory = GeneratedTrajectory(
                 trajectory_id=trajectory_id,
@@ -188,7 +201,9 @@ class TrajectoryGenerator:
                 perturbation_log=perturbation_log,
             )
 
-            self.logger.info(f"Trajectory {trajectory_id} completed: success={result > 0}, score={result}")
+            self.logger.info(
+                f"Trajectory {trajectory_id} completed: success={result > 0}, score={result}, perturbation_rate={perturbation_success_rate:.2%}"
+            )
 
             # Clean up resources after trajectory completion
             self._cleanup_resources()

@@ -60,6 +60,16 @@ class SharedExecutionEngine:
                 processes.append(p)
                 self.logger.info(f"Started process {p.name} with PID {p.pid}")
 
+                # Register process for signal handling - following OSWorld pattern
+                try:
+                    from perturbation_engine.pipeline.generate_trajectories import (
+                        processes as global_processes,
+                    )
+
+                    global_processes.append(p)
+                except ImportError:
+                    pass  # Not running from main script
+
             # Wait for completion
             try:
                 while True:
@@ -97,7 +107,7 @@ class ParallelExecutionEngine:
         trajectory_generator = TrajectoryGenerator()
         env = None
         try:
-            # Initialize environment
+            # Initialize environment - each process gets its own environment
             env = PerturbationDesktopEnv(
                 path_to_vm=self.config.path_to_vm,
                 # path_to_vm="~/Virtual Machines.localized/Ubuntu1.vmwarevm/Ubuntu1.vmx",
@@ -124,11 +134,15 @@ class ParallelExecutionEngine:
                     break
 
                 try:
-                    # Execute trajectory with scenario
+                    # Execute trajectory with scenario using the persistent environment
+                    # Each trajectory gets its own reset() call - this is the key difference from OSWorld
                     result = trajectory_generator.execute_trajectory(
                         env, seed_trajectory, scenario_spec, self.config.max_steps
                     )
                     shared_results.append(result)
+                    self.logger.info(
+                        f"Completed trajectory {result.trajectory_id} in {current_process().name}"
+                    )
 
                 except Exception as e:
                     self.logger.error(f"Task-level error in {current_process().name}: {e}")

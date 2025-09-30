@@ -62,9 +62,27 @@ class UnifiedGenerator:
                 chromium_port=self.execution_config.chromium_port,
             )
 
+            # Register environment for signal handling
+            try:
+                from perturbation_engine.pipeline.generate_trajectories import active_environments
+
+                active_environments.append(env)
+            except ImportError:
+                pass  # Not running from main script
+
             env.reset(task_config=seed_trajectory.config)
             app_states = env.get_app_states_from_accessibility_tree()
             env.close()
+
+            # Remove from active environments after closing
+            try:
+                from perturbation_engine.pipeline.generate_trajectories import active_environments
+
+                if env in active_environments:
+                    active_environments.remove(env)
+            except ImportError:
+                pass  # Not running from main script
+
             time.sleep(5)
 
             # Force garbage collection after environment cleanup
@@ -93,17 +111,57 @@ class UnifiedGenerator:
                 seed_trajectory, scenario_specs, curriculum_config.num_parallel_vms
             )
 
-            # Step 4: Evaluate quality
+            # Step 4: Evaluate quality and filter trajectories
+            valid_trajectories = []
+            quality_stats = {
+                "total_trajectories": len(generated_trajectories),
+                "high_quality_trajectories": 0,
+                "low_perturbation_success": 0,
+                "failed_trajectories": 0,
+            }
+
             for i, trajectory in enumerate(generated_trajectories):
                 if i < len(scenario_specs):
+                    # Evaluate quality
                     quality_score = self.quality_evaluator.evaluate_trajectory_quality(
                         trajectory, scenario_specs[i]
                     )
-                    # Update trajectory with quality score
                     trajectory.quality_score = quality_score
-                    generated_trajectories[i] = trajectory
 
-            self.logger.info(f"Generated {len(generated_trajectories)} trajectories")
+                    # Check perturbation success rate from log
+                    perturbation_success_rate = 0.0
+                    if trajectory.perturbation_log:
+                        summary = trajectory.perturbation_log[-1].get("summary", {})
+                        perturbation_success_rate = summary.get("perturbation_success_rate", 0.0)
+
+                    # Filter trajectories based on quality and perturbation success
+                    if (
+                        quality_score >= 0.6 and perturbation_success_rate >= 0.3
+                    ):  # 60% quality, 30% perturbation success
+                        valid_trajectories.append(trajectory)
+                        quality_stats["high_quality_trajectories"] += 1
+                    elif perturbation_success_rate < 0.3:
+                        quality_stats["low_perturbation_success"] += 1
+                        self.logger.warning(
+                            f"Trajectory {trajectory.trajectory_id} dropped: low perturbation success rate {perturbation_success_rate:.2%}"
+                        )
+                    else:
+                        quality_stats["failed_trajectories"] += 1
+                        self.logger.warning(
+                            f"Trajectory {trajectory.trajectory_id} dropped: low quality score {quality_score:.2f}"
+                        )
+
+            # Log comprehensive statistics
+            self.logger.info("Trajectory Quality Analysis:")
+            self.logger.info(f"  Total generated: {quality_stats['total_trajectories']}")
+            self.logger.info(f"  High quality (kept): {quality_stats['high_quality_trajectories']}")
+            self.logger.info(
+                f"  Low perturbation success (dropped): {quality_stats['low_perturbation_success']}"
+            )
+            self.logger.info(f"  Failed quality check (dropped): {quality_stats['failed_trajectories']}")
+
+            generated_trajectories = valid_trajectories
+            self.logger.info(f"Final valid trajectories: {len(generated_trajectories)}")
 
             # Final cleanup and memory check
             force_garbage_collection(self.logger)

@@ -38,20 +38,42 @@ def signal_handler(signum, frame):
     logger = logging.getLogger(__name__)
     logger.info(f"Received signal {signum}. Gracefully shutting down...")
 
-    # Close environments and terminate processes
+    # Close all registered environments in the main process
     for env in active_environments:
         try:
+            logger.info("Closing environment...")
             env.close()
+            logger.info("Environment closed successfully")
         except Exception as e:
             logger.error(f"Error closing environment: {e}")
 
+    # Send termination signal to all child processes first
     for p in processes:
         if p.is_alive():
             try:
+                logger.info(f"Sending termination signal to process {p.name}...")
                 p.terminate()
             except Exception as e:
-                logger.error(f"Error terminating process: {e}")
+                logger.error(f"Error sending termination signal to process: {e}")
 
+    # Allow a short time for processes to handle their own cleanup
+    import time
+
+    time.sleep(1)
+
+    # Forcefully terminate any processes that didn't exit
+    for p in processes:
+        if p.is_alive():
+            try:
+                logger.info(f"Forcefully terminating process {p.name}...")
+                import os
+                import signal as sig
+
+                os.kill(p.pid, sig.SIGKILL)
+            except Exception as e:
+                logger.error(f"Error forcefully terminating process: {e}")
+
+    logger.info("Shutdown complete. Exiting.")
     sys.exit(0)
 
 
@@ -154,7 +176,7 @@ def main():
         action_space="pyautogui",
         screen_size=(1920, 1080),
         os_type="Ubuntu",
-        client_password="osworld-public-evaluation",
+        client_password=os.environ.get("AWS_CLIENT_PASSWORD", "osworld-public-evaluation"),
         # Execution settings
         max_steps=15,
         sleep_after_execution=0.0,
@@ -169,7 +191,7 @@ def main():
     curriculum_config = CurriculumConfig(
         scenario_count=1,
         num_parallel_vms=1,
-        result_base_dir="./perturbation_results",
+        result_base_dir="/opt/manifold/results/",
         beginner_scenarios=0,
         intermediate_scenarios=1,
         advanced_scenarios=0,

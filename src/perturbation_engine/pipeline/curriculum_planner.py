@@ -27,22 +27,42 @@ class CurriculumPlanner:
         app_states: List[Dict[str, Any]],
         curriculum_config: CurriculumConfig,
     ) -> List[ScenarioSpec]:
-        """Generate curriculum of scenario specifications"""
+        """Generate curriculum of scenario specifications with retry and validation"""
 
         self.logger.info(f"Planning curriculum for task: {seed_trajectory.task_instruction}")
 
-        try:
-            # Use LLM to generate scenario specs
-            scenario_specs = self.curriculum_llm.generate_scenario_specs(
-                seed_trajectory, app_states, curriculum_config
-            )
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # Use LLM to generate scenario specs
+                scenario_specs = self.curriculum_llm.generate_scenario_specs(
+                    seed_trajectory, app_states, curriculum_config
+                )
 
-            self.logger.info(f"Generated {len(scenario_specs)} scenario specifications")
-            return scenario_specs
+                if not scenario_specs:
+                    self.logger.warning(f"Attempt {attempt + 1}: No scenario specs generated")
+                    if attempt < max_retries - 1:
+                        continue
+                    return []
 
-        except Exception as e:
-            self.logger.error(f"Error planning curriculum: {e}")
-            return []
+                # Validate and filter scenario specs
+                valid_specs = self.validate_scenario_specs(scenario_specs)
+
+                if len(valid_specs) < len(scenario_specs) * 0.5:  # Less than 50% valid
+                    self.logger.warning(
+                        f"Attempt {attempt + 1}: Only {len(valid_specs)}/{len(scenario_specs)} scenarios valid"
+                    )
+                    if attempt < max_retries - 1:
+                        continue
+
+                self.logger.info(f"Generated {len(valid_specs)} valid scenario specifications")
+                return valid_specs
+
+            except Exception as e:
+                self.logger.error(f"Attempt {attempt + 1} failed: {e}")
+                if attempt == max_retries - 1:
+                    self.logger.error(f"All {max_retries} curriculum generation attempts failed")
+                    return []
 
     def validate_scenario_specs(self, scenario_specs: List[ScenarioSpec]) -> List[ScenarioSpec]:
         """Validate scenario specifications"""
