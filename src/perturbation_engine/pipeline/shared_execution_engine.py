@@ -20,17 +20,20 @@ from perturbation_engine.pipeline.trajectory_generator import TrajectoryGenerato
 from perturbation_engine.utils.memory_utils import force_garbage_collection, log_memory_usage
 
 
-def run_vm_tasks_worker(execution_config: ExecutionConfig, scenario_queue: Queue, shared_results: list):
+def run_vm_tasks_worker(
+    execution_config: ExecutionConfig, result_base_dir: str, scenario_queue: Queue, shared_results: list
+):
     """Worker function for parallel execution - creates objects in subprocess to avoid pickle issues"""
-    execution_engine = ParallelExecutionEngine(execution_config)
+    execution_engine = ParallelExecutionEngine(execution_config, result_base_dir)
     execution_engine.run_vm_tasks(scenario_queue, shared_results)
 
 
 class SharedExecutionEngine:
     """Parallel VM execution manager"""
 
-    def __init__(self, execution_config: ExecutionConfig):
+    def __init__(self, execution_config: ExecutionConfig, result_base_dir: str = "/opt/manifold/results"):
         self.execution_config = execution_config
+        self.result_base_dir = result_base_dir
         self.logger = logging.getLogger(__name__)
 
     def execute_scenarios_parallel(
@@ -53,7 +56,7 @@ class SharedExecutionEngine:
             for i in range(num_parallel_vms):
                 p = Process(
                     target=run_vm_tasks_worker,
-                    args=(self.execution_config, scenario_queue, shared_results),
+                    args=(self.execution_config, self.result_base_dir, scenario_queue, shared_results),
                     name=f"ExecutionProcess-{i + 1}",
                 )
                 p.daemon = True
@@ -98,8 +101,9 @@ class SharedExecutionEngine:
 class ParallelExecutionEngine:
     """Manages parallel execution of trajectory generation tasks"""
 
-    def __init__(self, config: ExecutionConfig):
+    def __init__(self, config: ExecutionConfig, result_base_dir: str = "/opt/manifold/results"):
         self.config = config
+        self.result_base_dir = result_base_dir
         self.logger = logging.getLogger(__name__)
 
     def run_vm_tasks(self, scenario_queue: Queue, shared_results: list):
@@ -118,7 +122,7 @@ class ParallelExecutionEngine:
         self.logger.info(f"Starting trajectory generation in {process_name}")
 
         # Initialize trajectory generator in subprocess to avoid pickle issues
-        trajectory_generator = TrajectoryGenerator()
+        trajectory_generator = TrajectoryGenerator(self.result_base_dir)
         env = None
         try:
             # Initialize environment - each process gets its own environment

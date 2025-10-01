@@ -164,7 +164,7 @@ def main():
     # Configuration
     execution_config = ExecutionConfig(
         # VM/Provider settings
-        # path_to_vm="/Users/lockewang/FIG/OSWorld/vmware_vm_data/Ubuntu0/Ubuntu0.vmx",
+        # path_to_vm=os.environ.get("VMWARE_PATH_TO_VM", None),
         path_to_vm=None,
         provider_name="aws",
         # provider_name="vmware",

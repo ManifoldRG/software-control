@@ -11,6 +11,7 @@ from playwright.sync_api import Page, sync_playwright
 
 from OSWorld.desktop_env.controllers.python import PythonController
 from OSWorld.desktop_env.controllers.setup import SetupController
+from perturbation_engine.control.app_state_extractor import AppStateExtractor
 
 
 @dataclass
@@ -47,6 +48,11 @@ class PerturbationController(PythonController, SetupController):
         self._context = None
         self._page = None
 
+        # App state extractor
+        self._app_state_extractor = None
+        if AppStateExtractor:
+            self._app_state_extractor = AppStateExtractor(self)
+
     def execute_perturbation(
         self, perturbation_type: str, generated_code: str, api_call: str, parameters: Dict[str, Any]
     ) -> ManipulationResult:
@@ -57,7 +63,7 @@ class PerturbationController(PythonController, SetupController):
 
             if api_call == "execute_js_on_page":
                 success = self.execute_js_on_page(generated_code)
-                result_data = {"api_call": api_call, "code": generated_code[:100] + "..."}
+                result_data = {"api_call": api_call, "code": generated_code}
             elif api_call == "execute_bash_command":
                 success = self.execute_bash_command(generated_code)
                 result_data = {"api_call": api_call, "command": generated_code}
@@ -67,7 +73,7 @@ class PerturbationController(PythonController, SetupController):
                 result_data = {"api_call": api_call, "result": result}
             elif api_call == "execute_uno_command":
                 success = self.execute_uno_command(generated_code, parameters)
-                result_data = {"api_call": api_call, "code": generated_code[:100] + "..."}
+                result_data = {"api_call": api_call, "code": generated_code}
             elif api_call == "manipulate_app_state":
                 success = self._manipulate_app_state(parameters)
                 result_data = {"api_call": api_call, "parameters": parameters}
@@ -387,3 +393,40 @@ except Exception as e:
                 self.logger.info("Playwright connections closed")
         except Exception as e:
             self.logger.error(f"Error closing Playwright: {e}")
+
+    def get_comprehensive_app_states(self, use_comprehensive: bool = True) -> list:
+        """
+        Get app state information for LLM consumption.
+
+        Args:
+            use_comprehensive: If True, extract rich DOM/UNO data (slower but detailed)
+                             If False, use basic accessibility tree only (faster)
+
+        Comprehensive mode returns:
+        - Browser: Full DOM (buttons, links, forms, inputs, headings)
+        - LibreOffice: Document state (sheets, content, slides)
+        - All apps: Categorized elements (buttons, menus, text fields, etc.)
+        - UI structure (menu bars, toolbars, dialogs, panels)
+        - Interactive elements with full metadata
+
+        Basic mode returns:
+        - app_type, app_name, current_view
+        - key_elements (up to 10 interactive elements)
+        - element_count
+        """
+        if not self._app_state_extractor:
+            self.logger.warning("AppStateExtractor not available")
+            return []
+
+        try:
+            return self._app_state_extractor.extract_app_states(use_comprehensive=use_comprehensive)
+        except Exception as e:
+            self.logger.error(f"Error extracting app states: {e}")
+            # Try basic mode as fallback if comprehensive fails
+            if use_comprehensive:
+                self.logger.info("Falling back to basic extraction")
+                try:
+                    return self._app_state_extractor.extract_app_states(use_comprehensive=False)
+                except Exception as e2:
+                    self.logger.error(f"Basic extraction also failed: {e2}")
+            return []

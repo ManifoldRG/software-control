@@ -207,72 +207,81 @@ class CurriculumLLM(BaseLLM):
     def _build_common_prompt_sections(
         self, app_name: str, executor_info: Dict[str, str], scenario_types: List[str], examples: List[str]
     ) -> str:
-        """Build common prompt sections to reduce duplication"""
+        """Build efficient prompt sections for scenario spec generation"""
 
-        critical_requirements = """
-        CRITICAL REQUIREMENTS - VISUAL INVARIANCE LEARNING ONLY:
-        - NEVER interfere with main task functionality (target forms, buttons, navigation)
-        - ONLY modify visual appearance that affects screenshots and UI perception
-        - Focus on visual changes that teach agents to recognize UI elements despite visual variations
-        - Generate DIVERSE, REALISTIC perturbations that randomize important visual features
-        - Use RANDOMIZATION and VARIATION to create realistic visual diversity
-        - Modify colors, fonts, layouts, themes that change visual appearance but not functionality
-        - Add visual elements that don't block functionality but change the visual interface
-        - Ensure perturbations are REALISTIC and reflect real-world visual variations
-        - BE CREATIVE: Generate UNIQUE, ORIGINAL commands - DO NOT simply copy examples
-        - AVOID REPETITION: Create novel perturbation approaches beyond basic examples
-        - INNOVATE: Combine different techniques and create sophisticated, multi-layered perturbations
+        core_requirements = """
+        ═══════════════════════════════════════════════════════════════
+        CORE REQUIREMENTS: Visual-Only Perturbations
+        ═══════════════════════════════════════════════════════════════
+
+        ✅ DO: Modify colors, fonts, layouts, themes, spacing, borders
+        ✅ DO: Use professional design systems (Material, Fluent, HIG, Ant, HighContrast)
+        ✅ DO: Target 15+ elements, affect 3+ visual dimensions
+        ✅ DO: Generate ORIGINAL code (not copied from examples)
+
+        ❌ DON'T: Interfere with task functionality
+        ❌ DON'T: Touch target forms, buttons, or navigation
+        ❌ DON'T: Break the main task workflow
+        ❌ DON'T: Copy examples - create novel approaches
+        """
+
+        design_systems = """
+        🎨 DESIGN SYSTEMS TO USE:
+        Material 3: #6750A4, #625B71, Roboto, 4-20px radius
+        Fluent: #0078D4, Segoe UI, 0-8px radius
+        Apple HIG: #007AFF, SF Pro, 4-16px radius
+        Ant Design: #1890FF, Roboto, 2-8px radius
+        High Contrast: #000/#FFF, Arial, 0px radius, 2-4px borders
+
+        Pick ONE system per scenario, apply consistently across all elements.
+        """
+
+        visual_dimensions = """
+        📏 TARGET 3+ DIMENSIONS:
+        1. COLOR: Backgrounds, text, borders, accents
+        2. TYPOGRAPHY: Fonts, sizes (12-24px), weights (300-900)
+        3. LAYOUT: Padding (4-48px), margins, alignment
+        4. SHAPE: Radius (0-24px), shadows, borders
+        5. MOTION: Transitions (100-500ms) - subtle only
+        6. DEPTH: Z-index, overlays, elevation
+        7. DENSITY: Compact vs Spacious modes
+        8. SEMANTICS: Primary/secondary hierarchy
         """
 
         json_format = f"""
-        REQUIRED JSON FORMAT (exactly these fields):
+        REQUIRED JSON FORMAT:
         {{
             "target_app": "{app_name}",
-            "perturbation_trigger": "string describing when to trigger (e.g., 'when user interacts with the application', 'during data entry')",
-            "available_perturbation_actions": "string with CREATIVE, UNIQUE, ORIGINAL {executor_info["language"]} code that uses SOPHISTICATED RANDOMIZATION and VARIATION for visual manipulation - DO NOT copy examples, create novel approaches",
-            "learning_objectives": "string describing what agent should learn about visual invariance - recognizing UI elements despite DIVERSE visual changes",
-            "target_components": ["array", "of", "visual", "components", "like", "buttons", "menus", "forms"],
-            "perturbation_types": ["theme", "layout", "content_variation", "ui_injection"]
+            "perturbation_trigger": "when to apply (e.g., 'at task start', 'during interaction')",
+            "available_perturbation_actions": "COMPLETE DESIGN SYSTEM {executor_info["language"]} code targeting specific elements",
+            "learning_objectives": "visual invariance learning goal",
+            "target_components": ["specific", "UI", "components"],
+            "perturbation_types": ["theme", "layout", "content_variation"]
         }}
+
+        VALID TYPES: theme, layout, content_variation, ui_injection, notification, background_process
         """
 
-        valid_types = """
-        VALID PERTURBATION TYPES: theme, layout, content_variation, ui_injection, notification, background_process, window_management, file_operations
-        """
-
-        scenario_types_section = "SCENARIO TYPES TO GENERATE (Visual Invariance Learning):\n"
+        scenario_types_section = f"SCENARIO TYPES FOR {app_name.upper()}:\n"
         for i, scenario_type in enumerate(scenario_types, 1):
             scenario_types_section += f"        {i}. {scenario_type}\n"
 
-        examples_section = (
-            "        EXAMPLES (visual invariance learning only) - USE AS INSPIRATION, DO NOT COPY:\n"
-        )
+        examples_section = f"EXAMPLES ({app_name}) - INSPIRATION ONLY:\n"
         for example in examples:
-            examples_section += f"        - {example}\n"
-
-        creativity_instructions = """
-        CREATIVITY REQUIREMENTS:
-        - DO NOT copy the examples above - they are for INSPIRATION ONLY
-        - Create UNIQUE, ORIGINAL perturbation commands
-        - Combine multiple techniques in novel ways
-        - Use sophisticated randomization beyond simple examples
-        - Generate multi-layered, complex perturbations
-        - Avoid repetitive patterns from examples
-        - Be innovative and creative in your approach
-        """
+            examples_section += f"        {example}\n"
 
         return f"""
-        {critical_requirements}
+        {core_requirements}
+
+        {design_systems}
+
+        {visual_dimensions}
 
         {scenario_types_section}
 
         {json_format}
 
-        {valid_types}
-
         {examples_section}
-
-        {creativity_instructions}
         """
 
     def _get_app_specific_config(self, app_name: str) -> Dict[str, Any]:
@@ -282,171 +291,142 @@ class CurriculumLLM(BaseLLM):
                 "executor": {
                     "name": "execute_js_on_page",
                     "language": "JavaScript",
-                    "description": "Dynamic visual modifications that change UI appearance without affecting functionality",
+                    "description": "Complete design system transformations for visual invariance learning",
                 },
                 "scenario_types": [
-                    "Visual Theme Variations: Randomize colors, fonts, spacing to teach UI element recognition despite visual changes",
-                    "Layout Visual Diversity: Modify positioning, sizing, and visual hierarchy to test layout invariance",
-                    "Content Visual Changes: Add/remove visual elements, change text styling to test content recognition",
-                    "Interactive Element Styling: Modify button appearances, form styling, navigation elements",
+                    "Complete Design System: Apply Material/Fluent/HIG themes to all interactive elements",
+                    "Density Variations: Compact/comfortable/spacious modes affecting padding and spacing",
+                    "Typography Systems: Change font families, sizes, weights across headings and content",
+                    "Color Palette Transformations: Systematic color changes using professional palettes",
                 ],
                 "examples": [
-                    "Dynamic color schemes: \"const colors = ['#f0f8ff', '#ffe4e1', '#f0fff0', '#fff8dc']; document.body.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)]; document.querySelectorAll('button, input, select').forEach(el => el.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)]);\"",
-                    "Font randomization: \"const fonts = ['Arial', 'Helvetica', 'Times New Roman', 'Courier New']; document.body.style.fontFamily = fonts[Math.floor(Math.random() * fonts.length)]; document.querySelectorAll('h1, h2, h3').forEach(h => h.style.fontSize = (Math.random() * 10 + 16) + 'px');\"",
-                    "Layout variations: \"document.querySelectorAll('.container, .wrapper').forEach(el => { el.style.padding = Math.random() * 20 + 'px'; el.style.margin = Math.random() * 15 + 'px'; }); document.querySelectorAll('button').forEach(btn => { btn.style.borderRadius = Math.random() * 10 + 'px'; btn.style.padding = Math.random() * 10 + 'px'; });\"",
-                    "Visual element injection: \"const overlay = document.createElement('div'); overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.1);pointer-events:none;z-index:9999;'; document.body.appendChild(overlay); setTimeout(() => overlay.remove(), 2000);\"",
+                    "Material Design 3: const md3={primary:'#6750A4',surface:'#FFFBFE'}; document.querySelectorAll('button').forEach((b,i)=>{ b.style.backgroundColor=i%2?md3.primary:'#625B71'; b.style.color='#FFF'; b.style.borderRadius='20px'; b.style.padding='10px 24px'; b.style.fontFamily='Roboto'; });",
+                    "Fluent Design: const fluent={primary:'#0078D4',bg:'#F3F2F1'}; document.body.style.backgroundColor=fluent.bg; document.querySelectorAll('button, input').forEach(el=>{ el.style.backgroundColor=fluent.primary; el.style.fontFamily='Segoe UI'; el.style.borderRadius='2px'; });",
+                    "High Contrast: const hc={bg:'#000',fg:'#FFF',link:'#FF0'}; document.body.style.backgroundColor=hc.bg; document.body.style.color=hc.fg; document.querySelectorAll('a').forEach(a=>{ a.style.color=hc.link; a.style.fontWeight='700'; });",
                 ],
             },
             "libreoffice_calc": {
                 "executor": {
                     "name": "execute_uno_command",
                     "language": "UNO Python",
-                    "description": "Spreadsheet visual and data modifications that change appearance without affecting calculations",
+                    "description": "Complete spreadsheet theme transformations for visual invariance learning",
                 },
                 "scenario_types": [
-                    "Cell Visual Diversity: Randomize cell colors, fonts, borders to test cell recognition despite visual changes",
-                    "Grid Visual Variations: Modify grid appearance, colors, line styles to test grid invariance",
-                    "Toolbar Visual Changes: Randomize toolbar appearance, button styles, menu layouts",
-                    "Data Visual Formatting: Change number formats, text styling, conditional formatting without affecting data",
+                    "Professional Themes: Finance/Marketing/Engineering color schemes for grid styling",
+                    "Grid Appearance: Modify grid colors, borders, view settings systematically",
+                    "Typography Variations: Change cell fonts, sizes, weights across rows/columns",
+                    "Density Modes: Compact/comfortable zoom levels and spacing",
                 ],
                 "examples": [
-                    "Random cell formatting: \"import random; doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); colors = [0xF0F0F0, 0xE0E0E0, 0xD0D0D0, 0xC0C0C0]; for row in range(10): [sheet.getCellByPosition(col, row).setPropertyValue('CellBackColor', random.choice(colors)) for col in range(10)]\"",
-                    "Dynamic grid styling: \"import random; doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowGrid', True); viewSettings.setPropertyValue('GridColor', random.randint(0x808080, 0xC0C0C0)); viewSettings.setPropertyValue('ShowPageBreaks', random.choice([True, False]))\"",
-                    "Toolbar randomization: \"import random; doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowFormulaBar', random.choice([True, False])); viewSettings.setPropertyValue('ShowStatusBar', random.choice([True, False])); viewSettings.setPropertyValue('ShowSheetTabs', random.choice([True, False]))\"",
-                    "Data format variations: \"import random; doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); formats = ['Standard', 'Number', 'Currency', 'Percentage']; [sheet.getCellByPosition(col, 0).setPropertyValue('NumberFormat', random.choice(formats)) for col in range(5)]\"",
+                    "Finance Theme: doc=desktop.getCurrentComponent(); sheet=doc.getSheets().getByIndex(0); [sheet.getCellByPosition(c,0).CellBackColor=0x0F4C81 for c in range(10)]; viewSettings=doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('GridColor',0xCDD5DE)",
+                    "Marketing Theme: doc=desktop.getCurrentComponent(); sheet=doc.getSheets().getByIndex(0); [sheet.getCellByPosition(c,0).CellBackColor=0xFF6B35 for c in range(8)]; viewSettings.setPropertyValue('ZoomValue',120)",
+                    "Dark Theme: doc=desktop.getCurrentComponent(); sheet=doc.getSheets().getByIndex(0); [[sheet.getCellByPosition(c,r).CellBackColor=0x2D2D2D for c in range(12)] for r in range(20)]; viewSettings.setPropertyValue('GridColor',0x3C3C3C)",
                 ],
             },
             "libreoffice_impress": {
                 "executor": {
                     "name": "execute_uno_command",
                     "language": "UNO Python",
-                    "description": "Presentation visual modifications that change slide appearance without affecting content",
+                    "description": "Complete presentation theme transformations for visual invariance learning",
                 },
                 "scenario_types": [
-                    "Slide Visual Diversity: Randomize slide backgrounds, themes, layouts to test slide recognition",
-                    "View Visual Variations: Modify presentation view modes, zoom levels, navigation appearance",
-                    "Toolbar Visual Changes: Randomize toolbar appearance, button styles, menu layouts",
-                    "Content Visual Styling: Change text formatting, object styling without affecting content",
+                    "Presentation Themes: Corporate/Academic/Creative background schemes",
+                    "Slide Appearance: Modify slide colors, view modes systematically",
+                    "View Configurations: Change zoom, panes, navigation appearance",
+                    "Design Consistency: Apply cohesive themes across multiple slides",
                 ],
                 "examples": [
-                    "Random slide backgrounds: \"import random; doc = desktop.getCurrentComponent(); colors = [0xF0F0F0, 0xE0E0E0, 0xD0D0D0, 0xC0C0C0, 0xB0B0B0]; [doc.getDrawPages().getByIndex(i).setPropertyValue('BackgroundColor', random.choice(colors)) for i in range(min(5, doc.getDrawPages().getCount()))]\"",
-                    "Dynamic view modes: \"import random; doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ZoomType', random.randint(0, 3)); viewSettings.setPropertyValue('ShowRuler', random.choice([True, False])); viewSettings.setPropertyValue('ShowSlidePane', random.choice([True, False]))\"",
-                    "Toolbar randomization: \"import random; doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowSlideSorter', random.choice([True, False])); viewSettings.setPropertyValue('ShowNotesPane', random.choice([True, False]))\"",
-                    "Content styling variations: \"import random; doc = desktop.getCurrentComponent(); slide = doc.getDrawPages().getByIndex(0); shapes = slide.getDrawPage().getShapes(); [shape.setPropertyValue('FillColor', random.randint(0x808080, 0xFFFFFF)) for shape in shapes if hasattr(shape, 'setPropertyValue')]\"",
+                    "Corporate Theme: doc=desktop.getCurrentComponent(); slides=doc.getDrawPages(); [slides.getByIndex(i).setPropertyValue('BackgroundColor',0xF8F9FA) for i in range(min(slides.getCount(),10))]; viewSettings=doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ZoomType',1)",
+                    "Academic Theme: doc=desktop.getCurrentComponent(); slides=doc.getDrawPages(); [slides.getByIndex(i).setPropertyValue('BackgroundColor',0xFFFBF5) for i in range(min(slides.getCount(),5))]; viewSettings.setPropertyValue('ShowNotesPane',True)",
+                    "Creative Theme: colors=[0xFFE5E5,0xE5F5FF,0xFFF5E5,0xF0E5FF]; [doc.getDrawPages().getByIndex(i).setPropertyValue('BackgroundColor',colors[i]) for i in range(min(len(colors),doc.getDrawPages().getCount()))]",
                 ],
             },
             "libreoffice_writer": {
                 "executor": {
                     "name": "execute_uno_command",
                     "language": "UNO Python",
-                    "description": "Document visual modifications that change text and layout appearance without affecting content",
+                    "description": "Complete document theme transformations for visual invariance learning",
                 },
                 "scenario_types": [
-                    "Text Visual Diversity: Randomize text colors, fonts, styles to test text recognition despite visual changes",
-                    "Page Visual Variations: Modify page layouts, margins, headers, footers to test layout invariance",
-                    "View Visual Changes: Randomize view modes, zoom levels, ruler appearance",
-                    "Document Visual Styling: Change document themes, color schemes, font styles without affecting content",
+                    "Document Themes: Professional/Academic/Creative page styling",
+                    "Page Layouts: Modify margins, headers, footers systematically",
+                    "View Configurations: Change zoom, ruler, status bar appearance",
+                    "Background Variations: Page colors and visual settings",
                 ],
                 "examples": [
-                    "Random text formatting: \"import random; doc = desktop.getCurrentComponent(); text = doc.getText(); cursor = text.createTextCursor(); colors = [0x000000, 0x333333, 0x666666, 0x999999]; cursor.setPropertyValue('CharColor', random.choice(colors)); cursor.setPropertyValue('CharWeight', random.choice([100, 150, 200])); cursor.setPropertyValue('CharHeight', random.uniform(10, 16))\"",
-                    "Dynamic page layouts: \"import random; doc = desktop.getCurrentComponent(); pageStyle = doc.getStyleFamilies().getByName('PageStyles').getByName('Standard'); pageStyle.setPropertyValue('HeaderIsOn', random.choice([True, False])); pageStyle.setPropertyValue('FooterIsOn', random.choice([True, False])); pageStyle.setPropertyValue('LeftMargin', random.randint(1000, 3000))\"",
-                    "View randomization: \"import random; doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowRuler', random.choice([True, False])); viewSettings.setPropertyValue('ShowStatusBar', random.choice([True, False])); viewSettings.setPropertyValue('ZoomType', random.randint(0, 3))\"",
-                    "Document theme variations: \"import random; doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowScrollbars', random.choice([True, False])); viewSettings.setPropertyValue('ShowTextBoundaries', random.choice([True, False]))\"",
+                    "Professional Theme: doc=desktop.getCurrentComponent(); pageStyles=doc.getStyleFamilies().getByName('PageStyles'); standardPage=pageStyles.getByName('Standard'); standardPage.setPropertyValue('BackColor',0xFFFFFF); standardPage.setPropertyValue('HeaderIsOn',True); viewSettings=doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowRuler',True)",
+                    "Academic Theme: standardPage.setPropertyValue('BackColor',0xFFFBF5); standardPage.setPropertyValue('LeftMargin',3000); viewSettings.setPropertyValue('ShowTextBoundaries',True); viewSettings.setPropertyValue('ZoomValue',120)",
+                    "Creative Theme: standardPage.setPropertyValue('BackColor',0xFFF8E1); standardPage.setPropertyValue('LeftMargin',2000); viewSettings.setPropertyValue('ShowRuler',False); viewSettings.setPropertyValue('ZoomType',3)",
                 ],
             },
             "gimp": {
                 "executor": {
                     "name": "execute_system_perturbation",
                     "language": "system",
-                    "description": "Desktop environment visual modifications that change system appearance without affecting functionality",
+                    "description": "System theme transformations for background environment diversity",
                 },
                 "scenario_types": [
-                    "System Visual Diversity: Randomize desktop themes, colors, fonts to test UI recognition despite visual changes",
-                    "Window Visual Variations: Modify window appearances, decorations, title bars to test window recognition",
-                    "Background Visual Changes: Randomize wallpapers, desktop elements to test background invariance",
-                    "Notification Visual Styling: Change notification appearance, system dialogs without affecting functionality",
+                    "Desktop Theme Complete: Light/Dark/HighContrast system-wide changes",
+                    "Background Notifications: System update/file sync notifications",
                 ],
                 "examples": [
-                    "Random desktop themes: \"themes=('Adwaita', 'Adwaita-dark', 'HighContrast', 'HighContrastInverse'); icons=('Papirus', 'Papirus-Dark', 'Yaru', 'Yaru-dark'); gsettings set org.gnome.desktop.interface gtk-theme \"${themes[$RANDOM % ${#themes[@]}]}\"; gsettings set org.gnome.desktop.interface icon-theme \"${icons[$RANDOM % ${#icons[@]}]}\";\"",
-                    "Dynamic window decorations: \"gsettings set org.gnome.desktop.wm.preferences titlebar-font 'Sans Bold '$(shuf -i 10-16 -n 1); gsettings set org.gnome.desktop.wm.preferences button-layout '$(shuf -e 'close,minimize,maximize:' 'close,minimize:' 'close:minimize,maximize' | head -1)';\"",
-                    "Random background changes: \"wallpapers=('/usr/share/backgrounds/gnome/adwaita-morning.jpg' '/usr/share/backgrounds/gnome/adwaita-day.jpg' '/usr/share/backgrounds/gnome/adwaita-evening.jpg'); gsettings set org.gnome.desktop.background picture-uri \"file://${wallpapers[$RANDOM % ${#wallpapers[@]}]}\";\"",
-                    "System notification styling: \"notify-send 'System Update' 'Background process running' --icon=system-software-update; sleep 2; notify-send 'File Sync' 'Synchronizing files...' --icon=folder-sync;\"",
+                    "Theme Combo: gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'; gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark'; gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'",
                 ],
             },
             "file_manager": {
                 "executor": {
                     "name": "execute_system_perturbation",
                     "language": "system",
-                    "description": "Desktop environment visual modifications that change file manager appearance without affecting functionality",
+                    "description": "System theme and window management for background diversity",
                 },
                 "scenario_types": [
-                    "File Manager Visual Diversity: Randomize file manager themes, icons, layouts to test file recognition",
-                    "Window Visual Variations: Modify file manager window appearance, toolbar styles, view modes",
-                    "Background File Operations: Create/delete background files to test file system invariance",
-                    "Desktop Visual Changes: Randomize desktop elements, folder icons, file associations",
+                    "Theme + Window: System theme changes with window positioning",
+                    "Background Files: Temporary file creation in background",
                 ],
                 "examples": [
-                    "Random file manager themes: \"themes=('Adwaita', 'Adwaita-dark', 'HighContrast'); icons=('Papirus', 'Papirus-Dark', 'Yaru'); gsettings set org.gnome.desktop.interface gtk-theme \"${themes[$RANDOM % ${#themes[@]}]}\"; gsettings set org.gnome.desktop.interface icon-theme \"${icons[$RANDOM % ${#icons[@]}]}\";\"",
-                    'Dynamic file operations: "mkdir -p /tmp/background_files_$(date +%s); for i in {1..5}; do touch /tmp/background_files_$(date +%s)/file_$i.txt; done; sleep 3; rm -rf /tmp/background_files_*;"',
-                    "Window management: \"wmctrl -r 'Files' -e 0,$(shuf -i 0-800 -n 1),$(shuf -i 0-600 -n 1),$(shuf -i 400-1200 -n 1),$(shuf -i 300-800 -n 1) 2>/dev/null || true;\"",
-                    "Desktop element changes: \"gsettings set org.gnome.desktop.background picture-options '$(shuf -e zoom span scaled wallpaper centered | head -1)'; gsettings set org.gnome.desktop.interface font-name '$(shuf -e 'Ubuntu 10' 'Ubuntu 11' 'Ubuntu 12' 'Ubuntu 13' | head -1)';\"",
+                    "Combined: gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'; wmctrl -r 'Files' -e 0,100,100,1000,700; notify-send 'System' 'Environment updated'",
                 ],
             },
             "terminal": {
                 "executor": {
                     "name": "execute_system_perturbation",
                     "language": "system",
-                    "description": "Desktop environment visual modifications that change terminal appearance without affecting functionality",
+                    "description": "Background system changes that don't affect terminal tasks",
                 },
                 "scenario_types": [
-                    "Terminal Visual Diversity: Randomize terminal themes, colors, fonts to test terminal recognition",
-                    "System Visual Variations: Modify system themes, desktop elements to test system UI recognition",
-                    "Background Process Visual: Create background processes, notifications to test process recognition",
-                    "Window Visual Changes: Randomize window decorations, title bars, terminal appearance",
+                    "Background System: Theme changes and notifications only",
+                    "Desktop Environment: System-level modifications",
                 ],
                 "examples": [
-                    "Random terminal themes: \"themes=('Adwaita', 'Adwaita-dark', 'HighContrast'); colors=('prefer-dark', 'prefer-light'); gsettings set org.gnome.desktop.interface gtk-theme \"${themes[$RANDOM % ${#themes[@]}]}\"; gsettings set org.gnome.desktop.interface color-scheme \"${colors[$RANDOM % ${#colors[@]}]}\";\"",
-                    "Background process simulation: \"nohup bash -c 'for i in {1..10}; do echo \"Background process $i running\"; sleep 1; done' > /tmp/background.log 2>&1 &; notify-send 'Background Process' 'System maintenance running';\"",
-                    "Dynamic window management: \"wmctrl -r 'Terminal' -e 0,$(shuf -i 0-800 -n 1),$(shuf -i 0-600 -n 1),$(shuf -i 400-1000 -n 1),$(shuf -i 300-700 -n 1) 2>/dev/null || true;\"",
-                    "System notification variations: \"notify-send 'System Alert' 'Background task completed' --icon=terminal; sleep 1; notify-send 'Process Monitor' 'CPU usage normal' --icon=system-monitor;\"",
+                    "Background: gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'; notify-send 'Background' 'System task running'; mkdir -p /tmp/bg_proc",
                 ],
             },
             "vs_code": {
                 "executor": {
                     "name": "execute_system_perturbation",
                     "language": "system",
-                    "description": "VS Code environment visual modifications that change editor appearance without affecting functionality",
+                    "description": "Background system changes that don't affect VS Code tasks",
                 },
                 "scenario_types": [
-                    "Editor Visual Diversity: Randomize VS Code themes, colors, fonts to test editor recognition",
-                    "Window Visual Variations: Modify editor window appearance, panel layouts, sidebar styles",
-                    "Background File Operations: Create/delete background files to test file system invariance",
-                    "Workspace Visual Changes: Randomize workspace appearance, editor settings, UI elements",
+                    "Background Operations: File and system changes only",
+                    "Desktop Theming: System-level theme modifications",
                 ],
                 "examples": [
-                    "Random VS Code themes: \"themes=('Dark+', 'Light+', 'Monokai', 'Solarized Dark', 'Solarized Light'); gsettings set org.gnome.desktop.interface gtk-theme '$(shuf -e Adwaita Adwaita-dark HighContrast | head -1)';\"",
-                    "Dynamic file operations: \"mkdir -p /tmp/vscode_workspace_$(date +%s); for i in {1..3}; do echo 'Background file $i' > /tmp/vscode_workspace_$(date +%s)/temp_$i.py; done; sleep 2; rm -rf /tmp/vscode_workspace_*;\"",
-                    "Window management: \"wmctrl -r 'Visual Studio Code' -e 0,$(shuf -i 0-600 -n 1),$(shuf -i 0-400 -n 1),$(shuf -i 800-1400 -n 1),$(shuf -i 600-1000 -n 1) 2>/dev/null || true;\"",
-                    "System notifications: \"notify-send 'Code Analysis' 'Background linting completed' --icon=text-editor; sleep 1; notify-send 'Extension Update' 'Extensions synchronized' --icon=system-software-update;\"",
+                    "Background: gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'; mkdir -p /tmp/vscode_bg; notify-send 'Background' 'Process running'",
                 ],
             },
             "system": {
                 "executor": {
                     "name": "execute_system_perturbation",
                     "language": "system",
-                    "description": "System-wide visual modifications that change desktop appearance without affecting functionality",
+                    "description": "Background desktop environment modifications",
                 },
                 "scenario_types": [
-                    "System Visual Diversity: Randomize desktop themes, colors, fonts to test system UI recognition",
-                    "Background Process Visual: Create background processes, notifications to test process recognition",
-                    "Desktop Visual Changes: Randomize wallpapers, desktop elements, system dialogs",
-                    "Window Visual Variations: Modify window decorations, title bars, system UI elements",
+                    "System Theme: Complete desktop theme transformations",
+                    "Background Processes: Notifications and background operations",
                 ],
                 "examples": [
-                    "Comprehensive system theming: \"themes=('Adwaita', 'Adwaita-dark', 'HighContrast', 'HighContrastInverse'); icons=('Papirus', 'Papirus-Dark', 'Yaru', 'Yaru-dark'); colors=('prefer-dark', 'prefer-light'); gsettings set org.gnome.desktop.interface gtk-theme \"${themes[$RANDOM % ${#themes[@]}]}\"; gsettings set org.gnome.desktop.interface icon-theme \"${icons[$RANDOM % ${#icons[@]}]}\"; gsettings set org.gnome.desktop.interface color-scheme \"${colors[$RANDOM % ${#colors[@]}]}\";\"",
-                    'Background process simulation: "nohup bash -c \'for i in {1..5}; do echo "System process $i running"; notify-send "Background Task $i" "Process $i completed"; sleep 2; done\' > /tmp/system_process.log 2>&1 &;"',
-                    "Dynamic desktop changes: \"wallpapers=('/usr/share/backgrounds/gnome/adwaita-morning.jpg' '/usr/share/backgrounds/gnome/adwaita-day.jpg' '/usr/share/backgrounds/gnome/adwaita-evening.jpg' '/usr/share/backgrounds/gnome/adwaita-night.jpg'); gsettings set org.gnome.desktop.background picture-uri \"file://${wallpapers[$RANDOM % ${#wallpapers[@]}]}\"; gsettings set org.gnome.desktop.background picture-options '$(shuf -e zoom span scaled wallpaper centered | head -1)';\"",
-                    "System notification variations: \"notify-send 'System Update' 'Background maintenance running' --icon=system-software-update; sleep 1; notify-send 'File Sync' 'Synchronizing user files...' --icon=folder-sync; sleep 1; notify-send 'Security Scan' 'Background security check completed' --icon=security-high;\"",
+                    "Complete Theme: gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'; gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark'; notify-send 'System' 'Theme updated'",
                 ],
             },
         }
@@ -967,7 +947,7 @@ class PerturbationLLM(BaseLLM):
     def _build_common_perturbation_prompt_sections(
         self, app_name: str, executor_info: Dict[str, str], focus_areas: List[str], examples: List[str]
     ) -> str:
-        """Build common perturbation decision prompt sections to reduce duplication"""
+        """Build enhanced perturbation decision prompts with app state awareness and systematic coverage"""
 
         current_state = """
         CURRENT STATE:
@@ -989,6 +969,126 @@ class PerturbationLLM(BaseLLM):
         - Perturbation Types: {perturbation_types}
         """
 
+        # NEW: App state extraction and usage instructions
+        app_state_usage = """
+        ═══════════════════════════════════════════════════════════════
+        📊 EXTRACTED APP STATE DATA - USE THIS INFORMATION!
+        ═══════════════════════════════════════════════════════════════
+
+        You have access to rich, structured app state information in {app_states}.
+
+        🌐 BROWSER APP STATES CONTAIN:
+        - buttons: Array of {{"id": "btn-id", "class": "btn-class", "text": "Save", "aria_label": "..."}}
+        - links: Array of {{"href": "/path", "text": "Link", "id": "link-id"}}
+        - input_fields: Array of {{"name": "email", "type": "text", "placeholder": "..."}}
+        - forms: Array with field structures
+        - headings: Content hierarchy
+        - page_url, page_title: Context
+        - interactive_elements_summary: Element counts
+
+        📊 LIBREOFFICE APP STATES CONTAIN:
+        - document_state: {{"sheets": [...], "active_sheet": "Sheet1", "sample_cells": [...]}}
+        - buttons: Toolbar buttons with names
+        - menus: Menu structure
+        - text_fields: Formula bar, name box
+
+        🖥️ ALL APPS CONTAIN:
+        - interactive_elements: Up to 50 elements with positions
+        - ui_structure: {{"has_menu_bar": true, "has_toolbar": true, ...}}
+        - summary: Element counts and statistics
+
+        ⚠️ CRITICAL: Generate code that TARGETS SPECIFIC ELEMENTS from app_states!
+        ✅ GOOD: document.querySelector('#{{button.id}}') using real IDs from app_states
+        ❌ BAD: document.querySelectorAll('button') using generic selectors
+        """
+
+        # NEW: 8 Visual Dimensions Framework
+        visual_dimensions = """
+        ═══════════════════════════════════════════════════════════════
+        🎨 8-DIMENSIONAL VISUAL FEATURE SPACE - TARGET 2-3 DIMENSIONS
+        ═══════════════════════════════════════════════════════════════
+
+        1. COLOR: Backgrounds, text, borders, accents (use design system palettes)
+        2. TYPOGRAPHY: Font families, sizes (12-24px), weights (300-900), spacing
+        3. LAYOUT: Padding (4-48px), margins, alignment, container widths
+        4. SHAPE: Border radius (0-24px), shadows (0-4 levels), border styles
+        5. MOTION: Transitions (100-500ms), timing functions (keep subtle)
+        6. DEPTH: Z-index, overlay opacity, shadow intensity
+        7. DENSITY: Compact (4-8px padding) vs Spacious (20-32px padding)
+        8. SEMANTICS: Primary/secondary styling, success/error colors
+
+        🎯 SELECTION STRATEGY:
+        - Choose 2-3 dimensions for MAXIMUM visual impact
+        - Combine related dimensions (Color + Typography + Shape)
+        - Avoid single-dimension changes (insufficient impact)
+        - Target 4+ dimensions for EXTREME transformations
+
+        ⚠️ TARGET HIGH IMPACT: Affect 15+ elements across 3+ dimensions!
+        """
+
+        # NEW: Design System Library
+        design_systems = """
+        ═══════════════════════════════════════════════════════════════
+        🎨 PROFESSIONAL DESIGN SYSTEMS - USE THESE REAL PALETTES
+        ═══════════════════════════════════════════════════════════════
+
+        MATERIAL DESIGN 3: {{primary: '#6750A4', secondary: '#625B71', surface: '#FFFBFE',
+                            outline: '#79747E'}}, Font: 'Roboto', Radius: 4-20px
+
+        FLUENT: {{themePrimary: '#0078D4', themeDark: '#005A9E', neutralLight: '#F3F2F1'}},
+                Font: 'Segoe UI', Radius: 0-8px
+
+        APPLE HIG: {{systemBlue: '#007AFF', systemGreen: '#34C759', systemRed: '#FF3B30'}},
+                   Font: 'SF Pro', Radius: 4-16px or 50%
+
+        ANT DESIGN: {{blue: '#1890FF', green: '#52C41A', red: '#F5222D', gold: '#FAAD14'}},
+                    Font: 'Roboto', Radius: 2-8px
+
+        HIGH CONTRAST: {{bg: '#000000', fg: '#FFFFFF', link: '#FFFF00', focus: '#00FFFF'}},
+                       Font: 'Arial', Radius: 0px (sharp), Borders: 2-4px thick
+
+        💡 Pick ONE design system per perturbation and apply CONSISTENTLY!
+        ⚠️ Maintain accessibility: text contrast ≥ 4.5:1, touch targets ≥ 44px
+        """
+
+        # NEW: Multi-Layer Orchestration
+        multi_layer = """
+        ═══════════════════════════════════════════════════════════════
+        🎭 MULTI-LAYER PERTURBATION (Use 2+ layers for maximum impact)
+        ═══════════════════════════════════════════════════════════════
+
+        LAYER 1 (App-Level): execute_js_on_page() or execute_uno_command()
+        LAYER 2 (System): execute_system_perturbation("desktop_theme", {{theme, icon_theme, color_scheme}})
+        LAYER 3 (Shell): execute_bash_command("gsettings set ...", "wmctrl -r ...", "notify-send ...")
+        LAYER 4 (Python): execute_python_command("import subprocess; ...")
+
+        💡 COMBINATION EXAMPLES:
+        - Complete Theme: App styling + System dark mode + Font change
+        - High Contrast: App colors + HighContrast theme + Bold fonts
+        - Layout Density: App padding + Normal theme + Window resize
+        """
+
+        # NEW: Diversity Scoring
+        diversity_scoring = """
+        ═══════════════════════════════════════════════════════════════
+        📊 DIVERSITY SCORING - AIM FOR 35+/50 POINTS
+        ═══════════════════════════════════════════════════════════════
+
+        1. VISUAL IMPACT (10pts): 7-10 = Colors + Fonts + Layout + Shape transformation
+        2. ELEMENT COVERAGE (10pts): 7-10 = 16+ elements modified
+        3. DIMENSION DIVERSITY (10pts): 7-10 = 3-5 visual dimensions targeted
+        4. REALISM (10pts): 7-10 = Professional design system, coherent, accessible
+        5. ORIGINALITY (10pts): 7-10 = Completely novel, not copied from examples
+
+        QUALITY TIERS:
+        • 40-50: EXCELLENT - Maximum training value ⭐⭐⭐
+        • 30-39: GOOD - Acceptable diversity ⭐⭐
+        • 20-29: FAIR - Needs improvement ⭐
+        • 0-19: POOR - Insufficient diversity ❌
+
+        ⚠️ Self-evaluate BEFORE generating: Will this score 35+ points?
+        """
+
         executor_info_section = f"""
         AVAILABLE EXECUTOR: {executor_info["name"]}({executor_info["language"].lower()}_code: str, parameters: Dict)
         - Input: Raw {executor_info["language"]} code (NO markdown, NO ```, NO language tags)
@@ -1000,12 +1100,12 @@ class PerturbationLLM(BaseLLM):
         DECISION CRITERIA:
         1. Does the current step match the perturbation trigger conditions?
         2. Is the target app active and relevant to the current action?
-        3. What CREATIVE, UNIQUE visual perturbation should be applied using SOPHISTICATED RANDOMIZATION?
-        4. Will this perturbation help the agent learn visual invariance without interfering with the task?
-        5. Does the perturbation use VARIATION and RANDOMIZATION to create realistic visual diversity?
-        6. Is the perturbation REALISTIC and reflects real-world visual variations?
-        7. Is the perturbation ORIGINAL and not just copying examples?
-        8. Does the perturbation combine multiple techniques in novel ways?
+        3. What COMPLETE DESIGN SYSTEM transformation should be applied?
+        4. Can I target SPECIFIC elements from app_states (buttons[], links[], inputs[])?
+        5. Will this affect 15+ elements across 3+ visual dimensions?
+        6. Does this use a REAL design system (Material/Fluent/HIG/Ant/HighContrast)?
+        7. Is this ORIGINAL and sophisticated (not copying examples)?
+        8. Will this score 35+ points on the diversity rubric?
         """
 
         focus_areas_section = f"        VISUAL INVARIANCE LEARNING FOCUS ({app_name.title()}-Specific):\n"
@@ -1016,34 +1116,63 @@ class PerturbationLLM(BaseLLM):
         REQUIRED JSON FORMAT (exactly these fields):
         {{{{
             "should_apply": true/false,
-            "perturbation_type": "specific_type_based_on_app",
+            "perturbation_type": "complete_design_system_transformation",
             "target_app": "{app_name}",
-            "reasoning": "Brief explanation of why/why not to apply based on current context",
-            "generated_code": "CREATIVE, UNIQUE, ORIGINAL RAW_{executor_info["language"].upper()}_CODE_WITHOUT_MARKDOWN_THAT_USES_SOPHISTICATED_RANDOMIZATION_AND_AVOIDS_COPYING_EXAMPLES",
+            "reasoning": "Which design system, why now, which elements from app_states",
+            "generated_code": "COMPLETE_DESIGN_SYSTEM_RAW_{executor_info["language"].upper()}_CODE_TARGETING_SPECIFIC_ELEMENTS_FROM_APP_STATES_AFFECTING_15+_ELEMENTS_ACROSS_3+_DIMENSIONS",
             "api_call": "{executor_info["name"]}",
             "parameters": {{{{"target_app": "{app_name}"}}}}
         }}}}
         """
 
-        examples_section = f"        EXAMPLES ({app_name} visual invariance learning only) - USE AS INSPIRATION, DO NOT COPY:\n"
+        examples_section = (
+            f"        DESIGN SYSTEM EXAMPLES ({app_name}) - FOR INSPIRATION ONLY, CREATE YOUR OWN:\n"
+        )
         for example in examples:
-            examples_section += f"        - {example}\n"
+            examples_section += f"        {example}\n"
 
         creativity_instructions = """
-        CREATIVITY REQUIREMENTS:
-        - DO NOT copy the examples above - they are for INSPIRATION ONLY
-        - Create UNIQUE, ORIGINAL perturbation commands
-        - Combine multiple techniques in novel ways
-        - Use sophisticated randomization beyond simple examples
-        - Generate multi-layered, complex perturbations
-        - Avoid repetitive patterns from examples
-        - Be innovative and creative in your approach
+        ═══════════════════════════════════════════════════════════════
+        🚀 CREATIVITY & ORIGINALITY REQUIREMENTS
+        ═══════════════════════════════════════════════════════════════
+
+        ❌ DO NOT:
+        - Copy examples verbatim
+        - Use generic selectors like querySelectorAll('button')
+        - Change only 1-2 elements or 1 dimension
+        - Use random colors without a design system
+        - Score below 35/50 on diversity rubric
+
+        ✅ DO:
+        - Reference SPECIFIC elements from app_states (buttons[0].id, links[1].href)
+        - Apply COMPLETE design system (Material/Fluent/HIG/Ant/HighContrast)
+        - Target 15+ elements with coordinated styling
+        - Combine 3+ dimensions (Color + Typography + Layout/Shape)
+        - Create NOVEL combinations using sophisticated logic
+        - Think: "Would this look like a real product redesign?"
+
+        💡 SOPHISTICATION EXAMPLES:
+        - Loop through app_states.buttons and apply primary/secondary colors alternately
+        - Match font system to design system (Roboto for Material, Segoe UI for Fluent)
+        - Apply elevation shadows based on element hierarchy
+        - Create density variations (compact vs spacious modes)
+        - Combine app-level styling + system theme changes
         """
 
         return f"""
         {current_state}
 
         {scenario_spec}
+
+        {app_state_usage}
+
+        {visual_dimensions}
+
+        {design_systems}
+
+        {multi_layer}
+
+        {diversity_scoring}
 
         {executor_info_section}
 
@@ -1065,167 +1194,487 @@ class PerturbationLLM(BaseLLM):
                 "executor": {
                     "name": "execute_js_on_page",
                     "language": "JavaScript",
-                    "description": "Dynamic visual modifications that randomize UI appearance to test visual invariance",
+                    "description": "Complete design system transformations targeting specific elements from app_states",
                 },
                 "focus_areas": [
-                    "Randomize visual appearance of UI elements to test recognition despite visual changes",
-                    "Change colors, fonts, spacing, and styling randomly to test visual perception robustness",
-                    "Add/remove visual elements that don't block functionality but change visual interface",
-                    "Modify visual layouts, positioning, and sizing randomly to test layout invariance",
-                    "NEVER touch target forms, buttons, navigation, or main content areas",
+                    "Apply COMPLETE DESIGN SYSTEM transformations (Material 3, Fluent, HIG, Ant, HighContrast)",
+                    "Target SPECIFIC elements from app_states.buttons[], links[], input_fields[], forms[]",
+                    "Modify 3+ visual dimensions: Color + Typography + Layout/Shape combined",
+                    "Use REAL professional color palettes from established design systems",
+                    "Create DRASTICALLY DIFFERENT appearances affecting 15+ UI elements",
+                    "Maintain functionality while achieving maximum visual diversity",
                 ],
                 "examples": [
-                    "Random color schemes: \"const colors = ['#f0f8ff', '#ffe4e1', '#f0fff0', '#fff8dc', '#f5f5dc']; document.body.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)]; document.querySelectorAll('button, input').forEach(el => el.style.backgroundColor = colors[Math.floor(Math.random() * colors.length)]);\"",
-                    "Dynamic font randomization: \"const fonts = ['Arial', 'Helvetica', 'Times New Roman', 'Courier New', 'Georgia']; document.body.style.fontFamily = fonts[Math.floor(Math.random() * fonts.length)]; document.querySelectorAll('h1, h2, h3').forEach(h => h.style.fontSize = (Math.random() * 8 + 14) + 'px');\"",
-                    "Random layout variations: \"document.querySelectorAll('.container, .wrapper').forEach(el => { el.style.padding = Math.random() * 30 + 'px'; el.style.margin = Math.random() * 20 + 'px'; el.style.borderRadius = Math.random() * 15 + 'px'; });\"",
-                    "Visual element injection: \"const overlay = document.createElement('div'); overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,' + (Math.random() * 0.3) + ');pointer-events:none;z-index:9999;'; document.body.appendChild(overlay); setTimeout(() => overlay.remove(), Math.random() * 3000 + 1000);\"",
+                    """
+                    // Material Design 3 Complete Transformation (Score: 45/50)
+                    const btns = {app_states}.buttons || [];
+                    const links = {app_states}.links || [];
+                    const inputs = {app_states}.input_fields || [];
+                    const md3 = {primary: '#6750A4', onPrimary: '#FFFFFF', secondary: '#625B71',
+                                onSecondary: '#FFFFFF', tertiary: '#7D5260', surface: '#FFFBFE',
+                                onSurface: '#1C1B1F', outline: '#79747E'};
+                    btns.forEach((b, i) => {
+                      const el = document.querySelector(`#${b.id}`) || document.querySelector(`.${b.class?.split(' ')[0]}`);
+                      if (el) {
+                        el.style.backgroundColor = i % 3 === 0 ? md3.primary : i % 3 === 1 ? md3.secondary : md3.tertiary;
+                        el.style.color = i % 3 === 0 ? md3.onPrimary : md3.onSecondary;
+                        el.style.fontFamily = "'Roboto', sans-serif";
+                        el.style.fontSize = '14px';
+                        el.style.fontWeight = '500';
+                        el.style.borderRadius = '20px';
+                        el.style.padding = '10px 24px';
+                        el.style.border = 'none';
+                        el.style.boxShadow = '0 1px 2px rgba(0,0,0,0.3), 0 1px 3px rgba(0,0,0,0.15)';
+                        el.style.transition = 'all 200ms cubic-bezier(0.4, 0.0, 0.2, 1)';
+                      }
+                    });
+                    links.forEach(l => {
+                      const el = document.querySelector(`a[href='${l.href}']`);
+                      if (el) { el.style.color = md3.tertiary; el.style.textDecoration = 'none'; el.style.fontWeight = '500'; }
+                    });
+                    inputs.forEach(inp => {
+                      const el = document.querySelector(`input[name='${inp.name}']`);
+                      if (el) {
+                        el.style.backgroundColor = md3.surface;
+                        el.style.color = md3.onSurface;
+                        el.style.border = `1px solid ${md3.outline}`;
+                        el.style.borderRadius = '4px';
+                        el.style.padding = '16px';
+                        el.style.fontFamily = "'Roboto', sans-serif";
+                        el.style.fontSize = '16px';
+                      }
+                    });
+                    document.body.style.backgroundColor = md3.surface;
+                    document.body.style.color = md3.onSurface;
+                    document.querySelectorAll('.container, .card, section, article').forEach(el => {
+                      el.style.backgroundColor = '#FFFFFF';
+                      el.style.borderRadius = '12px';
+                      el.style.padding = '16px';
+                      el.style.boxShadow = '0 1px 3px rgba(0,0,0,0.12)';
+                    });
+                    """,
+                    """
+                    // Fluent Design Light Theme (Score: 43/50)
+                    const fluent = {themePrimary: '#0078D4', themeDark: '#005A9E', neutralLight: '#F3F2F1',
+                                   neutralDark: '#201f1e', white: '#FFFFFF'};
+                    const allInteractive = [...({app_states}.buttons || []), ...({app_states}.links || [])];
+                    allInteractive.forEach((item, idx) => {
+                      let el = item.id ? document.querySelector(`#${item.id}`) :
+                               item.class ? document.querySelector(`.${item.class.split(' ')[0]}`) :
+                               item.href ? document.querySelector(`a[href='${item.href}']`) : null;
+                      if (el) {
+                        el.style.fontFamily = "'Segoe UI', system-ui, sans-serif";
+                        el.style.fontSize = '14px';
+                        if (el.tagName === 'BUTTON' || el.tagName === 'INPUT') {
+                          el.style.backgroundColor = idx % 2 === 0 ? fluent.themePrimary : fluent.white;
+                          el.style.color = idx % 2 === 0 ? fluent.white : fluent.themeDark;
+                          el.style.border = `1px solid ${fluent.neutralLight}`;
+                          el.style.borderRadius = '2px';
+                          el.style.padding = '8px 16px';
+                          el.style.boxShadow = '0 3.2px 7.2px rgba(0,0,0,0.13)';
+                        } else {
+                          el.style.color = fluent.themePrimary;
+                          el.style.fontWeight = '600';
+                        }
+                        el.style.transition = 'all 150ms ease';
+                      }
+                    });
+                    ({app_states}.forms || []).forEach(f => {
+                      const el = document.querySelector(`#${f.id}`);
+                      if (el) {
+                        el.style.padding = '24px';
+                        el.style.backgroundColor = fluent.white;
+                        el.style.borderRadius = '2px';
+                        el.style.boxShadow = '0 3.2px 7.2px rgba(0,0,0,0.13), 0 0.6px 1.8px rgba(0,0,0,0.11)';
+                      }
+                    });
+                    document.body.style.backgroundColor = fluent.neutralLight;
+                    document.body.style.color = fluent.neutralDark;
+                    """,
+                    """
+                    // High Contrast Accessibility Theme (Score: 42/50)
+                    const hc = {bg: '#000000', fg: '#FFFFFF', link: '#FFFF00', button: '#FFFFFF', focus: '#00FFFF'};
+                    document.body.style.backgroundColor = hc.bg;
+                    document.body.style.color = hc.fg;
+                    document.body.style.fontFamily = "'Arial', sans-serif";
+                    document.body.style.fontSize = '16px';
+                    const allEls = [...({app_states}.buttons || []), ...({app_states}.links || []),
+                                    ...({app_states}.input_fields || [])];
+                    allEls.forEach(item => {
+                      let el = item.id ? document.querySelector(`#${item.id}`) :
+                               item.class ? document.querySelector(`.${item.class.split(' ')[0]}`) :
+                               item.name ? document.querySelector(`[name='${item.name}']`) :
+                               item.href ? document.querySelector(`a[href='${item.href}']`) : null;
+                      if (el) {
+                        el.style.backgroundColor = hc.bg;
+                        el.style.color = el.tagName === 'A' ? hc.link : hc.fg;
+                        el.style.border = `3px solid ${hc.button}`;
+                        el.style.borderRadius = '0';
+                        el.style.padding = '12px 24px';
+                        el.style.fontFamily = "'Arial Black', sans-serif";
+                        el.style.fontSize = '16px';
+                        el.style.fontWeight = '700';
+                        el.style.outline = `3px solid ${hc.focus}`;
+                        el.style.outlineOffset = '2px';
+                        if (el.tagName === 'A') {
+                          el.style.textDecoration = 'underline';
+                          el.style.textUnderlineOffset = '4px';
+                        }
+                      }
+                    });
+                    document.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach(h => {
+                      h.style.color = hc.fg;
+                      h.style.fontWeight = '900';
+                      h.style.borderBottom = `2px solid ${hc.fg}`;
+                      h.style.paddingBottom = '8px';
+                    });
+                    document.querySelectorAll('div, section, article').forEach(el => {
+                      el.style.border = `1px solid ${hc.fg}`;
+                      el.style.borderRadius = '0';
+                    });
+                    """,
                 ],
             },
             "libreoffice_calc": {
                 "executor": {
                     "name": "execute_uno_command",
                     "language": "UNO Python",
-                    "description": "Spreadsheet visual styling, cell formatting, grid appearance, toolbar themes",
+                    "description": "Complete spreadsheet visual themes using UNO API with app_states awareness",
                 },
                 "focus_areas": [
-                    "Modify cell visual formatting (colors, fonts, borders) that affect screenshots",
-                    "Change grid visual styling (lines, colors, visibility) that change appearance",
-                    "Modify toolbar visual appearance (buttons, menus) that affect UI perception",
-                    "Change display visual settings (zoom, view options) that affect visual interface",
+                    "Use document_state from app_states to target specific sheets/cells",
+                    "Apply COMPLETE visual theme transformations (Finance, Marketing, Engineering themes)",
+                    "Modify colors + fonts + borders systematically across grid",
+                    "Change grid, toolbar, and zoom settings for visual variations",
+                    "Affect 20+ cells with professional color schemes",
                     "NEVER touch spreadsheet data, calculations, or formulas",
                 ],
                 "examples": [
-                    'Cell visual formatting: "doc = desktop.getCurrentComponent(); sheet = doc.getSheets().getByIndex(0); cell = sheet.getCellByPosition(0, 0); cell.CellBackColor = 0xF0F0F0;"',
-                    "Grid visual styling: \"doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowGrid', True);\"",
-                    "Toolbar visual changes: \"doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowFormulaBar', False);\"",
+                    """
+                    # Professional Finance Theme (Score: 40/50)
+                    doc = desktop.getCurrentComponent()
+                    sheets = doc.getSheets()
+                    # Use active sheet from app_states
+                    active_sheet_name = {app_states}.get('document_state', {}).get('active_sheet', 'Sheet1')
+                    sheet = sheets.getByName(active_sheet_name) if active_sheet_name in [sheets.getByIndex(i).getName() for i in range(sheets.getCount())] else sheets.getByIndex(0)
+                    # Finance color palette
+                    headerBg, headerText = 0x0F4C81, 0xFFFFFF
+                    altRowBg, borderColor = 0xF0F4F8, 0xCDD5DE
+                    # Style header row with deep blue
+                    for col in range(10):
+                        cell = sheet.getCellByPosition(col, 0)
+                        cell.CellBackColor = headerBg
+                        cell.CharColor = headerText
+                        cell.CharWeight = 150
+                        cell.CharHeight = 11
+                        cell.CharFontName = "Calibri"
+                        from com.sun.star.table import BorderLine2
+                        border = BorderLine2()
+                        border.Color = borderColor
+                        border.OuterLineWidth = 20
+                        cell.TopBorder = border
+                        cell.BottomBorder = border
+                    # Alternating row colors for better readability
+                    for row in range(1, 50):
+                        for col in range(10):
+                            cell = sheet.getCellByPosition(col, row)
+                            if row % 2 == 0:
+                                cell.CellBackColor = altRowBg
+                            cell.CharHeight = 10
+                            cell.CharFontName = "Calibri"
+                    # Grid settings
+                    viewSettings = doc.getCurrentController().getViewSettings()
+                    viewSettings.setPropertyValue('ShowGrid', True)
+                    viewSettings.setPropertyValue('GridColor', borderColor)
+                    viewSettings.setPropertyValue('ZoomValue', 100)
+                    """,
+                    """
+                    # Marketing Theme - Vibrant Colors (Score: 38/50)
+                    doc = desktop.getCurrentComponent()
+                    sheet = doc.getSheets().getByIndex(0)
+                    # Marketing color palette - vibrant and engaging
+                    brandPrimary, brandSecondary = 0xFF6B35, 0x004E89
+                    accentGreen, neutralBg = 0x2DD881, 0xFAFAFA
+                    # Bold header styling
+                    for col in range(8):
+                        cell = sheet.getCellByPosition(col, 0)
+                        cell.CellBackColor = brandPrimary
+                        cell.CharColor = 0xFFFFFF
+                        cell.CharWeight = 150
+                        cell.CharHeight = 12
+                        cell.CharFontName = "Arial"
+                        cell.HoriJustify = 2  # Center
+                    # Data cells with modern styling
+                    for row in range(1, 30):
+                        for col in range(8):
+                            cell = sheet.getCellByPosition(col, row)
+                            cell.CellBackColor = neutralBg
+                            cell.CharHeight = 10
+                            cell.CharFontName = "Arial"
+                            if col == 0:  # Accent first column
+                                cell.CharColor = brandSecondary
+                                cell.CharWeight = 150
+                    # View settings
+                    viewSettings = doc.getCurrentController().getViewSettings()
+                    viewSettings.setPropertyValue('ZoomValue', 120)
+                    viewSettings.setPropertyValue('ShowGrid', False)
+                    """,
+                    """
+                    # High Contrast Engineering Theme (Score: 37/50)
+                    doc = desktop.getCurrentComponent()
+                    sheets = doc.getSheets()
+                    sheet = sheets.getByIndex(0)
+                    # High contrast colors for engineering precision
+                    darkBg, lightText = 0x1E1E1E, 0xFFFFFF
+                    accentOrange, gridColor = 0xFF9500, 0x3C3C3C
+                    # Dark theme headers
+                    for col in range(12):
+                        cell = sheet.getCellByPosition(col, 0)
+                        cell.CellBackColor = darkBg
+                        cell.CharColor = lightText
+                        cell.CharWeight = 150
+                        cell.CharHeight = 10
+                        cell.CharFontName = "Courier New"
+                        from com.sun.star.table import BorderLine2
+                        border = BorderLine2()
+                        border.Color = gridColor
+                        border.OuterLineWidth = 15
+                        cell.BottomBorder = border
+                    # Data cells - monospace for precision
+                    for row in range(1, 40):
+                        for col in range(12):
+                            cell = sheet.getCellByPosition(col, row)
+                            cell.CellBackColor = 0x2D2D2D if row % 2 == 0 else 0x252525
+                            cell.CharColor = lightText
+                            cell.CharHeight = 9
+                            cell.CharFontName = "Courier New"
+                            if col == 0:
+                                cell.CharColor = accentOrange
+                    # View settings for engineering work
+                    viewSettings = doc.getCurrentController().getViewSettings()
+                    viewSettings.setPropertyValue('ShowGrid', True)
+                    viewSettings.setPropertyValue('GridColor', gridColor)
+                    viewSettings.setPropertyValue('ZoomValue', 110)
+                    """,
                 ],
             },
             "libreoffice_impress": {
                 "executor": {
                     "name": "execute_uno_command",
                     "language": "UNO Python",
-                    "description": "Presentation visual styling, slide layouts, theme changes, view modes",
+                    "description": "Complete presentation visual themes using UNO API with app_states awareness",
                 },
                 "focus_areas": [
-                    "Modify slide visual layouts (backgrounds, themes) that affect screenshots",
-                    "Change view visual modes (zoom, slide sorter) that change appearance",
-                    "Modify toolbar visual appearance (buttons, menus) that affect UI perception",
-                    "Change presentation visual themes (colors, fonts) that affect visual interface",
+                    "Use document_state from app_states to target specific slides",
+                    "Apply COMPLETE presentation themes (Corporate, Academic, Creative themes)",
+                    "Modify slide backgrounds + view modes + zoom systematically",
+                    "Change colors, fonts, layout styles for visual variations",
+                    "Affect multiple slides with professional design systems",
                     "NEVER touch slide content, text, or presentation structure",
                 ],
                 "examples": [
-                    "Slide visual layouts: \"doc = desktop.getCurrentComponent(); slide = doc.getDrawPages().getByIndex(0); slide.setPropertyValue('BackgroundColor', 0xF0F0F0);\"",
-                    "View visual modes: \"doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ZoomType', 0);\"",
-                    "Presentation visual themes: \"doc = desktop.getCurrentComponent(); slide = doc.getDrawPages().getByIndex(0); slide.setPropertyValue('BackgroundColor', 0xE0E0E0);\"",
+                    """
+                    # Corporate Professional Theme (Score: 38/50)
+                    doc = desktop.getCurrentComponent()
+                    slides = doc.getDrawPages()
+                    slide_count = slides.getCount()
+                    # Corporate color palette - professional blue
+                    corporateBg, accentBlue = 0xF8F9FA, 0x0066CC
+                    titleBg = 0xE8F0FE
+                    # Apply theme to all slides
+                    for i in range(min(slide_count, 10)):
+                        slide = slides.getByIndex(i)
+                        slide.setPropertyValue('BackgroundColor', corporateBg if i > 0 else titleBg)
+                    # View settings for professional presentation
+                    viewSettings = doc.getCurrentController().getViewSettings()
+                    viewSettings.setPropertyValue('ZoomType', 1)  # Optimal zoom
+                    viewSettings.setPropertyValue('ShowRuler', False)
+                    viewSettings.setPropertyValue('ShowSlidePane', True)
+                    """,
+                    """
+                    # Academic Research Theme (Score: 36/50)
+                    doc = desktop.getCurrentComponent()
+                    slides = doc.getDrawPages()
+                    # Academic color palette - neutral with green accents
+                    neutralBg, accentGreen = 0xFFFBF5, 0x2E7D32
+                    headerBg = 0xE8F5E9
+                    # Theme first 5 slides
+                    for i in range(min(slides.getCount(), 5)):
+                        slide = slides.getByIndex(i)
+                        slide.setPropertyValue('BackgroundColor', headerBg if i == 0 else neutralBg)
+                    # Academic view settings
+                    viewSettings = doc.getCurrentController().getViewSettings()
+                    viewSettings.setPropertyValue('ZoomType', 0)  # Page view
+                    viewSettings.setPropertyValue('ShowNotesPane', True)
+                    """,
+                    """
+                    # Creative Design Theme (Score: 37/50)
+                    doc = desktop.getCurrentComponent()
+                    slides = doc.getDrawPages()
+                    # Creative color palette - vibrant gradients
+                    vibrantColors = [0xFFE5E5, 0xE5F5FF, 0xFFF5E5, 0xF0E5FF, 0xE5FFE5]
+                    for i in range(min(slides.getCount(), len(vibrantColors))):
+                        slide = slides.getByIndex(i)
+                        slide.setPropertyValue('BackgroundColor', vibrantColors[i])
+                    # Creative view settings
+                    viewSettings = doc.getCurrentController().getViewSettings()
+                    viewSettings.setPropertyValue('ZoomType', 2)  # Fit width
+                    viewSettings.setPropertyValue('ShowSlideSorter', False)
+                    """,
                 ],
             },
             "libreoffice_writer": {
                 "executor": {
                     "name": "execute_uno_command",
                     "language": "UNO Python",
-                    "description": "Document visual styling, text formatting, page layouts, view modes",
+                    "description": "Complete document visual themes using UNO API with app_states awareness",
                 },
                 "focus_areas": [
-                    "Modify text visual formatting (colors, fonts, styles) that affect screenshots",
-                    "Change page visual layouts (margins, headers, footers) that change appearance",
-                    "Modify view visual modes (zoom, ruler) that affect UI perception",
-                    "Change document visual themes (colors, fonts) that affect visual interface",
+                    "Use document_state from app_states to apply context-aware themes",
+                    "Apply COMPLETE document themes (Professional, Academic, Creative themes)",
+                    "Modify page layouts + view settings + zoom systematically",
+                    "Change colors, fonts, margins for visual variations",
+                    "Affect document-wide appearance with design system consistency",
                     "NEVER touch document content, text, or document structure",
                 ],
                 "examples": [
-                    "Text visual formatting: \"doc = desktop.getCurrentComponent(); text = doc.getText(); cursor = text.createTextCursor(); cursor.setPropertyValue('CharColor', 0x000000);\"",
-                    "Page visual layouts: \"doc = desktop.getCurrentComponent(); pageStyle = doc.getStyleFamilies().getByName('PageStyles').getByName('Standard'); pageStyle.setPropertyValue('HeaderIsOn', True);\"",
-                    "Document visual themes: \"doc = desktop.getCurrentComponent(); viewSettings = doc.getCurrentController().getViewSettings(); viewSettings.setPropertyValue('ShowRuler', False);\"",
+                    """
+                    # Professional Business Document Theme (Score: 37/50)
+                    doc = desktop.getCurrentComponent()
+                    # Professional page style
+                    pageStyles = doc.getStyleFamilies().getByName('PageStyles')
+                    standardPage = pageStyles.getByName('Standard')
+                    standardPage.setPropertyValue('BackColor', 0xFFFFFF)
+                    standardPage.setPropertyValue('HeaderIsOn', True)
+                    standardPage.setPropertyValue('FooterIsOn', True)
+                    standardPage.setPropertyValue('LeftMargin', 2500)
+                    standardPage.setPropertyValue('RightMargin', 2500)
+                    # View settings for professional work
+                    viewSettings = doc.getCurrentController().getViewSettings()
+                    viewSettings.setPropertyValue('ShowRuler', True)
+                    viewSettings.setPropertyValue('ShowStatusBar', True)
+                    viewSettings.setPropertyValue('ZoomType', 0)  # Optimal view
+                    """,
+                    """
+                    # Academic Paper Theme (Score: 36/50)
+                    doc = desktop.getCurrentComponent()
+                    # Academic page style - wider margins
+                    pageStyles = doc.getStyleFamilies().getByName('PageStyles')
+                    standardPage = pageStyles.getByName('Standard')
+                    standardPage.setPropertyValue('BackColor', 0xFFFBF5)
+                    standardPage.setPropertyValue('LeftMargin', 3000)  # Wider for binding
+                    standardPage.setPropertyValue('RightMargin', 2000)
+                    standardPage.setPropertyValue('TopMargin', 2500)
+                    standardPage.setPropertyValue('BottomMargin', 2500)
+                    # Academic view settings
+                    viewSettings = doc.getCurrentController().getViewSettings()
+                    viewSettings.setPropertyValue('ShowRuler', True)
+                    viewSettings.setPropertyValue('ShowTextBoundaries', True)
+                    viewSettings.setPropertyValue('ZoomValue', 120)  # Larger for reading
+                    """,
+                    """
+                    # Creative Writing Theme (Score: 35/50)
+                    doc = desktop.getCurrentComponent()
+                    # Creative page style - minimal distractions
+                    pageStyles = doc.getStyleFamilies().getByName('PageStyles')
+                    standardPage = pageStyles.getByName('Standard')
+                    standardPage.setPropertyValue('BackColor', 0xFFF8E1)  # Warm background
+                    standardPage.setPropertyValue('LeftMargin', 2000)
+                    standardPage.setPropertyValue('RightMargin', 2000)
+                    # Minimal view for focus
+                    viewSettings = doc.getCurrentController().getViewSettings()
+                    viewSettings.setPropertyValue('ShowRuler', False)
+                    viewSettings.setPropertyValue('ShowStatusBar', False)
+                    viewSettings.setPropertyValue('ShowTextBoundaries', False)
+                    viewSettings.setPropertyValue('ZoomType', 3)  # Page width
+                    """,
                 ],
             },
             "gimp": {
                 "executor": {
                     "name": "execute_bash_command",
                     "language": "bash",
-                    "description": "Desktop environment visual styling, system themes, background processes",
+                    "description": "System-level theme transformations and background processes",
                 },
                 "focus_areas": [
-                    "Modify visual appearance that affects screenshots and UI perception",
-                    "Change colors, fonts, spacing that change visual appearance but not functionality",
-                    "Add visual elements that don't impact functionality but change visual interface",
+                    "Apply COMPLETE system theme transformations (Light/Dark/HighContrast)",
+                    "Combine GTK theme + icon theme + font changes systematically",
+                    "Add background notifications for realistic work environment simulation",
                     "NEVER interfere with main task image editing or file operations",
                 ],
                 "examples": [
-                    "Visual theme changes: \"gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'; gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark';\"",
-                    "Visual color changes: \"gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'; gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark';\"",
-                    "Visual font changes: \"gsettings set org.gnome.desktop.interface font-name 'Ubuntu 12'; gsettings set org.gnome.desktop.interface monospace-font-name 'Ubuntu Mono 12';\"",
+                    """# Dark Theme Complete System (Score: 32/50)
+                    THEMES=('Adwaita-dark' 'HighContrast'); ICONS=('Papirus-Dark' 'HighContrast'); THEME=${THEMES[$RANDOM % ${#THEMES[@]}]}; ICON=${ICONS[$RANDOM % ${#ICONS[@]}]}; gsettings set org.gnome.desktop.interface gtk-theme "$THEME"; gsettings set org.gnome.desktop.interface icon-theme "$ICON"; gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'; gsettings set org.gnome.desktop.interface font-name 'Ubuntu Bold 11'""",
+                    """# Light Professional Theme (Score: 30/50)
+                    gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita'; gsettings set org.gnome.desktop.interface icon-theme 'Papirus'; gsettings set org.gnome.desktop.interface color-scheme 'prefer-light'; gsettings set org.gnome.desktop.interface font-name 'Ubuntu 11'; notify-send 'System' 'Theme updated' --icon=preferences-desktop-theme""",
                 ],
             },
             "file_manager": {
                 "executor": {
                     "name": "execute_bash_command",
                     "language": "bash",
-                    "description": "Desktop environment visual styling, system themes, background processes",
+                    "description": "System-level theme transformations and window management",
                 },
                 "focus_areas": [
-                    "Modify visual appearance that affects screenshots and UI perception",
-                    "Change colors, fonts, spacing that change visual appearance but not functionality",
-                    "Add visual elements that don't impact functionality but change visual interface",
-                    "NEVER interfere with main task file operations or directory navigation",
+                    "Apply system theme changes combined with window positioning",
+                    "Add background file operations for realistic environment",
+                    "Combine theme + icon + font + window management",
+                    "NEVER interfere with main task file operations or navigation",
                 ],
                 "examples": [
-                    "Visual theme changes: \"gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'; gsettings set org.gnome.desktop.interface icon-theme 'Papirus-Dark';\"",
-                    "Visual color changes: \"gsettings set org.gnome.desktop.interface color-scheme 'prefer-dark'; gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark';\"",
-                    "Visual font changes: \"gsettings set org.gnome.desktop.interface font-name 'Ubuntu 12'; gsettings set org.gnome.desktop.interface monospace-font-name 'Ubuntu Mono 12';\"",
+                    """# Theme + Window Combo (Score: 31/50)
+                    gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'; gsettings set org.gnome.desktop.interface icon-theme 'Yaru-dark'; wmctrl -r 'Files' -e 0,100,100,1000,700 2>/dev/null || true; notify-send 'File Manager' 'Environment updated' --icon=folder""",
                 ],
             },
             "terminal": {
                 "executor": {
                     "name": "execute_bash_command",
                     "language": "bash",
-                    "description": "Desktop environment visual styling, system themes, background processes",
+                    "description": "Background system manipulations that don't affect terminal tasks",
                 },
                 "focus_areas": [
-                    "Focus on BACKGROUND desktop environment manipulation that won't interfere with the main task",
-                    "System notifications, background processes, desktop themes",
-                    "Window management of OTHER applications (not the main task)",
-                    "Background file operations, system settings changes",
+                    "BACKGROUND system theme changes only (don't affect terminal content)",
+                    "Background notifications and processes",
+                    "Desktop environment changes (not terminal-specific)",
+                    "NEVER interfere with terminal commands or task execution",
                 ],
                 "examples": [
-                    "System notifications: \"notify-send 'Background Process' 'System update running'\"",
-                    "Desktop theme: \"gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'\"",
-                    'Background files: "mkdir -p /tmp/background_work && touch /tmp/background_work/process.log"',
+                    """# Background System Changes (Score: 28/50)
+                    gsettings set org.gnome.desktop.interface gtk-theme 'Adwaita-dark'; notify-send 'Background' 'System maintenance' --icon=system-run; mkdir -p /tmp/bg_proc && echo 'process' > /tmp/bg_proc/log.txt""",
                 ],
             },
             "vs_code": {
                 "executor": {
                     "name": "execute_python_command",
                     "language": "Python",
-                    "description": "VS Code environment visual styling, background files, window management",
+                    "description": "Background system manipulations that don't affect VS Code tasks",
                 },
                 "focus_areas": [
-                    "Focus on BACKGROUND VS Code environment manipulation that won't interfere with the main task",
-                    "Background file operations, temporary file creation",
-                    "Window management, panel resizing, sidebar toggling",
-                    "Settings modifications that don't affect the primary workflow",
+                    "BACKGROUND file operations and system changes only",
+                    "Desktop theme modifications (not VS Code-specific)",
+                    "Background notifications and processes",
+                    "NEVER interfere with VS Code editing or main task",
                 ],
                 "examples": [
-                    "Background files: \"import os; os.makedirs('/tmp/vscode_temp', exist_ok=True); open('/tmp/vscode_temp/debug.log', 'w').write('Background process started')\"",
-                    "Window management: \"wmctrl -r 'Visual Studio Code' -e 0,0,0,1200,800\"",
-                    "Settings: \"import json; settings = {'workbench.colorTheme': 'Dark+'}; print(json.dumps(settings))\"",
+                    """# Background System Operations (Score: 27/50)
+                    import os, subprocess; os.makedirs('/tmp/bg_work', exist_ok=True); open('/tmp/bg_work/log.txt', 'w').write('Background process'); subprocess.run(['notify-send', 'Background', 'Process running'], check=False)""",
                 ],
             },
             "system": {
                 "executor": {
                     "name": "execute_python_command",
                     "language": "Python",
-                    "description": "System automation, background processes, desktop environment modifications",
+                    "description": "Background desktop environment manipulations",
                 },
                 "focus_areas": [
-                    "Focus on BACKGROUND desktop environment manipulation that won't interfere with the main task",
-                    "System notifications, background processes",
-                    "Desktop theme changes, background settings",
-                    "Window management of OTHER applications (not the main task)",
+                    "BACKGROUND desktop theme changes only",
+                    "System notifications and background processes",
+                    "Desktop environment modifications (not app-specific)",
+                    "NEVER interfere with the main task or application",
                 ],
                 "examples": [
-                    "System notifications: \"import subprocess; subprocess.run(['notify-send', 'Background Process', 'System update running'])\"",
-                    "Background files: \"import os; os.makedirs('/tmp/background_work', exist_ok=True); open('/tmp/background_work/process.log', 'w').write('Background process started')\"",
-                    "Desktop settings: \"import subprocess; subprocess.run(['gsettings', 'set', 'org.gnome.desktop.interface', 'gtk-theme', 'Adwaita-dark'])\"",
+                    """# Background Desktop Changes (Score: 26/50)
+                    import subprocess, os; subprocess.run(['gsettings', 'set', 'org.gnome.desktop.interface', 'gtk-theme', 'Adwaita-dark'], check=False); subprocess.run(['notify-send', 'System', 'Background update'], check=False); os.makedirs('/tmp/sys_bg', exist_ok=True)""",
                 ],
             },
         }

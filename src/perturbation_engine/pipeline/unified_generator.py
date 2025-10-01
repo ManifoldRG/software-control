@@ -32,7 +32,7 @@ class UnifiedGenerator:
         # Initialize components
         self.curriculum_planner = CurriculumPlanner()
         self.trajectory_generator = TrajectoryGenerator(result_base_dir)
-        self.shared_execution_engine = SharedExecutionEngine(execution_config)
+        self.shared_execution_engine = SharedExecutionEngine(execution_config, result_base_dir)
         self.quality_evaluator = QualityEvaluator()
 
     def generate_trajectories(

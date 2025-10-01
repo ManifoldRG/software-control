@@ -499,6 +499,9 @@ class TrajectoryGenerator:
     ):
         """Save individual trajectory step data with full screenshot and metadata"""
         try:
+            # Ensure trajectory directory exists
+            self.path_manager.ensure_trajectory_directory(trajectory_id)
+
             # Always save screenshot
             screenshot_saved = False
             if "screenshot" in obs and obs["screenshot"] is not None:
