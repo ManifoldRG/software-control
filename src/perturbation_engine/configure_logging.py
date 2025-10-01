@@ -74,3 +74,45 @@ def configure_logging() -> None:
 
     root.setLevel(level)
     root.addHandler(handler)
+
+
+def configure_subprocess_logging(process_name: str = None) -> None:
+    """Configure logging for subprocesses to show in main process.
+
+    This ensures subprocess logs appear in the main process console.
+    """
+    level_name = os.getenv("PERTURB_ENGINE_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+
+    root = logging.getLogger()
+
+    # Clear existing handlers to avoid duplication
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+
+    # Set up console handler that writes to stdout
+    stream = sys.stdout
+    color_env = os.getenv("PERTURB_ENGINE_LOG_COLOR", "1").lower()
+    color_enabled = color_env not in {"0", "false", "no"} and hasattr(stream, "isatty") and stream.isatty()
+
+    handler = logging.StreamHandler(stream)
+    handler.setLevel(level)
+
+    # Create formatter with process name
+    if process_name:
+        formatter = ColorFormatter(use_color=color_enabled, datefmt="%H:%M:%S")
+        # Override the format method to include process name
+        original_format = formatter.format
+
+        def format_with_process_name(record):
+            record.processName = f"{record.processName}-{process_name}"
+            return original_format(record)
+
+        formatter.format = format_with_process_name
+    else:
+        formatter = ColorFormatter(use_color=color_enabled, datefmt="%H:%M:%S")
+
+    handler.setFormatter(formatter)
+
+    root.setLevel(level)
+    root.addHandler(handler)

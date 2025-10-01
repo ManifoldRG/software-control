@@ -10,10 +10,12 @@
       "request": "launch",
       "program": "${file}",
       "console": "integratedTerminal",
+      "python": "${workspaceFolder}/.venv/bin/python",
       "env": {
-        "PYTHONPATH": "${workspaceFolder}"
+        "PYTHONPATH": "${workspaceFolder}/src"
       },
-      "cwd": "${workspaceFolder}"
+      "cwd": "${workspaceFolder}",
+      "justMyCode": true
     },
     {
       "name": "Pytest: Current File",
@@ -28,8 +30,9 @@
       ],
       "console": "integratedTerminal",
       "justMyCode": false,
+      "python": "${workspaceFolder}/.venv/bin/python",
       "env": {
-        "PYTHONPATH": "${workspaceFolder}"
+        "PYTHONPATH": "${workspaceFolder}/src"
       },
       "cwd": "${workspaceFolder}"
     }

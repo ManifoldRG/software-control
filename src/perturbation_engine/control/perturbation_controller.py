@@ -1,36 +1,360 @@
-"""Enhanced controller that extends OSWorld's PythonController with Playwright page access"""
+"""
+PerturbationController: Execute perturbation code
+Clean interface for VM manipulation
+"""
 
 import logging
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 
 from playwright.sync_api import Page, sync_playwright
 
 from OSWorld.desktop_env.controllers.python import PythonController
 from OSWorld.desktop_env.controllers.setup import SetupController
-from perturbation_engine.control.gemini_controller import GeminiWebPageController
-from perturbation_engine.data_types import PerturbationSpec, PerturbationType
+from perturbation_engine.control.app_state_extractor import AppStateExtractor
+
+
+@dataclass
+class ManipulationResult:
+    """Result of VM manipulation operation"""
+
+    success: bool
+    operation_type: str
+    target_app: str
+    result_data: Dict[str, Any]
+    error_message: Optional[str] = None
 
 
 class PerturbationController(PythonController, SetupController):
-    """Extended PythonController that provides Playwright page access"""
+    """Execute perturbation code with clean interface"""
 
     def __init__(self, vm_ip: str, server_port: int, chromium_port: int = 9222, **kwargs):
+        # Ensure logging is configured for subprocess (only if not already configured)
+        if not logging.getLogger().handlers:
+            from perturbation_engine.configure_logging import configure_logging
+
+            configure_logging()
+
         PythonController.__init__(self, vm_ip, server_port, **kwargs)
         SetupController.__init__(self, vm_ip, server_port, chromium_port, **kwargs)
         self.vm_ip = vm_ip
         self.server_port = server_port
         self.chromium_port = chromium_port
         self.logger = logging.getLogger(__name__)
+
+        # Playwright connection
         self._playwright = None
         self._browser = None
         self._context = None
         self._page = None
-        self.vlm_controller = GeminiWebPageController()
 
-    def _ensure_playwright_connection(self) -> bool:
-        """Ensure Playwright connection to Chrome is established"""
-        if self._page is not None:
+        # App state extractor
+        self._app_state_extractor = None
+        if AppStateExtractor:
+            self._app_state_extractor = AppStateExtractor(self)
+
+    def execute_perturbation(
+        self, perturbation_type: str, generated_code: str, api_call: str, parameters: Dict[str, Any]
+    ) -> ManipulationResult:
+        """Execute perturbation using generated code with sophisticated handling"""
+        try:
+            success = False
+            result_data = {}
+
+            if api_call == "execute_js_on_page":
+                success = self.execute_js_on_page(generated_code)
+                result_data = {"api_call": api_call, "code": generated_code}
+            elif api_call == "execute_bash_command":
+                success = self.execute_bash_command(generated_code)
+                result_data = {"api_call": api_call, "command": generated_code}
+            elif api_call == "execute_python_command":
+                result = self.execute_python_command(generated_code)
+                success = result.get("status") == "success"
+                result_data = {"api_call": api_call, "result": result}
+            elif api_call == "execute_uno_command":
+                success = self.execute_uno_command(generated_code, parameters)
+                result_data = {"api_call": api_call, "code": generated_code}
+            elif api_call == "manipulate_app_state":
+                success = self._manipulate_app_state(parameters)
+                result_data = {"api_call": api_call, "parameters": parameters}
+            elif api_call == "execute_system_perturbation":
+                # Handle sophisticated system-level perturbations
+                system_type = parameters.get("system_type", "desktop_theme")
+                success = self.execute_system_perturbation(system_type, parameters)
+                result_data = {"api_call": api_call, "system_type": system_type, "parameters": parameters}
+            else:
+                self.logger.warning(f"Unknown API call: {api_call}")
+                success = False
+                result_data = {"api_call": api_call, "error": "Unknown API call"}
+
+            return ManipulationResult(
+                success=success,
+                operation_type=perturbation_type,
+                target_app=parameters.get("target_app", "unknown"),
+                result_data=result_data,
+                error_message=None if success else f"Failed to execute {api_call}",
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error executing perturbation: {e}")
+            return ManipulationResult(
+                success=False,
+                operation_type=perturbation_type,
+                target_app=parameters.get("target_app", "unknown"),
+                result_data={"error": str(e)},
+                error_message=str(e),
+            )
+
+    def execute_js_on_page(self, js_code: str) -> bool:
+        """Execute JavaScript code on the current page"""
+        try:
+            page = self._get_page()
+            if not page:
+                return False
+
+            # Clean up the JavaScript code
+            if "```" in js_code:
+                js_code = js_code.split("```")[1].removeprefix("javascript").strip()
+
+            page.evaluate(js_code)
+            self.logger.info(f"Executed JavaScript: {js_code[:100]}...")
             return True
+
+        except Exception as e:
+            self.logger.error(f"Error executing JavaScript: {e}")
+            return False
+
+    def execute_bash_command(self, command: str) -> bool:
+        """Execute bash command with improved error handling"""
+        try:
+            # Clean up the command if it contains markdown
+            if "```" in command:
+                command = command.split("```")[1].removeprefix("bash").strip()
+
+            # Execute with proper error handling
+            result = self.execute_python_command(
+                f"import subprocess; result = subprocess.run(['bash', '-c', '{command}'], capture_output=True, text=True); print(f'STDOUT: {{result.stdout}}'); print(f'STDERR: {{result.stderr}}'); print(f'Return code: {{result.returncode}}')"
+            )
+            success = result.get("status") == "success"
+            if success:
+                self.logger.info(f"Bash command executed: {command}")
+            else:
+                self.logger.warning(f"Bash command failed: {command}")
+            return success
+        except Exception as e:
+            self.logger.error(f"Error executing bash command: {e}")
+            return False
+
+    def execute_python_command(self, python_code: str) -> Dict[str, Any]:
+        """Execute Python code"""
+        try:
+            result = super().execute_python_command(python_code)
+            # Ensure the result has the correct structure
+            if "status" not in result:
+                if result.get("success", False):
+                    result["status"] = "success"
+                else:
+                    result["status"] = "error"
+            return result
+        except Exception as e:
+            self.logger.error(f"Error executing Python: {e}")
+            return {"status": "error", "error": str(e)}
+
+    def execute_uno_command(self, uno_code: str, parameters: Dict[str, Any]) -> bool:
+        """Execute UNO command for LibreOffice manipulation"""
+        try:
+            # Clean up the UNO code
+            if "```" in uno_code:
+                uno_code = uno_code.split("```")[1].removeprefix("python").strip()
+
+            # Execute UNO code via Python with robust LibreOffice connection
+            python_wrapper = f"""
+import uno
+import unohelper
+import subprocess
+import time
+from com.sun.star.uno import RuntimeException
+
+def identify_document_type(component):
+    if component.supportsService("com.sun.star.sheet.SpreadsheetDocument"):
+        return "Calc"
+    if component.supportsService("com.sun.star.text.TextDocument"):
+        return "Writer"
+    if component.supportsService("com.sun.star.sheet.PresentationDocument"):
+        return "Impress"
+    return None
+
+try:
+    # Clean up previous TCP connections
+    subprocess.run(
+        'echo "osworld-public-evaluation" | sudo -S ss --kill --tcp state TIME-WAIT sport = :2002',
+        shell=True,
+        check=False,
+        text=True,
+        capture_output=True
+    )
+
+    # Start LibreOffice headless
+    soffice_process = subprocess.Popen([
+        "soffice",
+        "--headless",
+        "--invisible",
+        "--accept=socket,host=localhost,port=2002;urp;StarOffice.Service"
+    ])
+
+    # Wait for LibreOffice to start
+    time.sleep(3)
+
+    # Get LibreOffice context
+    localContext = uno.getComponentContext()
+    resolver = localContext.ServiceManager.createInstanceWithContext(
+        "com.sun.star.bridge.UnoUrlResolver", localContext
+    )
+    context = resolver.resolve(
+        "uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext"
+    )
+    desktop = context.ServiceManager.createInstanceWithContext(
+        "com.sun.star.frame.Desktop", context
+    )
+
+    # Execute the UNO code
+    {uno_code}
+
+    print("UNO command executed successfully")
+
+    # Clean up
+    soffice_process.terminate()
+    soffice_process.wait()
+
+except Exception as e:
+    print(f"UNO command failed: {{e}}")
+    try:
+        soffice_process.terminate()
+        soffice_process.wait()
+    except:
+        pass
+    raise
+"""
+
+            result = self.execute_python_command(python_wrapper)
+            return result.get("status") == "success"
+
+        except Exception as e:
+            self.logger.error(f"Error executing UNO command: {e}")
+            return False
+
+    def _manipulate_app_state(self, parameters: Dict[str, Any]) -> bool:
+        """Manipulate app state based on parameters"""
+        try:
+            app_type = parameters.get("target_app", "unknown")
+            operation = parameters.get("operation", "unknown")
+
+            if operation == "switch_to_app":
+                return self._switch_to_app(app_type)
+            elif operation == "resize_window":
+                return self._resize_window(app_type, parameters)
+            elif operation == "close_app":
+                return self._close_app(app_type)
+            else:
+                self.logger.warning(f"Unknown app manipulation: {operation}")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Error manipulating app state: {e}")
+            return False
+
+    def _switch_to_app(self, app_name: str) -> bool:
+        """Switch to specific application"""
+        try:
+            # Use wmctrl to switch to app
+            result = self.execute_python_command(
+                f"import subprocess; subprocess.run(['wmctrl', '-a', '{app_name}'])"
+            )
+            return result.get("status") == "success"
+        except Exception as e:
+            self.logger.error(f"Error switching to app {app_name}: {e}")
+            return False
+
+    def _resize_window(self, app_name: str, parameters: Dict[str, Any]) -> bool:
+        """Resize application window"""
+        try:
+            width = parameters.get("width", 1920)
+            height = parameters.get("height", 1080)
+            result = self.execute_python_command(
+                f"import subprocess; subprocess.run(['wmctrl', '-r', '{app_name}', '-e', '0,0,0,{width},{height}'])"
+            )
+            return result.get("status") == "success"
+        except Exception as e:
+            self.logger.error(f"Error resizing window for {app_name}: {e}")
+            return False
+
+    def _close_app(self, app_name: str) -> bool:
+        """Close application"""
+        try:
+            result = self.execute_python_command(
+                f"import subprocess; subprocess.run(['pkill', '-f', '{app_name}'])"
+            )
+            return result.get("status") == "success"
+        except Exception as e:
+            self.logger.error(f"Error closing app {app_name}: {e}")
+            return False
+
+    def execute_system_perturbation(self, perturbation_type: str, parameters: Dict[str, Any]) -> bool:
+        """Execute sophisticated system-level perturbations"""
+        try:
+            if perturbation_type == "desktop_theme":
+                theme = parameters.get("theme", "Adwaita-dark")
+                icon_theme = parameters.get("icon_theme", "Papirus-Dark")
+                commands = [
+                    f"gsettings set org.gnome.desktop.interface gtk-theme '{theme}'",
+                    f"gsettings set org.gnome.desktop.interface icon-theme '{icon_theme}'",
+                ]
+                for cmd in commands:
+                    self.execute_bash_command(cmd)
+                return True
+
+            elif perturbation_type == "desktop_wallpaper":
+                wallpaper = parameters.get("wallpaper", "/usr/share/backgrounds/gnome/adwaita-morning.jpg")
+                self.execute_bash_command(
+                    f"gsettings set org.gnome.desktop.background picture-uri 'file://{wallpaper}'"
+                )
+                return True
+
+            elif perturbation_type == "system_notification":
+                title = parameters.get("title", "Background Process")
+                message = parameters.get("message", "System update running")
+                self.execute_bash_command(f"notify-send '{title}' '{message}'")
+                return True
+
+            elif perturbation_type == "background_files":
+                base_dir = parameters.get("base_dir", "/tmp/background_work")
+                task_id = parameters.get("task_id", "unknown")
+                self.execute_bash_command(
+                    f"mkdir -p {base_dir}/{task_id} && touch {base_dir}/{task_id}/process.log"
+                )
+                return True
+
+            elif perturbation_type == "window_management":
+                app_name = parameters.get("app_name", "Calculator")
+                x = parameters.get("x", 100)
+                y = parameters.get("y", 100)
+                width = parameters.get("width", 300)
+                height = parameters.get("height", 200)
+                self.execute_bash_command(f"wmctrl -r '{app_name}' -e 0,{x},{y},{width},{height}")
+                return True
+
+            else:
+                self.logger.warning(f"Unknown system perturbation type: {perturbation_type}")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Error executing system perturbation: {e}")
+            return False
+
+    def _get_page(self) -> Optional[Page]:
+        """Get Playwright page with connection management"""
+        if self._page is not None:
+            return self._page
 
         try:
             self._playwright = sync_playwright().start()
@@ -39,163 +363,23 @@ class PerturbationController(PythonController, SetupController):
             # Connect to existing Chrome instance
             self._browser = self._playwright.chromium.connect_over_cdp(remote_debugging_url)
 
-            # Get the first context (should be the only one)
+            # Get the first context and page
             if self._browser.contexts:
                 self._context = self._browser.contexts[0]
-                # Get the first page (active tab)
                 if self._context.pages:
                     self._page = self._context.pages[0]
                 else:
-                    # Create a new page if none exists
                     self._page = self._context.new_page()
             else:
-                # Create new context if none exists
                 self._context = self._browser.new_context()
                 self._page = self._context.new_page()
 
             self.logger.info(f"Connected to Chrome via Playwright at {remote_debugging_url}")
-            return True
+            return self._page
 
         except Exception as e:
             self.logger.error(f"Failed to connect to Chrome via Playwright: {e}")
-            return False
-
-    @property
-    def page(self) -> Optional[Page]:
-        """Get the current Playwright page"""
-        if self._ensure_playwright_connection():
-            return self._page
-        return None
-
-    def can_handle(self, perturbation_type: PerturbationType) -> bool:
-        return perturbation_type in [PerturbationType.UI_VISUAL, PerturbationType.VISUAL_DISTRACTOR]
-
-    def apply_perturbation(self, spec: PerturbationSpec, context: Dict[str, Any]) -> Dict[str, Any]:
-        """Apply UI perturbations using Gemini based on perturbation type"""
-        try:
-            nav_html = self.get_interactable_html()
-            if not nav_html:
-                return {"applied": False, "error": "Could not extract page HTML"}
-
-            # Determine action based on parameters or perturbation type
-            action = self._determine_action(spec)
-
-            # Prepare Gemini parameters
-            gemini_params = {"action": action, **spec.parameters}
-
-            js_code = self.vlm_controller.get_ui_perturbation_js_code(nav_html, gemini_params)
-            if not js_code:
-                return {"applied": False, "error": "Could not generate JavaScript code"}
-
-            success = self.execute_js_on_page(js_code)
-
-            return {
-                "applied": success,
-                "method": f"gemini_{action}",
-                "js_code": js_code,
-                "parameters": spec.parameters,
-            }
-
-        except Exception as e:
-            self.logger.error(f"Error applying VLM perturbation: {e}")
-            return {"applied": False, "error": str(e)}
-
-    def _determine_action(self, spec: PerturbationSpec) -> str:
-        """Determine the action type based on perturbation spec parameters."""
-        # Check if action is explicitly specified
-        if "action" in spec.parameters:
-            return spec.parameters["action"]
-
-        # Map perturbation types to actions
-        type_to_action = {
-            PerturbationType.UI_VISUAL: "ui_reordering",
-            PerturbationType.VISUAL_DISTRACTOR: "ui_injection",
-        }
-
-        # Check for specific command indicators in parameters
-        if "theme" in spec.parameters:
-            return "theme_change"
-        elif "num_popups" in spec.parameters:
-            return "add_popups"
-        elif "resolution" in spec.parameters:
-            return "modify_resolution"
-        elif "num_components" in spec.parameters:
-            return "ui_injection"
-        elif "num_elements" in spec.parameters:
-            return "ui_reordering"
-
-        # Default based on perturbation type
-        return type_to_action.get(spec.perturbation_type, "ui_reordering")
-
-    def execute_js_on_page(self, js_code: str) -> Any:
-        """Execute JavaScript code on the current page"""
-        try:
-            # Clean up the JavaScript code (remove markdown formatting)
-            if "```" in js_code:
-                js_code = js_code.split("```")[1].removeprefix("javascript").strip()
-
-            self.page.evaluate(js_code)
-            self.logger.info(f"Executed JavaScript code: {js_code[:100]}...")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Error executing JavaScript code: {e}")
-            return False
-
-    def get_page_html(self, selector: str = None) -> str:
-        """Get HTML content from the current page"""
-        page = self.page
-        if not page:
-            return ""
-
-        try:
-            if selector:
-                element = page.query_selector(selector)
-                return element.inner_html() if element else ""
-            else:
-                return page.content()
-        except Exception as e:
-            self.logger.error(f"Error getting page HTML: {e}")
-            return ""
-
-    def get_interactable_html(self) -> str:
-        """Extract interactable HTML elements from the current page"""
-        try:
-            interactable_html = ""
-            # Common interactable elements
-            selectors = [
-                "a",
-                "button",
-                "input",
-                "select",
-                "textarea",
-                "[tabindex]",
-                "[role=button]",
-                "[role=link]",
-                "[contenteditable=true]",
-            ]
-            interactable_elements = []
-            for sel in selectors:
-                elements = self.page.query_selector_all(sel)
-                for el in elements:
-                    # Filter visible elements only
-                    visible = self.page.evaluate(
-                        "el => window.getComputedStyle(el).display !== 'none' && window.getComputedStyle(el).visibility !== 'hidden'",
-                        el,
-                    )
-                    if visible:
-                        interactable_html += el.evaluate("el => el.outerHTML") + "\n"
-                        interactable_elements.append(el)
-
-            # highlight all interactable elements
-            for el in interactable_elements:
-                el.evaluate("el => el.style.border = '2px solid red';")
-
-            return interactable_html
-
-        except Exception as e:
-            self.logger.error(f"Error extracting HTML: {e}")
-            return ""
+            return None
 
     def close_playwright(self):
         """Close Playwright connections"""
@@ -209,3 +393,40 @@ class PerturbationController(PythonController, SetupController):
                 self.logger.info("Playwright connections closed")
         except Exception as e:
             self.logger.error(f"Error closing Playwright: {e}")
+
+    def get_comprehensive_app_states(self, use_comprehensive: bool = True) -> list:
+        """
+        Get app state information for LLM consumption.
+
+        Args:
+            use_comprehensive: If True, extract rich DOM/UNO data (slower but detailed)
+                             If False, use basic accessibility tree only (faster)
+
+        Comprehensive mode returns:
+        - Browser: Full DOM (buttons, links, forms, inputs, headings)
+        - LibreOffice: Document state (sheets, content, slides)
+        - All apps: Categorized elements (buttons, menus, text fields, etc.)
+        - UI structure (menu bars, toolbars, dialogs, panels)
+        - Interactive elements with full metadata
+
+        Basic mode returns:
+        - app_type, app_name, current_view
+        - key_elements (up to 10 interactive elements)
+        - element_count
+        """
+        if not self._app_state_extractor:
+            self.logger.warning("AppStateExtractor not available")
+            return []
+
+        try:
+            return self._app_state_extractor.extract_app_states(use_comprehensive=use_comprehensive)
+        except Exception as e:
+            self.logger.error(f"Error extracting app states: {e}")
+            # Try basic mode as fallback if comprehensive fails
+            if use_comprehensive:
+                self.logger.info("Falling back to basic extraction")
+                try:
+                    return self._app_state_extractor.extract_app_states(use_comprehensive=False)
+                except Exception as e2:
+                    self.logger.error(f"Basic extraction also failed: {e2}")
+            return []

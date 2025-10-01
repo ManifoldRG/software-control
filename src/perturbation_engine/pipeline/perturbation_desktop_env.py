@@ -1,9 +1,31 @@
+"""
+PerturbationDesktopEnv: Extended env with chrome management
+Clean interface for environment management
+"""
+
 import logging
 import os
-from typing import Tuple
+from enum import Enum
+from typing import Any, Dict, List, Tuple
 
 from OSWorld.desktop_env.desktop_env import DesktopEnv
 from perturbation_engine.control.perturbation_controller import PerturbationController
+
+
+class AppType(Enum):
+    """Application types"""
+
+    BROWSER = "browser"
+    LIBREOFFICE_CALC = "libreoffice_calc"
+    LIBREOFFICE_WRITER = "libreoffice_writer"
+    LIBREOFFICE_IMPRESS = "libreoffice_impress"
+    VS_CODE = "vs_code"
+    GIMP = "gimp"
+    VLC = "vlc"
+    THUNDERBIRD = "thunderbird"
+    FILE_MANAGER = "file_manager"
+    TERMINAL = "terminal"
+    UNKNOWN = "unknown"
 
 
 class PerturbationDesktopEnv(DesktopEnv):
@@ -29,7 +51,15 @@ class PerturbationDesktopEnv(DesktopEnv):
         client_password: str = "",
         chromium_port: int = 9222,
     ):
+        # Ensure logging is configured for subprocess (only if not already configured)
+        if not logging.getLogger().handlers:
+            from perturbation_engine.configure_logging import configure_logging
+
+            configure_logging()
+
         self.logger = logging.getLogger(__name__)
+        self.chromium_port = chromium_port
+
         super().__init__(
             provider_name=provider_name,
             region=region,
@@ -58,7 +88,71 @@ class PerturbationDesktopEnv(DesktopEnv):
         )
         self.logger.info("Replaced controller with PerturbationController")
 
+    def mark_perturbation_applied(self):
+        """Mark that a perturbation has been applied - forces reset on next trajectory"""
+        self.is_environment_used = True
+        self.logger.debug("Perturbation applied - environment marked as used (will reset on next trajectory)")
+
     def close(self) -> None:
         """Close both the perturbation controller and original environment"""
-        self.controller.close_playwright()
+        if hasattr(self.controller, "close_playwright"):
+            self.controller.close_playwright()
         super().close()
+
+    def get_obs(self):
+        """Get comprehensive observation including DOM, A11Y, and app-specific state"""
+        try:
+            return {
+                "screenshot": self.controller.get_screenshot(),
+                "accessibility_tree": self.controller.get_accessibility_tree()
+                if self.require_a11y_tree
+                else None,
+                "terminal": self.controller.get_terminal_output() if self.require_terminal else None,
+                "app_states": self.get_app_states_from_accessibility_tree(),
+                "instruction": self.instruction,
+                "timestamp": self._get_timestamp(),
+                "url": getattr(self.controller, "current_url", ""),
+                "window_size": getattr(self.controller, "window_size", {}),
+            }
+
+        except Exception as e:
+            self.logger.error(f"Error getting observation: {e}")
+            return {
+                "screenshot": None,
+                "accessibility_tree": None,
+                "terminal": None,
+                "app_states": [],
+                "instruction": self.instruction,
+                "timestamp": self._get_timestamp(),
+                "url": "",
+                "window_size": {},
+            }
+
+    def _get_timestamp(self) -> str:
+        """Get current timestamp"""
+        import datetime
+
+        return datetime.datetime.now().strftime("%Y%m%d@%H%M%S")
+
+    def get_app_states_from_accessibility_tree(self) -> List[Dict[str, Any]]:
+        """
+        Extract app states for LLM prompting.
+
+        Delegates to AppStateExtractor in PerturbationController:
+        - Comprehensive mode: Browser DOM, LibreOffice UNO, categorized elements
+        - Basic mode: Lightweight accessibility tree parsing only
+
+        Falls back gracefully if comprehensive extraction fails.
+        """
+        try:
+            # Delegate to controller's app state extractor
+            if hasattr(self.controller, "get_comprehensive_app_states"):
+                return self.controller.get_comprehensive_app_states()
+
+            # Fallback if controller doesn't have extractor
+            self.logger.warning("Controller doesn't have app state extractor, returning empty states")
+            return []
+
+        except Exception as e:
+            self.logger.error(f"Error extracting app states: {e}")
+            return []
