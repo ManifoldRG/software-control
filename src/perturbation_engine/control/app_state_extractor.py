@@ -896,6 +896,7 @@ if doc:
         """Detect application type from name."""
         app_lower = app_name.lower()
 
+        # TODO: add more application types
         if any(b in app_lower for b in ["chrome", "firefox", "safari", "edge", "browser"]):
             return "browser"
         elif "calc" in app_lower:
