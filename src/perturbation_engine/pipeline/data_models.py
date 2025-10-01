@@ -101,6 +101,15 @@ class GeneratedTrajectory:
     generation_time: float
     trajectory_file_path: str
     perturbation_log: List[Dict[str, Any]] = field(default_factory=list)
+    # Enhanced logging fields
+    scenario_spec_content: Optional[Dict[str, Any]] = None
+    final_app_states: Optional[List[Dict[str, Any]]] = None
+    total_perturbation_attempts: int = 0
+    total_perturbation_successes: int = 0
+    # Step-by-step comprehensive logging
+    step_by_step_log: List[Dict[str, Any]] = field(default_factory=list)
+    successful_perturbation_commands: List[Dict[str, Any]] = field(default_factory=list)
+    failed_perturbation_commands: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

@@ -191,14 +191,14 @@ def main():
     curriculum_config = CurriculumConfig(
         scenario_count=1,
         num_parallel_vms=1,
-        result_base_dir="/opt/manifold/results",
+        result_base_dir=os.environ.get("RESULT_BASE_DIR", "/opt/manifold/results"),
         beginner_scenarios=0,
         intermediate_scenarios=1,
         advanced_scenarios=0,
     )
 
     # Initialize unified generator
-    generator = UnifiedGenerator(execution_config)
+    generator = UnifiedGenerator(execution_config, curriculum_config.result_base_dir)
 
     # Load seed trajectories
     task_config_base_dir = "src/OSWorld/evaluation_examples"

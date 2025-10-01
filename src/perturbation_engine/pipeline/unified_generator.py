@@ -24,13 +24,14 @@ from perturbation_engine.utils.memory_utils import force_garbage_collection, log
 class UnifiedGenerator:
     """Main orchestrator for the perturbation pipeline"""
 
-    def __init__(self, execution_config: ExecutionConfig):
+    def __init__(self, execution_config: ExecutionConfig, result_base_dir: str = "/opt/manifold/results"):
         self.execution_config = execution_config
+        self.result_base_dir = result_base_dir
         self.logger = logging.getLogger(__name__)
 
         # Initialize components
         self.curriculum_planner = CurriculumPlanner()
-        self.trajectory_generator = TrajectoryGenerator()
+        self.trajectory_generator = TrajectoryGenerator(result_base_dir)
         self.shared_execution_engine = SharedExecutionEngine(execution_config)
         self.quality_evaluator = QualityEvaluator()
 
