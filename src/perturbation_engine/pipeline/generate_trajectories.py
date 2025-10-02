@@ -164,10 +164,8 @@ def main():
     # Configuration
     execution_config = ExecutionConfig(
         # VM/Provider settings
-        # path_to_vm=os.environ.get("VMWARE_PATH_TO_VM", None),
-        path_to_vm=None,
-        provider_name="aws",
-        # provider_name="vmware",
+        path_to_vm=os.environ.get("VMWARE_PATH_TO_VM", None),
+        provider_name=os.environ.get("PROVIDER_NAME", "aws"),
         region=os.environ.get("AWS_REGION", "us-east-1"),
         snapshot_name=os.environ.get("AWS_SNAPSHOT_NAME", "chrome"),
         # snapshot_name="chrome",
@@ -202,10 +200,28 @@ def main():
 
     # Load seed trajectories
     task_config_base_dir = "src/OSWorld/evaluation_examples"
-    trajectory_base_dir = "external_data/osworld-verified/jedi-7b-4o-15steps/jedi-7b-4o-15steps"
+    trajectory_base_dir = "external_data/osworld-verified/autoglm_50steps"
 
     seed_trajectories = load_seed_trajectories(task_config_base_dir, trajectory_base_dir)
-    seed_trajectories = seed_trajectories[:1]  # Limit for testing
+
+    # TODO: get 1 seed traj for each task type for testing
+    traj_task_type_set = set()
+    test_seed_trajectories = []
+    for traj in seed_trajectories:
+        if traj.task_type not in traj_task_type_set:
+            with open(f"{traj.gt_actions_file_path}") as f:
+                temp_gt_actions = [json.loads(line) for line in f]
+                if temp_gt_actions[-1]["action"] != "FAIL":
+                    test_seed_trajectories.append(traj)
+                    traj_task_type_set.add(traj.task_type)
+                else:
+                    logger.info(f"Task type already exists: {traj.task_type}, skipping")
+                    continue
+
+    logger.info(f"Task types: {traj_task_type_set}")
+    logger.info(f"Test seed trajectories: {len(test_seed_trajectories)}")
+
+    seed_trajectories = test_seed_trajectories
 
     logger.info("Starting perturbation pipeline")
     logger.info(f"Using {len(seed_trajectories)} seed trajectories")

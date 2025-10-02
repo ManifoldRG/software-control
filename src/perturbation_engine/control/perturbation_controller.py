@@ -53,11 +53,22 @@ class PerturbationController(PythonController, SetupController):
         if AppStateExtractor:
             self._app_state_extractor = AppStateExtractor(self)
 
+        # Coordinate tracking for ground truth action updates
+        self._element_position_tracker = {}
+
     def execute_perturbation(
         self, perturbation_type: str, generated_code: str, api_call: str, parameters: Dict[str, Any]
     ) -> ManipulationResult:
-        """Execute perturbation using generated code with sophisticated handling"""
+        """
+        Execute perturbation using generated code with sophisticated handling.
+
+        Tracks UI element positions before/after layout-changing perturbations
+        to enable ground truth action coordinate updates for visual invariance learning.
+        """
         try:
+            # Capture element positions BEFORE perturbation
+            pre_perturbation_positions = self._capture_element_positions()
+
             success = False
             result_data = {}
 
@@ -86,6 +97,19 @@ class PerturbationController(PythonController, SetupController):
                 self.logger.warning(f"Unknown API call: {api_call}")
                 success = False
                 result_data = {"api_call": api_call, "error": "Unknown API call"}
+
+            # Capture element positions AFTER perturbation
+            post_perturbation_positions = self._capture_element_positions()
+
+            # Calculate position deltas for coordinate tracking
+            position_changes = self._calculate_position_changes(
+                pre_perturbation_positions, post_perturbation_positions
+            )
+
+            # Store for later retrieval by trajectory generator
+            if position_changes:
+                result_data["position_changes"] = position_changes
+                self.logger.info(f"Detected {len(position_changes)} element position changes")
 
             return ManipulationResult(
                 success=success,
@@ -125,22 +149,35 @@ class PerturbationController(PythonController, SetupController):
             return False
 
     def execute_bash_command(self, command: str) -> bool:
-        """Execute bash command with improved error handling"""
+        """
+        Execute bash command with improved error handling.
+
+        Now uses run_bash_script() to properly handle shell special characters
+        like pipes, redirects, conditionals, and background processes.
+
+        Checks BOTH status=="success" AND returncode==0 for true success.
+        """
         try:
             # Clean up the command if it contains markdown
             if "```" in command:
                 command = command.split("```")[1].removeprefix("bash").strip()
 
-            # Execute with proper error handling
-            result = self.execute_python_command(
-                f"import subprocess; result = subprocess.run(['bash', '-c', '{command}'], capture_output=True, text=True); print(f'STDOUT: {{result.stdout}}'); print(f'STDERR: {{result.stderr}}'); print(f'Return code: {{result.returncode}}')"
-            )
-            success = result.get("status") == "success"
-            if success:
-                self.logger.info(f"Bash command executed: {command}")
+            # Use run_bash_script for proper shell handling
+            result = self.run_bash_script(command, timeout=30)
+
+            # Check both status and return code
+            # python.py sometimes returns status="success" even with errors
+            if result and result.get("status") == "success" and result.get("returncode", -1) == 0:
+                self.logger.info(f"Bash command executed successfully: {command}")
+                return True
             else:
                 self.logger.warning(f"Bash command failed: {command}")
-            return success
+                if result:
+                    self.logger.warning(
+                        f"Status: {result.get('status')}, Return code: {result.get('returncode')}, Error: {result.get('error', '')}"
+                    )
+                return False
+
         except Exception as e:
             self.logger.error(f"Error executing bash command: {e}")
             return False
@@ -160,12 +197,20 @@ class PerturbationController(PythonController, SetupController):
             self.logger.error(f"Error executing Python: {e}")
             return {"status": "error", "error": str(e)}
 
-    def execute_uno_command(self, uno_code: str, parameters: Dict[str, Any]) -> bool:
-        """Execute UNO command for LibreOffice manipulation"""
+    def execute_uno_command(self, uno_code: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Execute UNO command for LibreOffice manipulation.
+
+        Returns:
+            Dict with status, output, and error information
+        """
         try:
             # Clean up the UNO code
             if "```" in uno_code:
                 uno_code = uno_code.split("```")[1].removeprefix("python").strip()
+
+            # Indent the UNO code for insertion into try block
+            indented_uno_code = "\n".join("    " + line for line in uno_code.split("\n"))
 
             # Execute UNO code via Python with robust LibreOffice connection
             python_wrapper = f"""
@@ -218,7 +263,7 @@ try:
     )
 
     # Execute the UNO code
-    {uno_code}
+{indented_uno_code}
 
     print("UNO command executed successfully")
 
@@ -233,15 +278,193 @@ except Exception as e:
         soffice_process.wait()
     except:
         pass
-    raise
 """
 
             result = self.execute_python_command(python_wrapper)
-            return result.get("status") == "success"
+            return result
 
         except Exception as e:
             self.logger.error(f"Error executing UNO command: {e}")
-            return False
+            return {"status": "error", "error": str(e)}
+
+    def _capture_element_positions(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Capture current positions of all interactive UI elements.
+
+        Returns dict mapping element identifiers to their positions:
+        {
+            "button_Save": {"x": 100, "y": 200, "width": 80, "height": 30},
+            "link_Home": {"x": 150, "y": 50, "width": 60, "height": 20},
+            ...
+        }
+        """
+        try:
+            app_states = self.get_comprehensive_app_states(use_comprehensive=False)
+            if not app_states:
+                return {}
+
+            positions = {}
+
+            for app_state in app_states:
+                # Extract positions from categorized elements
+                for category in [
+                    "buttons",
+                    "links",
+                    "text_fields",
+                    "menu_items",
+                    "checkboxes",
+                    "radio_buttons",
+                    "combo_boxes",
+                    "tabs",
+                    "images",
+                ]:
+                    elements = app_state.get(category, [])
+                    for elem in elements:
+                        position = elem.get("position", {})
+                        if position and position.get("center_x") and position.get("center_y"):
+                            # Create unique identifier from element properties
+                            elem_id = self._create_element_id(elem, category)
+                            positions[elem_id] = {
+                                "center_x": position["center_x"],
+                                "center_y": position["center_y"],
+                                "x": position.get("x", 0),
+                                "y": position.get("y", 0),
+                                "width": position.get("width", 0),
+                                "height": position.get("height", 0),
+                                "category": category,
+                                "name": elem.get("name", ""),
+                                "text": elem.get("text", ""),
+                            }
+
+            return positions
+
+        except Exception as e:
+            self.logger.warning(f"Error capturing element positions: {e}")
+            return {}
+
+    def _create_element_id(self, elem: Dict[str, Any], category: str) -> str:
+        """
+        Create a unique, stable identifier for an element.
+
+        Uses a combination of category, role, name, and text to identify elements
+        even after perturbations that might change their internal IDs.
+        """
+        name = elem.get("name", "")
+        text = elem.get("text", "")[:50]  # Truncate for stability
+
+        # Clean and normalize
+        name = name.strip().replace(" ", "_")
+        text = text.strip().replace(" ", "_")
+
+        if name:
+            return f"{category}_{name}"
+        elif text:
+            return f"{category}_{text}"
+        else:
+            # Fallback to position-based ID (less stable but unique)
+            pos = elem.get("position", {})
+            x = pos.get("center_x", 0)
+            y = pos.get("center_y", 0)
+            return f"{category}_at_{x}_{y}"
+
+    def _calculate_position_changes(
+        self, before: Dict[str, Dict[str, Any]], after: Dict[str, Dict[str, Any]]
+    ) -> Dict[str, Dict[str, int]]:
+        """
+        Calculate position deltas for elements that moved.
+
+        Returns:
+            Dict mapping element IDs to position deltas:
+            {
+                "button_Save": {"dx": 50, "dy": 100, "old_x": 100, "old_y": 200, "new_x": 150, "new_y": 300},
+                ...
+            }
+        """
+        changes = {}
+
+        for elem_id, before_pos in before.items():
+            if elem_id in after:
+                after_pos = after[elem_id]
+
+                dx = after_pos["center_x"] - before_pos["center_x"]
+                dy = after_pos["center_y"] - before_pos["center_y"]
+
+                # Only track significant movements (> 5 pixels)
+                if abs(dx) > 5 or abs(dy) > 5:
+                    changes[elem_id] = {
+                        "dx": dx,
+                        "dy": dy,
+                        "old_center_x": before_pos["center_x"],
+                        "old_center_y": before_pos["center_y"],
+                        "new_center_x": after_pos["center_x"],
+                        "new_center_y": after_pos["center_y"],
+                        "category": before_pos["category"],
+                        "name": before_pos["name"],
+                        "text": before_pos["text"],
+                    }
+
+        return changes
+
+    def update_action_coordinates(self, action: str, position_changes: Dict[str, Dict[str, int]]) -> str:
+        """
+        Update action coordinates based on element position changes.
+
+        Parses pyautogui.click(x, y) and matches coordinates to moved elements,
+        then updates with new coordinates.
+
+        Args:
+            action: Original action string (e.g., "pyautogui.click(100, 200, duration=1)")
+            position_changes: Dict of element position deltas from perturbation
+
+        Returns:
+            Updated action string with corrected coordinates
+        """
+        import re
+
+        # Extract coordinates from pyautogui calls
+        click_pattern = r"pyautogui\.(click|rightClick|doubleClick|moveTo)\((\d+),\s*(\d+)"
+        match = re.search(click_pattern, action)
+
+        if not match:
+            # No coordinates to update
+            return action
+
+        # method = match.group(1)
+        old_x = int(match.group(2))
+        old_y = int(match.group(3))
+
+        # Find the element that matches these coordinates
+        best_match = None
+        min_distance = float("inf")
+
+        for _, change in position_changes.items():
+            # Calculate distance from action coordinates to element's OLD position
+            distance = ((old_x - change["old_center_x"]) ** 2 + (old_y - change["old_center_y"]) ** 2) ** 0.5
+
+            # If action coordinates are close to an element's old position, it's likely the target
+            if distance < min_distance and distance < 50:  # Within 50 pixels
+                min_distance = distance
+                best_match = change
+
+        if best_match:
+            # Update coordinates to element's new position
+            new_x = best_match["new_center_x"]
+            new_y = best_match["new_center_y"]
+
+            # Replace coordinates in action string
+            old_coords = f"{old_x}, {old_y}"
+            new_coords = f"{new_x}, {new_y}"
+            updated_action = action.replace(old_coords, new_coords)
+
+            self.logger.info(
+                f"Updated action coordinates: {old_coords} -> {new_coords} "
+                f"(element: {best_match['name'] or best_match['text'][:20]})"
+            )
+
+            return updated_action
+
+        # No matching element found, return original
+        return action
 
     def _manipulate_app_state(self, parameters: Dict[str, Any]) -> bool:
         """Manipulate app state based on parameters"""
@@ -393,6 +616,67 @@ except Exception as e:
                 self.logger.info("Playwright connections closed")
         except Exception as e:
             self.logger.error(f"Error closing Playwright: {e}")
+
+    def ensure_accessibility_enabled(self) -> bool:
+        """
+        Ensure AT-SPI accessibility is enabled for all applications.
+
+        Uses execute_python_command instead of run_bash_script to avoid
+        the _append_event bug in old VM code.
+
+        Quick, non-blocking setup that won't hang the environment initialization.
+
+        Returns:
+            True if setup successful
+        """
+        try:
+            self.logger.info("Setting up AT-SPI accessibility...")
+
+            # Quick Python setup - minimal wait time
+            python_code = """
+import subprocess
+import time
+
+try:
+    # Enable accessibility via gsettings (quick, doesn't hang)
+    subprocess.run(['gsettings', 'set', 'org.gnome.desktop.interface', 'toolkit-accessibility', 'true'],
+                   capture_output=True, text=True, timeout=2)
+    subprocess.run(['gsettings', 'set', 'org.gnome.desktop.interface', 'accessibility', 'true'],
+                   capture_output=True, text=True, timeout=2)
+
+    # Check if AT-SPI bus is running
+    result = subprocess.run(['pgrep', '-x', 'at-spi-bus-launcher'],
+                           capture_output=True, text=True, timeout=1)
+
+    if result.returncode != 0:
+        # Launch in background (fire and forget - don't wait)
+        subprocess.Popen(['/usr/libexec/at-spi-bus-launcher', '--launch-immediately'],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        print('AT-SPI bus launched')
+    else:
+        print('AT-SPI bus already active')
+
+except Exception as e:
+    print(f'AT-SPI setup warning: {e}')
+"""
+
+            # Execute with Python (avoids bash script endpoint bug)
+            # Use shorter timeout to avoid hanging
+            result = self.execute_python_command(python_code)
+
+            if result and result.get("status") == "success":
+                output = result.get("output", "").strip()
+                self.logger.info(f"AT-SPI setup result: {output}")
+                return True
+            else:
+                self.logger.warning(f"AT-SPI setup returned non-success: {result}")
+                # Return True anyway - accessibility might still work
+                return True
+
+        except Exception as e:
+            self.logger.error(f"Error setting up accessibility (non-fatal): {e}")
+            # Return True to avoid blocking - accessibility might already be enabled
+            return True
 
     def get_comprehensive_app_states(self, use_comprehensive: bool = True) -> list:
         """

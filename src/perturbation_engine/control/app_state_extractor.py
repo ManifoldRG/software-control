@@ -1,22 +1,97 @@
 """
-Comprehensive App State Extractor
+Comprehensive App State Extractor for Ubuntu AT-SPI2
 
-Extracts rich UI state information for LLM consumption using:
-- Browser: Playwright/CDP for DOM tree extraction
-- LibreOffice: Accessibility tree + UNO API
-- Other apps: Enhanced accessibility tree parsing
+Extracts LLM-consumable UI state for perturbation generation (CurriculumLLM, PerturbationLLM).
 
-Inspired by extract_ui_coordinates.py but focused on extracting
-comprehensive state rather than just coordinates.
+=== EXTRACTION STRATEGY BY TOOLKIT ===
+
+1. Chromium/Electron (Chrome, VSCode):
+   - Launch: ACCESSIBILITY_ENABLED=1 --force-renderer-accessibility
+   - Extract: buttons[].{id, class, text, aria_label}, links[].{href, text},
+              input_fields[].{name, type, placeholder}, forms[]
+   - Usage: PerturbationLLM targets specific elements by ID/class for JS styling
+
+2. LibreOffice (Calc, Writer, Impress):
+   - Launch: Accessibility ON in Tools > Options > Accessibility
+   - Extract: document_state.{sheets, active_sheet, sample_cells, slides},
+              buttons[].{name}, menus[], text_fields[]
+   - Usage: PerturbationLLM generates UNO code for grid/document theming
+
+3. GTK/GNOME (Terminal, Nautilus, GIMP, VLC):
+   - Launch: Ensure AT-SPI bus active (gsd-a11y-settings running)
+   - Extract: interactive_elements[], ui_structure.{has_menu_bar, has_toolbar},
+              visual_only_regions[] (canvas bounding boxes)
+   - Usage: PerturbationLLM applies system-level bash commands
+
+=== LLM CONSUMPTION PATTERN ===
+CurriculumLLM: Uses app_states to understand available UI elements for scenario generation
+PerturbationLLM: Uses app_states.buttons[], links[], inputs[] to target specific elements
+                 References {app_states}.buttons[0].id in generated JavaScript/UNO code
+
+=== ARCHITECTURE ===
+VM Server (main.py): Generates AT-SPI XML via pyatspi → HTTP endpoint
+Controller: Fetches XML from VM server
+Extractor: Parses XML → Toolkit-aware extraction → LLM-friendly JSON
 """
 
 import logging
+import re
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# AT-SPI namespace definitions (matching accessibility_tree_handle.py)
+ATTRIBUTES_NS_UBUNTU = "https://accessibility.windows.example.org/ns/attributes"
+STATE_NS_UBUNTU = "https://accessibility.ubuntu.example.org/ns/state"
+COMPONENT_NS_UBUNTU = "https://accessibility.ubuntu.example.org/ns/component"
+VALUE_NS_UBUNTU = "https://accessibility.ubuntu.example.org/ns/value"
+CLASS_NS_WINDOWS = "https://accessibility.windows.example.org/ns/class"
+
+# UI element types for categorization
+INTERACTIVE_ROLES = {
+    "button",
+    "push-button",
+    "menu-item",
+    "text",
+    "entry",
+    "combo-box",
+    "check-box",
+    "radio-button",
+    "link",
+    "tab",
+    "toggle-button",
+    "tool-bar-button",
+    "textfield",
+    "textarea",
+    "searchbox",
+    "slider",
+    "progress-bar",
+}
+
+UI_ELEMENT_TAGS = {
+    "alert",
+    "canvas",
+    "check-box",
+    "combo-box",
+    "entry",
+    "icon",
+    "image",
+    "paragraph",
+    "scroll-bar",
+    "section",
+    "slider",
+    "static",
+    "table-cell",
+    "terminal",
+    "text",
+    "netuiribbontab",
+    "start",
+    "trayclockwclass",
+    "traydummysearchcontrol",
+    "uiimage",
+    "uiproperty",
+    "uiribboncommandbar",
+}
 
 
 class AppStateExtractor:
@@ -41,68 +116,70 @@ class AppStateExtractor:
             use_comprehensive: If True, use comprehensive extraction (DOM, UNO, etc.)
                              If False, use basic accessibility tree only
 
-        Returns list of app states, each containing:
-        - app_type: browser, libreoffice_calc, etc.
-        - app_name: Full application name
-        - current_view: Detected view type
-        - interactive_elements: Buttons, links, inputs with details (comprehensive only)
-        - content_structure: Hierarchy of main content areas (comprehensive only)
-        - active_dialogs: Any open dialogs/modals
-        - menu_structure: Available menus and items
-        - metadata: Additional app-specific information
+        Returns:
+            List of app states with comprehensive UI information
         """
-
-        # Get accessibility tree
         a11y_tree = self.controller.get_accessibility_tree()
         if not a11y_tree:
             self.logger.warning("No accessibility tree available")
-            return []
+            return self._create_empty_state()
 
         try:
             root = ET.fromstring(a11y_tree)
+            app_groups = self._group_elements_by_app(root)
+            return self._process_app_groups(app_groups, use_comprehensive)
         except ET.ParseError as e:
             self.logger.error(f"Failed to parse accessibility tree: {e}")
-            return []
+            return self._create_empty_state()
 
-        # Group elements by application
-        app_groups = self._group_elements_by_app(root)
+    def _create_empty_state(self) -> List[Dict[str, Any]]:
+        """Create empty state when no accessibility tree is available."""
+        return [
+            {
+                "app_type": "unknown",
+                "app_name": "unknown",
+                "current_view": "unknown",
+                "key_elements": [],
+                "task_context": "No accessible applications detected",
+                "element_count": 0,
+            }
+        ]
+
+    def _process_app_groups(
+        self, app_groups: Dict[str, List[ET.Element]], use_comprehensive: bool
+    ) -> List[Dict[str, Any]]:
+        """Process grouped elements into app states."""
         app_states = []
 
         for app_name, elements in app_groups.items():
             app_type = self._detect_app_type(app_name)
-
             if app_type == "unknown":
                 continue
 
-            # Extract state based on mode and app type
-            if use_comprehensive:
-                # Comprehensive extraction with app-specific enhancements
-                if app_type == "browser":
-                    app_state = self._extract_browser_state(app_name, elements)
-                elif app_type in ["libreoffice_calc", "libreoffice_writer", "libreoffice_impress"]:
-                    app_state = self._extract_libreoffice_state(app_name, app_type, elements)
-                else:
-                    app_state = self._extract_generic_state(app_name, app_type, elements)
-            else:
-                # Basic extraction (lightweight, fast)
-                app_state = self._extract_basic_state(app_name, app_type, elements)
-
+            app_state = self._extract_app_state(app_name, app_type, elements, use_comprehensive)
             app_states.append(app_state)
 
-        # If no apps found, return placeholder
-        if not app_states:
-            app_states.append(
-                {
-                    "app_type": "unknown",
-                    "app_name": "unknown",
-                    "current_view": "unknown",
-                    "key_elements": [],
-                    "task_context": "No accessible applications detected",
-                    "element_count": 0,
-                }
-            )
+        return app_states if app_states else self._create_empty_state()
 
-        return app_states
+    def _extract_app_state(
+        self, app_name: str, app_type: str, elements: List[ET.Element], use_comprehensive: bool
+    ) -> Dict[str, Any]:
+        """Extract state for a specific application."""
+        if use_comprehensive:
+            return self._extract_comprehensive_state(app_name, app_type, elements)
+        else:
+            return self._extract_basic_state(app_name, app_type, elements)
+
+    def _extract_comprehensive_state(
+        self, app_name: str, app_type: str, elements: List[ET.Element]
+    ) -> Dict[str, Any]:
+        """Extract comprehensive state with app-specific enhancements."""
+        if app_type == "browser":
+            return self._extract_browser_state(app_name, elements)
+        elif app_type in ["libreoffice_calc", "libreoffice_writer", "libreoffice_impress"]:
+            return self._extract_libreoffice_state(app_name, app_type, elements)
+        else:
+            return self._extract_generic_state(app_name, app_type, elements)
 
     # ==================== BROWSER STATE EXTRACTION ====================
 
@@ -285,17 +362,20 @@ class AppStateExtractor:
                 f"{len(dom_data['links'])} links, {len(dom_data['inputs'])} inputs"
             )
 
+            # Format for LLM consumption (matches PerturbationLLM expectations)
             return {
                 "dom_extracted": True,
                 "page_url": dom_data["url"],
                 "page_title": dom_data["title"],
-                "buttons": dom_data["buttons"],
-                "links": dom_data["links"],
-                "input_fields": dom_data["inputs"],
-                "forms": dom_data["forms"],
-                "headings": dom_data["headings"],
-                "images": dom_data["images"],
+                # LLM-accessible arrays (PerturbationLLM uses these directly)
+                "buttons": dom_data["buttons"],  # [{id, class, text, aria_label, ...}]
+                "links": dom_data["links"],  # [{href, text, id, class, ...}]
+                "input_fields": dom_data["inputs"],  # [{name, type, placeholder, value, ...}]
+                "forms": dom_data["forms"],  # [{id, class, fields: [...]}]
+                "headings": dom_data["headings"],  # [{level, text}]
+                "images": dom_data["images"],  # [{alt, src, title}]
                 "content_sections": dom_data["content_sections"],
+                # Summary for LLM context
                 "interactive_elements_summary": {
                     "total_buttons": len(dom_data["buttons"]),
                     "total_links": len(dom_data["links"]),
@@ -314,14 +394,28 @@ class AppStateExtractor:
         self, app_name: str, app_type: str, elements: List[ET.Element]
     ) -> Dict[str, Any]:
         """
-        Extract LibreOffice state using accessibility tree + UNO API.
+        Extract LibreOffice state using VCL/Java Bridge accessibility.
+
+        Strategy: Focus on deep semantic data model via Table/Document interfaces
+        - Calc: Query Atspi.Table interface for cell access by logical coordinates
+        - Writer/Impress: Traverse Atspi.Document structure for logical organization
+
+        Note: Requires accessibility enabled in Tools > Options > Accessibility
         """
         self.logger.info(f"Extracting LibreOffice state for {app_name}")
 
         # Base state from accessibility tree
         base_state = self._extract_generic_state(app_name, app_type, elements)
 
-        # Try to get document-specific information via UNO
+        # Extract toolkit-specific semantic data
+        if app_type == "libreoffice_calc":
+            table_data = self._extract_calc_table_structure(elements)
+            base_state.update(table_data)
+        elif app_type in ["libreoffice_writer", "libreoffice_impress"]:
+            document_data = self._extract_document_structure(elements)
+            base_state.update(document_data)
+
+        # Try to get additional document-specific information via UNO
         try:
             uno_state = self._extract_libreoffice_uno_state(app_type)
             if uno_state:
@@ -423,6 +517,132 @@ if doc:
 
         return None
 
+    def _extract_calc_table_structure(self, elements: List[ET.Element]) -> Dict[str, Any]:
+        """
+        Extract Calc-specific table structure using Table interface metadata.
+
+        Focuses on logical cell coordinates (row/col) rather than pixel positions
+        for stable data manipulation grounding.
+
+        Note: LibreOffice Calc cells use cell names (e.g., "D1", "A2") rather than
+        explicit row/column attributes.
+        """
+        table_structure = {
+            "table_cells": [],
+            "table_metadata": {
+                "rows_visible": 0,
+                "columns_visible": 0,
+                "has_table_interface": False,
+            },
+        }
+
+        def parse_cell_name(cell_name: str) -> tuple:
+            """
+            Parse cell name like 'D1' into (column, row).
+            Returns ('D', 1) for 'D1', ('AA', 10) for 'AA10', etc.
+            """
+            if not cell_name:
+                return (None, None)
+
+            # Extract column letters and row number
+            col = ""
+            row = ""
+            for char in cell_name:
+                if char.isalpha():
+                    col += char
+                elif char.isdigit():
+                    row += char
+
+            try:
+                return (col, int(row)) if col and row else (None, None)
+            except ValueError:
+                return (None, None)
+
+        # Look for table-cell elements directly (they may not have a parent table element)
+        for elem in elements:
+            # Check if this is a table element or contains table cells
+            if elem.tag.endswith("table") or elem.get("role", "") == "table":
+                table_structure["table_metadata"]["has_table_interface"] = True
+
+            # Extract table cells (check tag directly)
+            if elem.tag.endswith("table-cell") or "table-cell" in elem.tag:
+                table_structure["table_metadata"]["has_table_interface"] = True
+
+                # Get cell name (e.g., "D1", "A2")
+                cell_name = elem.get("name", "")
+                cell_value = elem.get(f"{{{VALUE_NS_UBUNTU}}}value", "")
+                cell_text = elem.text if elem.text else ""
+                formula = elem.get(f"{{{ATTRIBUTES_NS_UBUNTU}}}Formula", "")
+
+                # Parse cell coordinates from name
+                col, row = parse_cell_name(cell_name)
+
+                if col and row:
+                    cell_data = {
+                        "name": cell_name,
+                        "column": col,
+                        "row": row,
+                        "text": cell_text,
+                        "value": cell_value,
+                        "formula": formula if formula else None,
+                    }
+                    table_structure["table_cells"].append(cell_data)
+
+        # Calculate visible rows and columns
+        if table_structure["table_cells"]:
+            unique_cols = {c["column"] for c in table_structure["table_cells"] if c["column"]}
+            unique_rows = {c["row"] for c in table_structure["table_cells"] if c["row"]}
+            table_structure["table_metadata"]["columns_visible"] = len(unique_cols)
+            table_structure["table_metadata"]["rows_visible"] = len(unique_rows)
+
+        return table_structure
+
+    def _extract_document_structure(self, elements: List[ET.Element]) -> Dict[str, Any]:
+        """
+        Extract Writer/Impress document structure via Document interface.
+
+        Focuses on logical organizational components (sections, paragraphs)
+        rather than pixel-based navigation.
+        """
+        document_structure = {
+            "sections": [],
+            "paragraphs": [],
+            "slides": [],  # For Impress
+            "has_document_interface": False,
+        }
+
+        for elem in elements:
+            # Look for document structure elements
+            if elem.get("role", "") in ["document", "document-frame", "section"]:
+                document_structure["has_document_interface"] = True
+
+            if elem.tag.endswith("section"):
+                document_structure["sections"].append(
+                    {
+                        "name": elem.get("name", ""),
+                        "text_preview": (elem.text if elem.text else "")[:200],
+                    }
+                )
+
+            if elem.tag.endswith("paragraph"):
+                document_structure["paragraphs"].append(
+                    {
+                        "text": elem.text if elem.text else "",
+                        "position": elem.get(f"{{{COMPONENT_NS_UBUNTU}}}screencoord", ""),
+                    }
+                )
+
+            # For Impress slides
+            if elem.tag.endswith("slide") or "slide" in elem.get("role", ""):
+                document_structure["slides"].append(
+                    {
+                        "name": elem.get("name", ""),
+                        "index": elem.get(f"{{{ATTRIBUTES_NS_UBUNTU}}}index", ""),
+                    }
+                )
+
+        return document_structure
+
     # ==================== GENERIC STATE EXTRACTION ====================
 
     def _extract_generic_state(
@@ -432,6 +652,10 @@ if doc:
         Extract comprehensive state from accessibility tree.
 
         This works for ALL applications (GTK apps, Electron apps, etc.)
+        Applies toolkit-specific strategies:
+        - GTK/GNOME: Standard controls, text grids, spatial data
+        - Chromium/Electron: Semantic/hierarchical pruning
+        - Detects visual-only regions (canvas) that require multimodal LLM analysis
         """
         # Parse accessibility tree elements
         parsed_elements = self._parse_accessibility_elements(elements)
@@ -454,50 +678,73 @@ if doc:
         # Extract menu structure
         menu_structure = self._extract_menu_structure(parsed_elements)
 
-        return {
+        # Detect visual-only regions (canvas objects in GIMP, VLC, etc.)
+        visual_only_regions = self._detect_visual_only_regions(parsed_elements, app_type)
+
+        # Create linearized accessibility tree
+        linearized_tree = self._create_linearized_accessibility_tree(parsed_elements)
+
+        state = {
             "app_type": app_type,
             "app_name": app_name,
             "current_view": current_view,
             "element_count": len(parsed_elements),
-            # Categorized elements
-            "buttons": categorized["buttons"],
-            "text_fields": categorized["text_fields"],
-            "labels": categorized["labels"],
-            "menus": categorized["menus"],
-            "menu_items": categorized["menu_items"],
-            "checkboxes": categorized["checkboxes"],
-            "radio_buttons": categorized["radio_buttons"],
-            "combo_boxes": categorized["combo_boxes"],
-            "tabs": categorized["tabs"],
-            "panels": categorized["panels"],
-            "scrollbars": categorized["scrollbars"],
-            "tables": categorized["tables"],
+            # Categorized elements - LLM-accessible arrays
+            "buttons": categorized.get("buttons", []),
+            "text_fields": categorized.get("text_fields", []),
+            "labels": categorized.get("labels", []),
+            "menus": categorized.get("menus", []),
+            "menu_items": categorized.get("menu_items", []),
+            "checkboxes": categorized.get("checkboxes", []),
+            "radio_buttons": categorized.get("radio_buttons", []),
+            "combo_boxes": categorized.get("combo_boxes", []),
+            "tabs": categorized.get("tabs", []),
+            "panels": categorized.get("panels", []),
+            "scrollbars": categorized.get("scrollbars", []),
+            "tables": categorized.get("tables", []),
+            "links": categorized.get("links", []),
+            "images": categorized.get("images", []),
+            "headings": categorized.get("headings", []),
             # UI structure
             "ui_structure": ui_structure,
             "interactive_elements": interactive_elements[:50],  # Limit for LLM
             "active_dialogs": active_dialogs,
             "menu_structure": menu_structure,
+            "visual_only_regions": visual_only_regions,
+            # Linearized accessibility tree for LLM consumption
+            "linearized_accessibility_tree": linearized_tree,
             # Summary statistics
             "summary": {
-                "total_buttons": len(categorized["buttons"]),
-                "total_text_fields": len(categorized["text_fields"]),
-                "total_menus": len(categorized["menus"]),
-                "total_menu_items": len(categorized["menu_items"]),
+                "total_buttons": len(categorized.get("buttons", [])),
+                "total_text_fields": len(categorized.get("text_fields", [])),
+                "total_menus": len(categorized.get("menus", [])),
+                "total_menu_items": len(categorized.get("menu_items", [])),
+                "total_links": len(categorized.get("links", [])),
+                "total_images": len(categorized.get("images", [])),
+                "total_headings": len(categorized.get("headings", [])),
                 "total_interactive": len(interactive_elements),
                 "has_active_dialog": len(active_dialogs) > 0,
+                "has_visual_only_regions": len(visual_only_regions) > 0,
             },
         }
+
+        # Ensure all arrays are properly initialized (prevents KeyError in LLM code)
+        for key in ["buttons", "links", "text_fields", "input_fields", "forms", "menus", "menu_items"]:
+            if key not in state:
+                state[key] = []
+
+        return state
 
     def _parse_accessibility_elements(self, elements: List[ET.Element]) -> List[Dict[str, Any]]:
         """
         Parse accessibility tree elements into structured dictionaries.
 
-        Extracts ALL available information from each element.
+        Enhanced with proper AT-SPI namespace handling and better text extraction.
         """
         parsed = []
 
         for elem in elements:
-            # Extract all attributes
+            # Extract all attributes with proper namespace handling
             element_data = {
                 "tag": elem.tag,
                 "role": elem.get("role", ""),
@@ -508,191 +755,302 @@ if doc:
                 "attributes": {},
             }
 
-            # Extract namespaced attributes
+            # Extract namespaced attributes with proper AT-SPI namespaces
             for key, value in elem.attrib.items():
-                # Parse namespace prefixes
                 if "}" in key:
                     namespace, attr_name = key.split("}", 1)
                     namespace = namespace.lstrip("{")
 
-                    # Store with friendly names
-                    if "component" in namespace:
+                    # Map to friendly names based on actual AT-SPI namespaces
+                    if namespace == COMPONENT_NS_UBUNTU:
                         element_data["attributes"][f"component_{attr_name}"] = value
-                    elif "state" in namespace:
+                    elif namespace == STATE_NS_UBUNTU:
                         element_data["attributes"][f"state_{attr_name}"] = value
-                    elif "attribute" in namespace:
+                    elif namespace == ATTRIBUTES_NS_UBUNTU:
                         element_data["attributes"][f"attr_{attr_name}"] = value
+                    elif namespace == VALUE_NS_UBUNTU:
+                        element_data["attributes"][f"value_{attr_name}"] = value
                     else:
                         element_data["attributes"][attr_name] = value
                 else:
                     element_data["attributes"][key] = value
 
-            # Extract coordinates if available
+            # Extract coordinates with proper parsing
             screencoord = element_data["attributes"].get("component_screencoord", "")
             size = element_data["attributes"].get("component_size", "")
 
             if screencoord and size:
                 try:
-                    coords = eval(screencoord)
-                    sizes = eval(size)
-                    element_data["position"] = {
-                        "x": coords[0],
-                        "y": coords[1],
-                        "width": sizes[0],
-                        "height": sizes[1],
-                    }
-                except Exception as e:
-                    self.logger.error(f"Error parsing coordinates: {e}")
-                    pass
+                    # Parse coordinates like "(x, y)" format
+                    coords_match = re.match(r"\((\d+),\s*(\d+)\)", screencoord)
+                    size_match = re.match(r"\((\d+),\s*(\d+)\)", size)
 
-            # Check visibility
+                    if coords_match and size_match:
+                        x, y = int(coords_match.group(1)), int(coords_match.group(2))
+                        w, h = int(size_match.group(1)), int(size_match.group(2))
+
+                        element_data["position"] = {
+                            "x": x,
+                            "y": y,
+                            "width": w,
+                            "height": h,
+                            "center_x": x + w // 2,
+                            "center_y": y + h // 2,
+                        }
+                except Exception as e:
+                    self.logger.debug(f"Error parsing coordinates: {e}")
+
+            # Enhanced visibility and state checking
             element_data["visible"] = element_data["attributes"].get("state_visible", "") == "true"
+            element_data["showing"] = element_data["attributes"].get("state_showing", "") == "true"
             element_data["enabled"] = element_data["attributes"].get("state_enabled", "") == "true"
             element_data["focused"] = element_data["attributes"].get("state_focused", "") == "true"
+            element_data["editable"] = element_data["attributes"].get("state_editable", "") == "true"
+            element_data["checkable"] = element_data["attributes"].get("state_checkable", "") == "true"
+            element_data["checked"] = element_data["attributes"].get("state_checked", "") == "true"
+            element_data["selected"] = element_data["attributes"].get("state_selected", "") == "true"
+            element_data["expandable"] = element_data["attributes"].get("state_expandable", "") == "true"
+            element_data["expanded"] = element_data["attributes"].get("state_expanded", "") == "true"
+
+            # Enhanced text extraction (matching accessibility_tree_handle.py logic)
+            text = element_data["text"]
+            name = element_data["name"]
+
+            if not text and name:
+                text = name
+            elif name and text and text != name:
+                text = f"{name} ({text})"
+
+            # Clean up text (remove Unicode replacement characters)
+            text = text.replace("\ufffc", "").replace("\ufffd", "").strip()
+            element_data["text"] = text
+
+            # Extract value information
+            value = element_data["attributes"].get("value_value", "")
+            if value:
+                element_data["value"] = value
 
             parsed.append(element_data)
 
         return parsed
 
     def _categorize_elements(self, elements: List[Dict[str, Any]]) -> Dict[str, List[Dict]]:
-        """Categorize elements by type for easy access."""
+        """Categorize elements by type for easy access with enhanced AT-SPI support."""
         categories = defaultdict(list)
 
         for elem in elements:
-            if not elem["visible"]:
+            if not self._is_element_visible(elem):
                 continue
 
-            role = elem["role"].lower()
-            tag = elem["tag"].lower()
-
-            # Categorize by role/tag
-            if "button" in role or "push-button" in tag:
-                categories["buttons"].append(
-                    {
-                        "name": elem["name"],
-                        "text": elem["text"],
-                        "description": elem["description"],
-                        "enabled": elem["enabled"],
-                    }
-                )
-
-            elif "text" in role or "entry" in tag or "text-box" in role:
-                categories["text_fields"].append(
-                    {
-                        "name": elem["name"],
-                        "value": elem["value"],
-                        "placeholder": elem["attributes"].get("attr_placeholder", ""),
-                        "enabled": elem["enabled"],
-                    }
-                )
-
-            elif "label" in role or "label" in tag:
-                categories["labels"].append(
-                    {"text": elem["name"] or elem["text"], "for": elem["attributes"].get("attr_for", "")}
-                )
-
-            elif "menu-bar" in role or "menu-bar" in tag:
-                categories["menus"].append(
-                    {
-                        "name": elem["name"],
-                        "items": [],  # Would be populated by child elements
-                    }
-                )
-
-            elif "menu-item" in role or "menu-item" in tag:
-                categories["menu_items"].append(
-                    {"name": elem["name"], "description": elem["description"], "enabled": elem["enabled"]}
-                )
-
-            elif "check-box" in role:
-                categories["checkboxes"].append(
-                    {
-                        "name": elem["name"],
-                        "checked": elem["attributes"].get("state_checked", "") == "true",
-                        "enabled": elem["enabled"],
-                    }
-                )
-
-            elif "radio-button" in role:
-                categories["radio_buttons"].append(
-                    {
-                        "name": elem["name"],
-                        "selected": elem["attributes"].get("state_selected", "") == "true",
-                        "enabled": elem["enabled"],
-                    }
-                )
-
-            elif "combo-box" in role or "combo-box" in tag:
-                categories["combo_boxes"].append(
-                    {"name": elem["name"], "value": elem["value"], "enabled": elem["enabled"]}
-                )
-
-            elif "tab" in role:
-                categories["tabs"].append(
-                    {"name": elem["name"], "selected": elem["attributes"].get("state_selected", "") == "true"}
-                )
-
-            elif "panel" in role or "scroll-pane" in tag:
-                categories["panels"].append({"name": elem["name"], "description": elem["description"]})
-
-            elif "scroll-bar" in role:
-                categories["scrollbars"].append(
-                    {
-                        "name": elem["name"],
-                        "orientation": "vertical"
-                        if "vertical" in elem["attributes"].get("attr_orientation", "")
-                        else "horizontal",
-                    }
-                )
-
-            elif "table" in role:
-                categories["tables"].append(
-                    {
-                        "name": elem["name"],
-                        "rows": elem["attributes"].get("attr_rows", ""),
-                        "columns": elem["attributes"].get("attr_columns", ""),
-                    }
-                )
+            category = self._determine_element_category(elem)
+            if category:
+                categories[category].append(self._create_element_summary(elem, category))
 
         return dict(categories)
 
+    def _is_element_visible(self, elem: Dict[str, Any]) -> bool:
+        """
+        Check if element is visible and showing.
+
+        More lenient: element is considered visible if it has EITHER visible=true OR showing=true.
+        This is important for LibreOffice where many elements only have one flag set.
+        """
+        return elem.get("visible", False) or elem.get("showing", False)
+
+    def _determine_element_category(self, elem: Dict[str, Any]) -> Optional[str]:
+        """Determine the category of an element based on role and tag."""
+        role = elem["role"].lower()
+        tag = elem["tag"].lower()
+
+        # Define category mapping rules
+        category_rules = {
+            "buttons": lambda r, t: ("button" in r or "push-button" in r or t.endswith("button")),
+            "text_fields": lambda r, t: (
+                r in ["text", "entry", "text-box"] or t.endswith("textfield") or t.endswith("textarea")
+            ),
+            "labels": lambda r, t: (r == "label" or t.endswith("label")),
+            "menus": lambda r, t: (r == "menu-bar" or t.endswith("menu-bar")),
+            "menu_items": lambda r, t: (r == "menu-item" or t.endswith("menu-item")),
+            "checkboxes": lambda r, t: (r == "check-box" or t.endswith("check-box")),
+            "radio_buttons": lambda r, t: (r == "radio-button" or t.endswith("radio-button")),
+            "combo_boxes": lambda r, t: (r == "combo-box" or t.endswith("combo-box")),
+            "tabs": lambda r, t: (r == "tab" or t.endswith("tab")),
+            "panels": lambda r, t: (r == "panel" or t == "scroll-pane" or t.endswith("panel")),
+            "scrollbars": lambda r, t: (r == "scroll-bar" or t.endswith("scroll-bar")),
+            "tables": lambda r, t: (r == "table" or t.endswith("table")),
+            "links": lambda r, t: (r == "link" or t.endswith("link")),
+            "images": lambda r, t: (r == "image" or t.endswith("image") or t == "image"),
+            "headings": lambda r, t: (r == "heading" or t.endswith("heading")),
+        }
+
+        for category, rule in category_rules.items():
+            if rule(role, tag):
+                return category
+
+        return None
+
+    def _create_element_summary(self, elem: Dict[str, Any], category: str) -> Dict[str, Any]:
+        """Create a summary of an element for its category."""
+        base_summary = {
+            "name": elem["name"],
+            "text": elem["text"],
+            "position": elem.get("position", {}),
+        }
+
+        # Add category-specific fields
+        if category in [
+            "buttons",
+            "text_fields",
+            "menu_items",
+            "checkboxes",
+            "radio_buttons",
+            "combo_boxes",
+            "links",
+        ]:
+            base_summary.update(
+                {
+                    "enabled": elem["enabled"],
+                    "focused": elem["focused"],
+                }
+            )
+
+        if category == "text_fields":
+            base_summary.update(
+                {
+                    "value": elem["value"],
+                    "placeholder": elem["attributes"].get("attr_placeholder", ""),
+                    "editable": elem["editable"],
+                }
+            )
+
+        if category == "checkboxes":
+            base_summary.update(
+                {
+                    "checked": elem["checked"],
+                    "checkable": elem["checkable"],
+                }
+            )
+
+        if category == "radio_buttons":
+            base_summary.update(
+                {
+                    "selected": elem["selected"],
+                }
+            )
+
+        if category == "links":
+            base_summary.update(
+                {
+                    "href": elem["attributes"].get("attr_href", ""),
+                }
+            )
+
+        if category == "images":
+            base_summary.update(
+                {
+                    "alt": elem["attributes"].get("attr_alt", ""),
+                }
+            )
+
+        if category == "headings":
+            base_summary.update(
+                {
+                    "level": elem["attributes"].get("attr_level", ""),
+                }
+            )
+
+        if category == "scrollbars":
+            base_summary.update(
+                {
+                    "orientation": "vertical"
+                    if "vertical" in elem["attributes"].get("attr_orientation", "")
+                    else "horizontal",
+                }
+            )
+
+        if category == "tables":
+            base_summary.update(
+                {
+                    "rows": elem["attributes"].get("attr_rows", ""),
+                    "columns": elem["attributes"].get("attr_columns", ""),
+                }
+            )
+
+        return base_summary
+
     def _extract_interactive_elements(self, elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Extract ALL interactive elements that LLM might want to manipulate."""
-        interactive_roles = [
-            "button",
-            "push-button",
-            "menu-item",
-            "text",
-            "entry",
-            "combo-box",
-            "check-box",
-            "radio-button",
-            "link",
-            "tab",
-            "toggle-button",
-            "tool-bar-button",
-        ]
-
         interactive = []
+
         for elem in elements:
-            if not elem["visible"] or not elem["enabled"]:
+            if not self._is_element_visible(elem) or not self._is_element_interactive(elem):
                 continue
 
-            role = elem["role"].lower()
-            if any(r in role for r in interactive_roles):
-                interactive.append(
-                    {
-                        "type": role,
-                        "name": elem["name"],
-                        "text": elem["text"],
-                        "description": elem["description"],
-                        "value": elem["value"],
-                        "position": elem.get("position", {}),
-                        "focused": elem["focused"],
-                    }
-                )
+            interactive.append(self._create_interactive_element_summary(elem))
 
         return interactive
+
+    def _is_element_interactive(self, elem: Dict[str, Any]) -> bool:
+        """Check if element is interactive based on role and tag."""
+        role = elem["role"].lower()
+        tag = elem["tag"].lower()
+
+        return (
+            any(r in role for r in INTERACTIVE_ROLES)
+            or any(tag.endswith(t) for t in ["button", "textfield", "textarea", "link", "tab", "menu-item"])
+            or tag in ["entry", "combo-box", "check-box", "radio-button", "slider"]
+        )
+
+    def _create_interactive_element_summary(self, elem: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a summary for an interactive element."""
+        return {
+            "type": elem["role"] or elem["tag"],
+            "name": elem["name"],
+            "text": elem["text"],
+            "description": elem["description"],
+            "value": elem["value"],
+            "position": elem.get("position", {}),
+            "focused": elem["focused"],
+            "enabled": elem["enabled"],
+            "editable": elem.get("editable", False),
+            "checked": elem.get("checked", False),
+            "selected": elem.get("selected", False),
+        }
+
+    def _create_linearized_accessibility_tree(self, elements: List[Dict[str, Any]]) -> str:
+        """
+        Create a linearized accessibility tree similar to accessibility_tree_handle.py.
+
+        This provides a clean, tabular format that's easy for LLMs to parse.
+        """
+        lines = ["tag\ttext\tposition (center x & y)\tsize (w & h)"]
+
+        for elem in elements:
+            if not elem.get("visible", False) or not elem.get("showing", False):
+                continue
+
+            tag = elem["tag"]
+            text = elem["text"]
+            position = elem.get("position", {})
+
+            if position:
+                center_x = position.get("center_x", 0)
+                center_y = position.get("center_y", 0)
+                width = position.get("width", 0)
+                height = position.get("height", 0)
+
+                pos_str = f"({center_x}, {center_y})"
+                size_str = f"({width}, {height})"
+            else:
+                pos_str = "(0, 0)"
+                size_str = "(0, 0)"
+
+            # Clean text for tabular format
+            text = text.replace("\n", "\\n").replace("\t", " ")
+
+            lines.append(f"{tag}\t{text}\t{pos_str}\t{size_str}")
+
+        return "\n".join(lines)
 
     def _detect_ui_structure(self, elements: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Detect high-level UI structure."""
@@ -727,57 +1085,180 @@ if doc:
 
     def _detect_current_view_enhanced(self, elements: List[Dict[str, Any]]) -> str:
         """Enhanced view detection based on visible elements."""
-        roles = [elem["role"].lower() for elem in elements if elem["visible"]]
+        visible_roles = [elem["role"].lower() for elem in elements if elem.get("visible", False)]
 
-        # Check for specific views
-        if any("dialog" in r for r in roles):
-            # Identify dialog type
-            dialog_names = [
-                elem["name"] for elem in elements if "dialog" in elem["role"].lower() and elem["visible"]
-            ]
-            return f"dialog_view ({', '.join(dialog_names[:2])})"
+        view_detectors = [
+            (lambda roles: any("dialog" in r for r in roles), self._detect_dialog_view),
+            (
+                lambda roles: any("menu" in r for r in roles) and not any("menu-bar" in r for r in roles),
+                lambda: "menu_expanded",
+            ),
+            (lambda roles: sum("text" in r or "entry" in r for r in roles) > 3, lambda: "form_view"),
+            (lambda roles: any("table" in r for r in roles), lambda: "table_view"),
+            (lambda roles: sum("tab" in r for r in roles) > 2, lambda: "tabbed_view"),
+        ]
 
-        elif any("menu" in r for r in roles) and not any("menu-bar" in r for r in roles):
-            return "menu_expanded"
+        for condition, detector in view_detectors:
+            if condition(visible_roles):
+                return detector(elements) if callable(detector) else detector
 
-        elif sum("text" in r or "entry" in r for r in roles) > 3:
-            return "form_view"
+        return "main_view"
 
-        elif any("table" in r for r in roles):
-            return "table_view"
-
-        elif sum("tab" in r for r in roles) > 2:
-            return "tabbed_view"
-
-        else:
-            return "main_view"
+    def _detect_dialog_view(self, elements: List[Dict[str, Any]]) -> str:
+        """Detect dialog view with specific dialog names."""
+        dialog_names = [
+            elem["name"]
+            for elem in elements
+            if "dialog" in elem["role"].lower() and elem.get("visible", False)
+        ]
+        return f"dialog_view ({', '.join(dialog_names[:2])})"
 
     def _detect_active_dialogs(self, elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Detect any active dialogs with their content."""
-        dialogs = []
-
-        for elem in elements:
-            if "dialog" in elem["role"].lower() and elem["visible"]:
-                dialogs.append(
-                    {
-                        "name": elem["name"],
-                        "description": elem["description"],
-                        "modal": elem["attributes"].get("state_modal", "") == "true",
-                    }
-                )
-
-        return dialogs
+        return [
+            {
+                "name": elem["name"],
+                "description": elem["description"],
+                "modal": elem["attributes"].get("state_modal", "") == "true",
+            }
+            for elem in elements
+            if "dialog" in elem["role"].lower() and elem.get("visible", False)
+        ]
 
     def _extract_menu_structure(self, elements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Extract menu structure for understanding available actions."""
-        menus = []
+        return [
+            {"name": elem["name"], "type": elem["role"], "enabled": elem["enabled"]}
+            for elem in elements
+            if ("menu-bar" in elem["role"].lower() or "menu" in elem["role"].lower())
+            and elem.get("visible", False)
+        ]
+
+    def _detect_visual_only_regions(
+        self, elements: List[Dict[str, Any]], app_type: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Detect visual-only regions (canvas objects) that require multimodal analysis.
+
+        Strategy: Canvas objects in GIMP (drawing area) and VLC (video display)
+        are opaque - they have no informative accessible children. These regions
+        must be flagged for screenshot-based analysis by multimodal LLMs.
+
+        Args:
+            elements: Parsed accessibility elements
+            app_type: Application type (e.g., "vlc", "gimp")
+
+        Returns list of bounding boxes for visual-only regions.
+        """
+        visual_regions = []
+
+        # Check if this is a media player or graphics app
+        is_media_player = app_type in ["vlc", "media_player"]
+        is_graphics_app = app_type in ["gimp", "image_editor"]
+
+        # Debug: Log element details for media players/graphics apps
+        if is_media_player or is_graphics_app:
+            self.logger.info(f"Detecting visual regions for {app_type}, total elements: {len(elements)}")
+            for elem in elements[:20]:  # Log first 20 elements
+                self.logger.debug(
+                    f"  Element: role={elem['role']}, tag={elem['tag']}, name={elem.get('name', '')[:30]}, "
+                    f"visible={elem.get('visible', False)}, showing={elem.get('showing', False)}, "
+                    f"position={elem.get('position', {})}"
+                )
+
+        # Track all potential canvas/video areas for fallback
+        potential_regions = []
 
         for elem in elements:
-            if "menu-bar" in elem["role"].lower() or "menu" in elem["role"].lower():
-                if elem["visible"]:
-                    menus.append({"name": elem["name"], "type": elem["role"], "enabled": elem["enabled"]})
+            role = elem["role"].lower()
+            tag = elem["tag"].lower()
+            name = elem.get("name", "").lower()
 
-        return menus
+            # Detect canvas elements (GIMP drawing area, VLC video display)
+            is_explicit_canvas = (
+                role == "canvas"
+                or tag == "canvas"
+                or "canvas" in role
+                or "drawing-area" in tag
+                or "drawing-area" in role
+                or "video" in role
+                or "video" in name
+            )
+
+            # For media players/graphics apps, large unnamed panels/frames are likely content areas
+            is_potential_content_area = (
+                (is_media_player or is_graphics_app)
+                and role in ["panel", "frame", "layered-pane", "root-pane", "scroll-pane"]
+                and not name  # Empty name suggests content area rather than UI chrome
+            )
+
+            if (is_explicit_canvas or is_potential_content_area) and (
+                elem.get("visible", False) or elem.get("showing", False)
+            ):
+                position = elem.get("position", {})
+                if position and position.get("width", 0) > 100 and position.get("height", 0) > 100:
+                    area = position.get("width", 0) * position.get("height", 0)
+                    visual_region = {
+                        "type": "visual_only_canvas" if is_explicit_canvas else "potential_content_area",
+                        "role": role,
+                        "tag": tag,
+                        "name": elem["name"],
+                        "bounding_box": {
+                            "x": position.get("x", 0),
+                            "y": position.get("y", 0),
+                            "width": position.get("width", 0),
+                            "height": position.get("height", 0),
+                            "center_x": position.get("center_x", 0),
+                            "center_y": position.get("center_y", 0),
+                        },
+                        "note": "This region requires screenshot-based multimodal LLM analysis - no AT-SPI children available",
+                    }
+
+                    if is_explicit_canvas:
+                        visual_regions.append(visual_region)
+                    else:
+                        potential_regions.append((area, visual_region))
+
+        # For media players/graphics apps, if no explicit canvas found, use largest potential region
+        if (is_media_player or is_graphics_app) and not visual_regions and potential_regions:
+            # Sort by area and take largest (likely the video/canvas area)
+            potential_regions.sort(key=lambda x: x[0], reverse=True)
+            if potential_regions[0][0] > 50000:  # At least ~224x224 pixels
+                largest_region = potential_regions[0][1]
+                largest_region["type"] = "visual_only_canvas"  # Promote to canvas
+                visual_regions.append(largest_region)
+
+        # Final fallback: If VLC/GIMP have very few elements and no canvas detected,
+        # assume the entire window is a visual-only region (common for apps with poor AT-SPI support)
+        if (is_media_player or is_graphics_app) and not visual_regions and len(elements) < 20:
+            self.logger.info(
+                f"{app_type} has only {len(elements)} accessible elements and no detected canvas - "
+                "assuming entire window is visual-only region"
+            )
+            # Create a generic visual region note for the LLM
+            visual_regions.append(
+                {
+                    "type": "visual_only_canvas",
+                    "role": "window",
+                    "tag": "window",
+                    "name": app_type,
+                    "bounding_box": {
+                        "x": 0,
+                        "y": 0,
+                        "width": 0,
+                        "height": 0,
+                        "center_x": 0,
+                        "center_y": 0,
+                    },
+                    "note": (
+                        f"This {app_type} application has minimal AT-SPI accessibility tree exposure. "
+                        "The main content area (video player, canvas, etc.) is not exposed via accessibility APIs. "
+                        "Screenshot-based multimodal LLM analysis is REQUIRED for understanding the visual content."
+                    ),
+                }
+            )
+
+        return visual_regions
 
     # ==================== BASIC STATE EXTRACTION ====================
 
@@ -860,16 +1341,119 @@ if doc:
     # ==================== HELPER METHODS ====================
 
     def _group_elements_by_app(self, root: ET.Element) -> Dict[str, List[ET.Element]]:
-        """Group accessibility tree elements by application."""
+        """Group accessibility tree elements by application using enhanced filtering."""
         app_groups = defaultdict(list)
         parent_map = {child: parent for parent in root.iter() for child in parent}
 
+        # First, find active applications (matching accessibility_tree_handle.py logic)
+        active_apps = self._find_active_applications(root)
+
         for elem in root.iter():
             app_name = self._get_app_name(elem, parent_map)
-            if app_name and app_name != "unknown":
-                app_groups[app_name].append(elem)
+            if app_name and app_name != "unknown" and app_name in active_apps:
+                # Apply node filtering similar to accessibility_tree_handle.py
+                if self._judge_node(elem):
+                    app_groups[app_name].append(elem)
 
         return dict(app_groups)
+
+    def _find_active_applications(self, root: ET.Element) -> List[str]:
+        """Find active applications (matching accessibility_tree_handle.py logic)."""
+        apps_with_active_tag = []
+        frame_names_with_active_tag = []
+
+        for application in list(root):
+            app_name = application.get("name")
+            if not app_name:
+                continue
+
+            for frame in application:
+                is_active = frame.get(f"{{{STATE_NS_UBUNTU}}}active", "false") == "true"
+                if is_active:
+                    apps_with_active_tag.append(app_name)
+                    # Also include frame name for apps like LibreOffice
+                    # where frame name is "Invoice.xlsx - LibreOffice Calc"
+                    frame_name = frame.get("name", "")
+                    if frame_name:
+                        frame_names_with_active_tag.append(frame_name)
+
+        if apps_with_active_tag:
+            # Return both app names and frame names
+            return apps_with_active_tag + frame_names_with_active_tag + ["gnome-shell"]
+        else:
+            return ["gjs", "gnome-shell"]
+
+    def _judge_node(self, node: ET.Element, check_image: bool = True) -> bool:
+        """Judge if a node should be kept (matching accessibility_tree_handle.py logic)."""
+        # Check if it's a relevant UI element
+        keeps = (
+            node.tag.startswith("document")
+            or node.tag.endswith("item")
+            or node.tag.endswith("button")
+            or node.tag.endswith("heading")
+            or node.tag.endswith("label")
+            or node.tag.endswith("scrollbar")
+            or node.tag.endswith("searchbox")
+            or node.tag.endswith("textbox")
+            or node.tag.endswith("link")
+            or node.tag.endswith("tabelement")
+            or node.tag.endswith("textfield")
+            or node.tag.endswith("textarea")
+            or node.tag.endswith("menu")
+            or node.tag
+            in {
+                "alert",
+                "canvas",
+                "check-box",
+                "combo-box",
+                "entry",
+                "icon",
+                "image",
+                "paragraph",
+                "scroll-bar",
+                "section",
+                "slider",
+                "static",
+                "table-cell",
+                "terminal",
+                "text",
+                "netuiribbontab",
+                "start",
+                "trayclockwclass",
+                "traydummysearchcontrol",
+                "uiimage",
+                "uiproperty",
+                "uiribboncommandbar",
+            }
+        )
+
+        # Check visibility and showing states
+        # More lenient: accept if EITHER showing OR visible is true
+        # This is important for LibreOffice where many elements only have one flag
+        keeps = (
+            keeps
+            and (
+                node.get(f"{{{STATE_NS_UBUNTU}}}showing", "false") == "true"
+                or node.get(f"{{{STATE_NS_UBUNTU}}}visible", "false") == "true"
+            )
+            and (
+                node.get("name", "") != ""
+                or (node.text is not None and len(node.text) > 0)
+                or (check_image and node.get("image", "false") == "true")
+            )
+        )
+
+        # Check coordinates and size
+        try:
+            screencoord = node.get(f"{{{COMPONENT_NS_UBUNTU}}}screencoord", "(-1, -1)")
+            size = node.get(f"{{{COMPONENT_NS_UBUNTU}}}size", "(-1, -1)")
+            coords = eval(screencoord)
+            sizes = eval(size)
+            keeps = keeps and coords[0] >= 0 and coords[1] >= 0 and sizes[0] > 0 and sizes[1] > 0
+        except Exception:
+            keeps = False
+
+        return keeps
 
     def _get_app_name(self, elem: ET.Element, parent_map: Dict) -> str:
         """Extract application name from element or parents."""
@@ -893,18 +1477,38 @@ if doc:
         return "unknown"
 
     def _detect_app_type(self, app_name: str) -> str:
-        """Detect application type from name."""
+        """
+        Detect application type from name.
+
+        Args:
+            app_name: Can be application name ("soffice") or frame name
+                     ("Invoice.xlsx - LibreOffice Calc")
+        """
         app_lower = app_name.lower()
 
-        # TODO: add more application types
+        # Browser detection
         if any(b in app_lower for b in ["chrome", "firefox", "safari", "edge", "browser"]):
             return "browser"
-        elif "calc" in app_lower:
+
+        # LibreOffice detection - check for both app name and frame name patterns
+        # Frame names: "Document.xlsx - LibreOffice Calc", "Report.odt - LibreOffice Writer"
+        elif "calc" in app_lower or (
+            ("libreoffice" in app_lower or "soffice" in app_lower)
+            and (".xlsx" in app_lower or ".ods" in app_lower or ".xls" in app_lower or ".csv" in app_lower)
+        ):
             return "libreoffice_calc"
-        elif "writer" in app_lower:
+        elif "writer" in app_lower or (
+            ("libreoffice" in app_lower or "soffice" in app_lower)
+            and (".odt" in app_lower or ".doc" in app_lower or ".docx" in app_lower)
+        ):
             return "libreoffice_writer"
-        elif "impress" in app_lower:
+        elif "impress" in app_lower or (
+            ("libreoffice" in app_lower or "soffice" in app_lower)
+            and (".odp" in app_lower or ".ppt" in app_lower or ".pptx" in app_lower)
+        ):
             return "libreoffice_impress"
+
+        # Other applications
         elif any(c in app_lower for c in ["code", "vscode"]):
             return "vs_code"
         elif "gimp" in app_lower:
@@ -913,7 +1517,7 @@ if doc:
             return "vlc"
         elif any(f in app_lower for f in ["file", "manager", "explorer", "nautilus"]):
             return "file_manager"
-        elif any(t in app_lower for t in ["terminal", "bash", "shell"]):
+        elif any(t in app_lower for t in ["terminal", "bash", "shell"]) and "gnome-shell" not in app_lower:
             return "terminal"
         elif any(s in app_lower for s in ["settings", "preferences", "system"]):
             return "system_settings"
@@ -922,13 +1526,34 @@ if doc:
 
 
 if __name__ == "__main__":
-    print("App State Extractor - Comprehensive UI information extraction")
-    print("=" * 70)
-    print("\nCapabilities:")
-    print("✓ Browser: Full DOM extraction (buttons, links, forms, inputs, headings)")
-    print("✓ LibreOffice: Document state via UNO (sheets, content, slides)")
-    print("✓ All apps: Rich accessibility tree parsing")
-    print("✓ Categorized elements: buttons, menus, text fields, checkboxes, etc.")
+    print("App State Extractor - Toolkit-Aware AT-SPI2 Extraction for Ubuntu")
+    print("=" * 80)
+    print("\nToolkit-Specific Strategies:")
+    print("\n1. Chromium/Electron (Chrome, VSCode):")
+    print("   ✓ Semantic/hierarchical DOM node pruning")
+    print("   ✓ Rich role, name, state, bounding_box extraction")
+    print("   ✓ Text extraction via Atspi.Text interface")
+    print("   ⚠ Requires: ACCESSIBILITY_ENABLED=1 + --force-renderer-accessibility")
+
+    print("\n2. LibreOffice Suite (Calc, Writer, Impress):")
+    print("   ✓ Deep semantic data model via Table/Document interfaces")
+    print("   ✓ Logical cell coordinates (row/col) for Calc")
+    print("   ✓ Document structure extraction for Writer/Impress")
+    print("   ✓ UNO API integration for additional state")
+    print("   ⚠ Requires: Accessibility enabled in Tools > Options")
+
+    print("\n3. GTK/GNOME Native (Terminal, Nautilus, GIMP):")
+    print("   ✓ Standard controls and text grids")
+    print("   ✓ Precise spatial data extraction")
+    print("   ✓ Visual-only region detection (canvas objects)")
+    print("   ⚠ Requires: AT-SPI bus active (e.g., Orca running)")
+
+    print("\nGeneral Capabilities:")
+    print("✓ Categorized elements: buttons, menus, text fields, checkboxes, links")
     print("✓ UI structure detection: menu bars, toolbars, dialogs, panels")
     print("✓ Interactive elements: Everything an LLM might want to manipulate")
-    print("\n" + "=" * 70)
+    print("✓ AT-SPI namespace handling: Proper Ubuntu accessibility tree parsing")
+    print("✓ Enhanced filtering: Based on accessibility_tree_handle.py logic")
+    print("✓ Linearized trees: Clean tabular format for LLM consumption")
+    print("✓ Visual-only regions: Flags canvas areas needing multimodal analysis")
+    print("\n" + "=" * 80)

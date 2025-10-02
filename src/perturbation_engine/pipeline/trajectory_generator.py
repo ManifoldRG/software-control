@@ -217,6 +217,7 @@ class TrajectoryGenerator:
         )
 
         # Handle perturbation application
+        position_changes = {}
         if perturbation_decision.get("should_apply", False):
             perturbation_attempts += 1
             try:
@@ -231,6 +232,16 @@ class TrajectoryGenerator:
                     perturbation_successes += 1
                     step_log_entry["perturbation_success"] = True
                     env.mark_perturbation_applied()
+
+                    # Extract position changes if any
+                    position_changes = perturbation_result.get("result_data", {}).get("position_changes", {})
+                    if position_changes:
+                        step_log_entry["position_changes"] = position_changes
+                        self.logger.info(
+                            f"Perturbation moved {len(position_changes)} UI elements - "
+                            "will update action coordinates for visual invariance"
+                        )
+
                     self.logger.info(
                         f"Perturbation applied successfully: {perturbation_decision.get('reasoning', '')}"
                     )
@@ -262,7 +273,18 @@ class TrajectoryGenerator:
                 f"No perturbation applied: {perturbation_decision.get('reasoning', 'No reasoning provided')}"
             )
 
-        # Execute original action
+        # Update action coordinates if UI elements moved
+        if position_changes:
+            original_action = str(action)
+            updated_action = env.controller.update_action_coordinates(original_action, position_changes)
+            if updated_action != original_action:
+                action = updated_action
+                step_log_entry["action_updated_for_layout_change"] = True
+                step_log_entry["original_action"] = original_action
+                step_log_entry["updated_action"] = updated_action
+                self.logger.info("Action coordinates updated to track moved UI element")
+
+        # Execute action (original or updated)
         obs, reward, done, info = env.step(action)
         action_history.append(str(action))
 
@@ -443,7 +465,8 @@ class TrajectoryGenerator:
             return generated_trajectory
 
         except Exception as e:
-            self.logger.error(f"Error executing trajectory {trajectory_id}: {e}")
+            # Use repr to avoid format string issues if exception message contains braces
+            self.logger.error(f"Error executing trajectory {trajectory_id}: {repr(e)}")
             return self._create_generated_trajectory(
                 trajectory_id,
                 seed_trajectory,

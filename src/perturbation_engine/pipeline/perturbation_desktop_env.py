@@ -88,6 +88,21 @@ class PerturbationDesktopEnv(DesktopEnv):
         )
         self.logger.info("Replaced controller with PerturbationController")
 
+        # Ensure AT-SPI accessibility is enabled for proper state extraction
+        # Do this in a non-blocking way to avoid setup hangs
+        try:
+            self.logger.info("Setting up AT-SPI accessibility for app state extraction...")
+            accessibility_ok = self.controller.ensure_accessibility_enabled()
+            if accessibility_ok:
+                self.logger.info("AT-SPI accessibility enabled successfully")
+            else:
+                self.logger.warning(
+                    "AT-SPI accessibility may not be fully enabled - will retry later if needed"
+                )
+        except Exception as e:
+            self.logger.warning(f"AT-SPI setup encountered error (non-fatal): {e}")
+            # Continue anyway - accessibility can be enabled later if needed
+
     def mark_perturbation_applied(self):
         """Mark that a perturbation has been applied - forces reset on next trajectory"""
         self.is_environment_used = True
@@ -138,21 +153,31 @@ class PerturbationDesktopEnv(DesktopEnv):
         """
         Extract app states for LLM prompting.
 
-        Delegates to AppStateExtractor in PerturbationController:
-        - Comprehensive mode: Browser DOM, LibreOffice UNO, categorized elements
-        - Basic mode: Lightweight accessibility tree parsing only
-
-        Falls back gracefully if comprehensive extraction fails.
+        Delegates to AppStateExtractor in PerturbationController with fallback handling.
         """
         try:
-            # Delegate to controller's app state extractor
-            if hasattr(self.controller, "get_comprehensive_app_states"):
-                return self.controller.get_comprehensive_app_states()
-
-            # Fallback if controller doesn't have extractor
-            self.logger.warning("Controller doesn't have app state extractor, returning empty states")
-            return []
-
+            return self._extract_app_states_with_fallback()
         except Exception as e:
             self.logger.error(f"Error extracting app states: {e}")
-            return []
+            return self._create_empty_app_state()
+
+    def _extract_app_states_with_fallback(self) -> List[Dict[str, Any]]:
+        """Extract app states with proper fallback handling."""
+        if hasattr(self.controller, "get_comprehensive_app_states"):
+            return self.controller.get_comprehensive_app_states()
+
+        self.logger.warning("Controller doesn't have app state extractor, returning empty states")
+        return self._create_empty_app_state()
+
+    def _create_empty_app_state(self) -> List[Dict[str, Any]]:
+        """Create empty app state for fallback scenarios."""
+        return [
+            {
+                "app_type": "unknown",
+                "app_name": "unknown",
+                "current_view": "unknown",
+                "key_elements": [],
+                "task_context": "No accessible applications detected",
+                "element_count": 0,
+            }
+        ]
