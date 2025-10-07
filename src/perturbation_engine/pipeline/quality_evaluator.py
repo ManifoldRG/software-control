@@ -6,8 +6,8 @@ Clean interface for trajectory quality evaluation
 import logging
 from typing import List
 
+from perturbation_engine.pipeline.clean_llm_services import CleanQualityLLM
 from perturbation_engine.pipeline.data_models import GeneratedTrajectory, ScenarioSpec
-from perturbation_engine.pipeline.llm_services import QualityEvaluationLLM
 
 
 class QualityEvaluator:
@@ -15,7 +15,7 @@ class QualityEvaluator:
 
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        self.quality_llm = QualityEvaluationLLM()
+        self.quality_llm = CleanQualityLLM()
 
     def evaluate_trajectories(
         self, generated_trajectories: List[GeneratedTrajectory], scenario_specs: List[ScenarioSpec]

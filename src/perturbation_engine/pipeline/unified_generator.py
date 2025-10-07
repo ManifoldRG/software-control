@@ -72,7 +72,10 @@ class UnifiedGenerator:
                 pass  # Not running from main script
 
             env.reset(task_config=seed_trajectory.config)
-            app_states = env.get_app_states_from_accessibility_tree()
+
+            # Extract enhanced app states using autoglm_v processing
+            app_states = env.controller.get_app_states(use_autoglm_enhancement=True)
+
             env.close()
 
             # Remove from active environments after closing
@@ -105,7 +108,7 @@ class UnifiedGenerator:
 
             # Wait for main process VM to fully clean up before starting parallel processes
             self.logger.info("Waiting for main process VM cleanup to complete")
-            time.sleep(10)  # Give extra time for VM cleanup
+            time.sleep(5)  # Give extra time for VM cleanup
 
             # Step 3: Execute scenarios in parallel
             generated_trajectories = self.shared_execution_engine.execute_scenarios_parallel(

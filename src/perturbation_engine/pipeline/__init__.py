@@ -2,6 +2,7 @@
 Pipeline Refactored: Clean data randomization pipeline
 """
 
+from .clean_llm_services import CleanCurriculumLLM, CleanPerturbationLLM, CleanQualityLLM
 from .curriculum_planner import CurriculumPlanner
 from .data_models import (
     CurriculumConfig,
@@ -12,7 +13,6 @@ from .data_models import (
     ScenarioSpec,
     SeedTrajectory,
 )
-from .llm_services import CurriculumLLM, PerturbationLLM, QualityEvaluationLLM
 from .perturbation_desktop_env import AppType, PerturbationDesktopEnv
 from .quality_evaluator import QualityEvaluator
 from .shared_execution_engine import SharedExecutionEngine
@@ -29,9 +29,9 @@ __all__ = [
     "ExecutionContext",
     "PerturbationType",
     "PerturbationPhase",
-    "CurriculumLLM",
-    "PerturbationLLM",
-    "QualityEvaluationLLM",
+    "CleanCurriculumLLM",
+    "CleanPerturbationLLM",
+    "CleanQualityLLM",
     "CurriculumPlanner",
     "TrajectoryGenerator",
     "SharedExecutionEngine",

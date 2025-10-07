@@ -200,7 +200,9 @@ def main():
 
     # Load seed trajectories
     task_config_base_dir = "src/OSWorld/evaluation_examples"
-    trajectory_base_dir = "external_data/osworld-verified/autoglm_50steps"
+    # trajectory_base_dir = "external_data/osworld-verified/autoglm_50steps"
+    # trajectory_base_dir = "external_data/osworld-verified/o3_gta1_100steps/o3_gta1_100steps"
+    trajectory_base_dir = "external_data/osworld-verified/jedi-7b-4o-15steps/jedi-7b-4o-15steps"
 
     seed_trajectories = load_seed_trajectories(task_config_base_dir, trajectory_base_dir)
 
@@ -208,7 +210,7 @@ def main():
     traj_task_type_set = set()
     test_seed_trajectories = []
     for traj in seed_trajectories:
-        if traj.task_type not in traj_task_type_set:
+        if traj.task_type not in traj_task_type_set and traj.task_type in ["chrome", "code", "vlc"]:
             with open(f"{traj.gt_actions_file_path}") as f:
                 temp_gt_actions = [json.loads(line) for line in f]
                 if temp_gt_actions[-1]["action"] != "FAIL":

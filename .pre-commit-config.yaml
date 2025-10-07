@@ -40,9 +40,11 @@ repos:
     rev: v0.12.12
     hooks:
       - id: ruff-format
+        exclude: ^src/perturbation_engine/tools/autoglm_v/.*$
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
         files: \.py$
+        exclude: ^src/perturbation_engine/tools/autoglm_v/.*$
 
   # - repo: https://github.com/PyCQA/isort
   #   rev: 6.0.1
@@ -56,6 +58,7 @@ repos:
       - id: typos
         args: [--force-exclude]
         files: \.py$|.md$
+        exclude: ^src/perturbation_engine/tools/autoglm_v/.*$
 
 
   # - repo: https://github.com/asottile/pyupgrade

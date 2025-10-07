@@ -11,7 +11,8 @@ from playwright.sync_api import Page, sync_playwright
 
 from OSWorld.desktop_env.controllers.python import PythonController
 from OSWorld.desktop_env.controllers.setup import SetupController
-from perturbation_engine.control.app_state_extractor import AppStateExtractor
+from perturbation_engine.control.clean_app_state_extractor import CleanAppStateExtractor
+from perturbation_engine.tools.autoglm_integration import AutoglmAppStateExtractor
 
 
 @dataclass
@@ -48,13 +49,8 @@ class PerturbationController(PythonController, SetupController):
         self._context = None
         self._page = None
 
-        # App state extractor
-        self._app_state_extractor = None
-        if AppStateExtractor:
-            self._app_state_extractor = AppStateExtractor(self)
-
-        # Coordinate tracking for ground truth action updates
-        self._element_position_tracker = {}
+        self._app_state_extractor = CleanAppStateExtractor(self)
+        self._autoglm_extractor = AutoglmAppStateExtractor()
 
     def execute_perturbation(
         self, perturbation_type: str, generated_code: str, api_call: str, parameters: Dict[str, Any]
@@ -62,13 +58,11 @@ class PerturbationController(PythonController, SetupController):
         """
         Execute perturbation using generated code with sophisticated handling.
 
-        Tracks UI element positions before/after layout-changing perturbations
-        to enable ground truth action coordinate updates for visual invariance learning.
+        Note: Coordinate tracking is now handled externally by trajectory_generator
+        which identifies the target element from ground truth action coordinates,
+        then updates those coordinates after perturbation if the element moved.
         """
         try:
-            # Capture element positions BEFORE perturbation
-            pre_perturbation_positions = self._capture_element_positions()
-
             success = False
             result_data = {}
 
@@ -83,8 +77,9 @@ class PerturbationController(PythonController, SetupController):
                 success = result.get("status") == "success"
                 result_data = {"api_call": api_call, "result": result}
             elif api_call == "execute_uno_command":
-                success = self.execute_uno_command(generated_code, parameters)
-                result_data = {"api_call": api_call, "code": generated_code}
+                result = self.execute_uno_command(generated_code, parameters)
+                success = result.get("status") == "success" and result.get("returncode", -1) == 0
+                result_data = {"api_call": api_call, "code": generated_code, "result": result}
             elif api_call == "manipulate_app_state":
                 success = self._manipulate_app_state(parameters)
                 result_data = {"api_call": api_call, "parameters": parameters}
@@ -98,25 +93,32 @@ class PerturbationController(PythonController, SetupController):
                 success = False
                 result_data = {"api_call": api_call, "error": "Unknown API call"}
 
-            # Capture element positions AFTER perturbation
-            post_perturbation_positions = self._capture_element_positions()
-
-            # Calculate position deltas for coordinate tracking
-            position_changes = self._calculate_position_changes(
-                pre_perturbation_positions, post_perturbation_positions
-            )
-
-            # Store for later retrieval by trajectory generator
-            if position_changes:
-                result_data["position_changes"] = position_changes
-                self.logger.info(f"Detected {len(position_changes)} element position changes")
+            # Extract detailed error message if available
+            error_message = None
+            if not success:
+                if api_call == "execute_uno_command" and "result" in result_data:
+                    result = result_data["result"]
+                    if result.get("error"):
+                        error_message = f"UNO command failed: {result['error']}"
+                    elif result.get("returncode", 0) != 0:
+                        error_message = f"UNO command failed with return code {result.get('returncode', -1)}"
+                    else:
+                        error_message = f"UNO command failed: {result.get('output', 'Unknown error')}"
+                elif api_call == "execute_python_command" and "result" in result_data:
+                    result = result_data["result"]
+                    if result.get("error"):
+                        error_message = f"Python command failed: {result['error']}"
+                    else:
+                        error_message = f"Python command failed: {result.get('output', 'Unknown error')}"
+                else:
+                    error_message = f"Failed to execute {api_call}"
 
             return ManipulationResult(
                 success=success,
                 operation_type=perturbation_type,
                 target_app=parameters.get("target_app", "unknown"),
                 result_data=result_data,
-                error_message=None if success else f"Failed to execute {api_call}",
+                error_message=error_message,
             )
 
         except Exception as e:
@@ -199,23 +201,45 @@ class PerturbationController(PythonController, SetupController):
 
     def execute_uno_command(self, uno_code: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute UNO command for LibreOffice manipulation.
-
-        Returns:
-            Dict with status, output, and error information
+        Execute UNO command by sending it to the VM server for execution.
+        The VM server handles LibreOffice process management and UNO API calls.
         """
         try:
-            # Clean up the UNO code
-            if "```" in uno_code:
-                uno_code = uno_code.split("```")[1].removeprefix("python").strip()
+            # Format UNO code to ensure proper structure
+            formatted_uno_code = self._format_python_code(uno_code)
 
-            # Indent the UNO code for insertion into try block
-            indented_uno_code = "\n".join("    " + line for line in uno_code.split("\n"))
+            # Build Python wrapper that handles LibreOffice process management on the VM
+            python_wrapper = self._build_uno_python_wrapper(formatted_uno_code)
 
-            # Execute UNO code via Python with robust LibreOffice connection
-            python_wrapper = f"""
-import uno
-import unohelper
+            # Validate the complete wrapper has valid syntax
+            if not self._validate_python_syntax(python_wrapper):
+                self.logger.error(f"UNO wrapper has syntax errors. Code snippet: {uno_code[:200]}")
+                return {"status": "error", "error": "UNO wrapper syntax error", "returncode": 1}
+
+            # Send to VM server for execution
+            result = self.execute_python_command(python_wrapper)
+
+            # Validate result
+            if result and result.get("status") == "success":
+                return result
+            else:
+                self.logger.warning(f"UNO execution failed: {result}")
+                return result or {"status": "error", "error": "No result from VM", "returncode": 1}
+
+        except Exception as e:
+            self.logger.error(f"UNO execution error: {e}")
+            return {"status": "error", "error": str(e), "returncode": 1}
+
+    def _build_uno_python_wrapper(self, formatted_uno_code: str) -> str:
+        """
+        Build the Python wrapper for UNO execution with robust error handling.
+        """
+        # Ensure code is properly indented for the try block
+        indented_code = "\n".join(
+            "    " + line if line.strip() else "" for line in formatted_uno_code.split("\n")
+        )
+
+        return f"""import uno
 import subprocess
 import time
 from com.sun.star.uno import RuntimeException
@@ -225,36 +249,18 @@ def identify_document_type(component):
         return "Calc"
     if component.supportsService("com.sun.star.text.TextDocument"):
         return "Writer"
-    if component.supportsService("com.sun.star.sheet.PresentationDocument"):
+    if component.supportsService("com.sun.star.presentation.PresentationDocument"):
         return "Impress"
     return None
 
 try:
-    # Clean up previous TCP connections
-    subprocess.run(
-        'echo "osworld-public-evaluation" | sudo -S ss --kill --tcp state TIME-WAIT sport = :2002',
-        shell=True,
-        check=False,
-        text=True,
-        capture_output=True
-    )
-
-    # Start LibreOffice headless
-    soffice_process = subprocess.Popen([
-        "soffice",
-        "--headless",
-        "--invisible",
-        "--accept=socket,host=localhost,port=2002;urp;StarOffice.Service"
-    ])
-
-    # Wait for LibreOffice to start
-    time.sleep(3)
-
     # Get LibreOffice context
     localContext = uno.getComponentContext()
     resolver = localContext.ServiceManager.createInstanceWithContext(
         "com.sun.star.bridge.UnoUrlResolver", localContext
     )
+
+    # Connect to LibreOffice
     context = resolver.resolve(
         "uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext"
     )
@@ -263,208 +269,69 @@ try:
     )
 
     # Execute the UNO code
-{indented_uno_code}
+{indented_code}
 
     print("UNO command executed successfully")
 
-    # Clean up
-    soffice_process.terminate()
-    soffice_process.wait()
-
 except Exception as e:
     print(f"UNO command failed: {{e}}")
-    try:
-        soffice_process.terminate()
-        soffice_process.wait()
-    except:
-        pass
+    import traceback
+    traceback.print_exc()
 """
 
-            result = self.execute_python_command(python_wrapper)
-            return result
-
-        except Exception as e:
-            self.logger.error(f"Error executing UNO command: {e}")
-            return {"status": "error", "error": str(e)}
-
-    def _capture_element_positions(self) -> Dict[str, Dict[str, Any]]:
+    def _format_python_code(self, code: str) -> str:
         """
-        Capture current positions of all interactive UI elements.
-
-        Returns dict mapping element identifiers to their positions:
-        {
-            "button_Save": {"x": 100, "y": 200, "width": 80, "height": 30},
-            "link_Home": {"x": 150, "y": 50, "width": 60, "height": 20},
-            ...
-        }
-        """
-        try:
-            app_states = self.get_comprehensive_app_states(use_comprehensive=False)
-            if not app_states:
-                return {}
-
-            positions = {}
-
-            for app_state in app_states:
-                # Extract positions from categorized elements
-                for category in [
-                    "buttons",
-                    "links",
-                    "text_fields",
-                    "menu_items",
-                    "checkboxes",
-                    "radio_buttons",
-                    "combo_boxes",
-                    "tabs",
-                    "images",
-                ]:
-                    elements = app_state.get(category, [])
-                    for elem in elements:
-                        position = elem.get("position", {})
-                        if position and position.get("center_x") and position.get("center_y"):
-                            # Create unique identifier from element properties
-                            elem_id = self._create_element_id(elem, category)
-                            positions[elem_id] = {
-                                "center_x": position["center_x"],
-                                "center_y": position["center_y"],
-                                "x": position.get("x", 0),
-                                "y": position.get("y", 0),
-                                "width": position.get("width", 0),
-                                "height": position.get("height", 0),
-                                "category": category,
-                                "name": elem.get("name", ""),
-                                "text": elem.get("text", ""),
-                            }
-
-            return positions
-
-        except Exception as e:
-            self.logger.warning(f"Error capturing element positions: {e}")
-            return {}
-
-    def _create_element_id(self, elem: Dict[str, Any], category: str) -> str:
-        """
-        Create a unique, stable identifier for an element.
-
-        Uses a combination of category, role, name, and text to identify elements
-        even after perturbations that might change their internal IDs.
-        """
-        name = elem.get("name", "")
-        text = elem.get("text", "")[:50]  # Truncate for stability
-
-        # Clean and normalize
-        name = name.strip().replace(" ", "_")
-        text = text.strip().replace(" ", "_")
-
-        if name:
-            return f"{category}_{name}"
-        elif text:
-            return f"{category}_{text}"
-        else:
-            # Fallback to position-based ID (less stable but unique)
-            pos = elem.get("position", {})
-            x = pos.get("center_x", 0)
-            y = pos.get("center_y", 0)
-            return f"{category}_at_{x}_{y}"
-
-    def _calculate_position_changes(
-        self, before: Dict[str, Dict[str, Any]], after: Dict[str, Dict[str, Any]]
-    ) -> Dict[str, Dict[str, int]]:
-        """
-        Calculate position deltas for elements that moved.
-
-        Returns:
-            Dict mapping element IDs to position deltas:
-            {
-                "button_Save": {"dx": 50, "dy": 100, "old_x": 100, "old_y": 200, "new_x": 150, "new_y": 300},
-                ...
-            }
-        """
-        changes = {}
-
-        for elem_id, before_pos in before.items():
-            if elem_id in after:
-                after_pos = after[elem_id]
-
-                dx = after_pos["center_x"] - before_pos["center_x"]
-                dy = after_pos["center_y"] - before_pos["center_y"]
-
-                # Only track significant movements (> 5 pixels)
-                if abs(dx) > 5 or abs(dy) > 5:
-                    changes[elem_id] = {
-                        "dx": dx,
-                        "dy": dy,
-                        "old_center_x": before_pos["center_x"],
-                        "old_center_y": before_pos["center_y"],
-                        "new_center_x": after_pos["center_x"],
-                        "new_center_y": after_pos["center_y"],
-                        "category": before_pos["category"],
-                        "name": before_pos["name"],
-                        "text": before_pos["text"],
-                    }
-
-        return changes
-
-    def update_action_coordinates(self, action: str, position_changes: Dict[str, Dict[str, int]]) -> str:
-        """
-        Update action coordinates based on element position changes.
-
-        Parses pyautogui.click(x, y) and matches coordinates to moved elements,
-        then updates with new coordinates.
-
-        Args:
-            action: Original action string (e.g., "pyautogui.click(100, 200, duration=1)")
-            position_changes: Dict of element position deltas from perturbation
-
-        Returns:
-            Updated action string with corrected coordinates
+        Simple, robust Python code formatter for UNO/LLM-generated code.
+        Handles common indentation issues without complex AST parsing.
         """
         import re
 
-        # Extract coordinates from pyautogui calls
-        click_pattern = r"pyautogui\.(click|rightClick|doubleClick|moveTo)\((\d+),\s*(\d+)"
-        match = re.search(click_pattern, action)
+        # Remove markdown code blocks
+        code = re.sub(r"```(?:python)?\s*", "", code)
+        code = re.sub(r"```\s*$", "", code)
 
-        if not match:
-            # No coordinates to update
-            return action
+        # Split into lines, keeping empty lines for structure
+        lines = code.split("\n")
 
-        # method = match.group(1)
-        old_x = int(match.group(2))
-        old_y = int(match.group(3))
+        # Apply simple indentation
+        formatted_lines = []
+        indent_level = 0
 
-        # Find the element that matches these coordinates
-        best_match = None
-        min_distance = float("inf")
+        for line in lines:
+            stripped = line.strip()
 
-        for _, change in position_changes.items():
-            # Calculate distance from action coordinates to element's OLD position
-            distance = ((old_x - change["old_center_x"]) ** 2 + (old_y - change["old_center_y"]) ** 2) ** 0.5
+            # Skip empty lines and comments
+            if not stripped or stripped.startswith("#"):
+                continue
 
-            # If action coordinates are close to an element's old position, it's likely the target
-            if distance < min_distance and distance < 50:  # Within 50 pixels
-                min_distance = distance
-                best_match = change
+            # Dedent for elif/else/except/finally
+            if stripped.startswith(("elif ", "else:", "except ", "finally:")):
+                indent_level = max(0, indent_level - 1)
 
-        if best_match:
-            # Update coordinates to element's new position
-            new_x = best_match["new_center_x"]
-            new_y = best_match["new_center_y"]
+            # Add the line with current indentation
+            formatted_lines.append("    " * indent_level + stripped)
 
-            # Replace coordinates in action string
-            old_coords = f"{old_x}, {old_y}"
-            new_coords = f"{new_x}, {new_y}"
-            updated_action = action.replace(old_coords, new_coords)
+            # Indent after structures ending with ':'
+            if stripped.endswith(":"):
+                indent_level += 1
 
-            self.logger.info(
-                f"Updated action coordinates: {old_coords} -> {new_coords} "
-                f"(element: {best_match['name'] or best_match['text'][:20]})"
-            )
+        formatted_code = "\n".join(formatted_lines)
 
-            return updated_action
+        # Validate syntax
+        if self._validate_python_syntax(formatted_code):
+            return formatted_code
 
-        # No matching element found, return original
-        return action
+        # Fallback: return cleaned but not formatted
+        self.logger.warning("Formatted code has syntax errors, using unformatted version")
+        return "\n".join(line.strip() for line in lines if line.strip() and not line.strip().startswith("#"))
+
+    def _validate_python_syntax(self, code: str) -> bool:
+        """Validate Python syntax by attempting to compile the code."""
+        try:
+            compile(code, "<string>", "exec")
+            return True
+        except SyntaxError:
+            return False
 
     def _manipulate_app_state(self, parameters: Dict[str, Any]) -> bool:
         """Manipulate app state based on parameters"""
@@ -602,6 +469,16 @@ except Exception as e:
 
         except Exception as e:
             self.logger.error(f"Failed to connect to Chrome via Playwright: {e}")
+            # Clean up partial connection on failure
+            if self._playwright:
+                try:
+                    self._playwright.stop()
+                except Exception as e:
+                    pass
+                self._playwright = None
+                self._browser = None
+                self._context = None
+                self._page = None
             return None
 
     def close_playwright(self):
@@ -624,10 +501,8 @@ except Exception as e:
         Uses execute_python_command instead of run_bash_script to avoid
         the _append_event bug in old VM code.
 
-        Quick, non-blocking setup that won't hang the environment initialization.
-
         Returns:
-            True if setup successful
+            True if setup successful or already enabled, False on failure
         """
         try:
             self.logger.info("Setting up AT-SPI accessibility...")
@@ -638,7 +513,7 @@ import subprocess
 import time
 
 try:
-    # Enable accessibility via gsettings (quick, doesn't hang)
+    # Enable accessibility via gsettings
     subprocess.run(['gsettings', 'set', 'org.gnome.desktop.interface', 'toolkit-accessibility', 'true'],
                    capture_output=True, text=True, timeout=2)
     subprocess.run(['gsettings', 'set', 'org.gnome.desktop.interface', 'accessibility', 'true'],
@@ -649,7 +524,7 @@ try:
                            capture_output=True, text=True, timeout=1)
 
     if result.returncode != 0:
-        # Launch in background (fire and forget - don't wait)
+        # Launch in background
         subprocess.Popen(['/usr/libexec/at-spi-bus-launcher', '--launch-immediately'],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         print('AT-SPI bus launched')
@@ -660,57 +535,228 @@ except Exception as e:
     print(f'AT-SPI setup warning: {e}')
 """
 
-            # Execute with Python (avoids bash script endpoint bug)
-            # Use shorter timeout to avoid hanging
             result = self.execute_python_command(python_code)
 
             if result and result.get("status") == "success":
                 output = result.get("output", "").strip()
-                self.logger.info(f"AT-SPI setup result: {output}")
+                self.logger.info(f"AT-SPI setup completed: {output}")
                 return True
             else:
-                self.logger.warning(f"AT-SPI setup returned non-success: {result}")
-                # Return True anyway - accessibility might still work
-                return True
+                self.logger.warning(f"AT-SPI setup failed, accessibility may not work: {result}")
+                return False
 
         except Exception as e:
-            self.logger.error(f"Error setting up accessibility (non-fatal): {e}")
-            # Return True to avoid blocking - accessibility might already be enabled
-            return True
+            self.logger.error(f"Error setting up accessibility: {e}")
+            return False
 
-    def get_comprehensive_app_states(self, use_comprehensive: bool = True) -> list:
+    def get_app_states(self, use_autoglm_enhancement: bool = True) -> list:
+        """Get clean app states using autoglm_v tools"""
+        if use_autoglm_enhancement:
+            try:
+                # Get accessibility tree for autoglm_v processing
+                accessibility_tree = self.get_accessibility_tree()
+                if accessibility_tree:
+                    app_states = self._autoglm_extractor.extract_app_states(accessibility_tree)
+                    if app_states:
+                        self.logger.info(f"Extracted {len(app_states)} app states using autoglm_v")
+                        return app_states
+
+                # Fallback to clean extractor
+                self.logger.info("Falling back to clean app state extractor")
+                return self._app_state_extractor.extract_app_states(False)
+
+            except Exception as e:
+                self.logger.error(f"Error with autoglm_v app state extraction: {e}")
+                return self._app_state_extractor.extract_app_states(False)
+        else:
+            return self._app_state_extractor.extract_app_states(False)
+
+    def visualize_element_bounding_boxes(
+        self, app_states: list, target_element_id: str = None, output_path: str = None
+    ) -> str:
         """
-        Get app state information for LLM consumption.
+        Visualize bounding boxes of extracted elements on screenshot for debugging.
 
         Args:
-            use_comprehensive: If True, extract rich DOM/UNO data (slower but detailed)
-                             If False, use basic accessibility tree only (faster)
+            app_states: List of AppState objects
+            target_element_id: Specific element ID to highlight (optional)
+            output_path: Path to save the annotated screenshot (optional)
 
-        Comprehensive mode returns:
-        - Browser: Full DOM (buttons, links, forms, inputs, headings)
-        - LibreOffice: Document state (sheets, content, slides)
-        - All apps: Categorized elements (buttons, menus, text fields, etc.)
-        - UI structure (menu bars, toolbars, dialogs, panels)
-        - Interactive elements with full metadata
-
-        Basic mode returns:
-        - app_type, app_name, current_view
-        - key_elements (up to 10 interactive elements)
-        - element_count
+        Returns:
+            Path to the annotated screenshot
         """
-        if not self._app_state_extractor:
-            self.logger.warning("AppStateExtractor not available")
-            return []
-
         try:
-            return self._app_state_extractor.extract_app_states(use_comprehensive=use_comprehensive)
+            import os
+            import time
+            from io import BytesIO
+
+            from PIL import Image, ImageDraw, ImageFont
+
+            # Get current screenshot
+            screenshot_data = self.get_screenshot()
+            if not screenshot_data:
+                self.logger.error("Could not get screenshot for visualization")
+                return None
+
+            # Convert screenshot to PIL Image
+            screenshot = Image.open(BytesIO(screenshot_data))
+            draw = ImageDraw.Draw(screenshot)
+
+            # Try to load a font, fallback to default if not available
+            try:
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 12)
+                small_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 10)
+            except Exception:
+                font = ImageFont.load_default()
+                small_font = ImageFont.load_default()
+
+            colors = [
+                (255, 0, 0),  # Red
+                (0, 255, 0),  # Green
+                (0, 0, 255),  # Blue
+                (255, 255, 0),  # Yellow
+                (255, 0, 255),  # Magenta
+                (0, 255, 255),  # Cyan
+            ]
+
+            element_count = 0
+            highlighted_element = None
+
+            # Get current mouse position
+            mouse_x, mouse_y = self._get_mouse_position()
+
+            # Draw bounding boxes for all elements
+            for app_state in app_states:
+                if not hasattr(app_state, "elements"):
+                    continue
+
+                color = colors[element_count % len(colors)]
+
+                for element in app_state.elements:
+                    if not hasattr(element, "position"):
+                        continue
+
+                    pos = element.position
+                    center_x = pos.get("center_x", 0)
+                    center_y = pos.get("center_y", 0)
+                    width = pos.get("width", 0)
+                    height = pos.get("height", 0)
+
+                    # Calculate bounding box coordinates
+                    left = center_x - width // 2
+                    top = center_y - height // 2
+                    right = center_x + width // 2
+                    bottom = center_y + height // 2
+
+                    # Check if this is the target element
+                    is_target = (
+                        target_element_id
+                        and hasattr(element, "element_id")
+                        and element.element_id == target_element_id
+                    )
+
+                    if is_target:
+                        highlighted_element = element
+                        # Use bright red for target element
+                        box_color = (255, 0, 0)
+                        text_color = (255, 255, 255)
+                        thickness = 3
+                    else:
+                        box_color = color
+                        text_color = (255, 255, 255)
+                        thickness = 1
+
+                    # Draw bounding box
+                    draw.rectangle([left, top, right, bottom], outline=box_color, width=thickness)
+
+                    # Draw element label with coordinates
+                    label = f"{element.name or element.element_type}"
+                    if hasattr(element, "element_id"):
+                        label = f"{str(element.element_id)[:4]}: {label}"
+
+                    # Add coordinates to label
+                    coord_label = f"({center_x}, {center_y})"
+
+                    # Draw text background for main label
+                    text_bbox = draw.textbbox((left, top - 35), label, font=font)
+                    draw.rectangle(text_bbox, fill=box_color)
+
+                    # Draw main label
+                    draw.text((left, top - 35), label, fill=text_color, font=font)
+
+                    # Draw coordinates label
+                    coord_bbox = draw.textbbox((left, top - 20), coord_label, font=small_font)
+                    draw.rectangle(coord_bbox, fill=(0, 0, 0, 180))
+                    draw.text((left, top - 20), coord_label, fill=(255, 255, 255), font=small_font)
+
+                    element_count += 1
+
+            # Draw mouse position
+            if mouse_x is not None and mouse_y is not None:
+                # Draw mouse cursor as a cross
+                cross_size = 15
+                draw.line(
+                    [mouse_x - cross_size, mouse_y, mouse_x + cross_size, mouse_y],
+                    fill=(255, 255, 0),
+                    width=3,
+                )  # Yellow horizontal line
+                draw.line(
+                    [mouse_x, mouse_y - cross_size, mouse_x, mouse_y + cross_size],
+                    fill=(255, 255, 0),
+                    width=3,
+                )  # Yellow vertical line
+
+                # Draw mouse coordinates
+                mouse_label = f"Mouse: ({mouse_x}, {mouse_y})"
+                mouse_bbox = draw.textbbox((mouse_x + 20, mouse_y - 10), mouse_label, font=font)
+                draw.rectangle(mouse_bbox, fill=(255, 255, 0, 180))  # Yellow background
+                draw.text((mouse_x + 20, mouse_y - 10), mouse_label, fill=(0, 0, 0), font=font)
+
+            # Add summary information
+            summary_text = f"Total elements: {element_count}"
+            if highlighted_element:
+                summary_text += f"\nTarget: {highlighted_element.name} ({highlighted_element.element_id})"
+                pos = highlighted_element.position
+                summary_text += (
+                    f"\nCoords: ({pos['center_x']}, {pos['center_y']}) size {pos['width']}x{pos['height']}"
+                )
+
+            if mouse_x is not None and mouse_y is not None:
+                summary_text += f"\nMouse: ({mouse_x}, {mouse_y})"
+
+            # Draw summary box
+            draw.rectangle([10, 10, 350, 100], fill=(0, 0, 0, 180))
+            draw.text((15, 15), summary_text, fill=(255, 255, 255), font=font)
+
+            # Save annotated screenshot
+            if not output_path:
+                import tempfile
+
+                output_path = os.path.join(
+                    tempfile.gettempdir(), f"element_visualization_{int(time.time())}.png"
+                )
+
+            screenshot.save(output_path)
+            self.logger.info(f"Element visualization saved to: {output_path}")
+
+            return output_path
+
         except Exception as e:
-            self.logger.error(f"Error extracting app states: {e}")
-            # Try basic mode as fallback if comprehensive fails
-            if use_comprehensive:
-                self.logger.info("Falling back to basic extraction")
-                try:
-                    return self._app_state_extractor.extract_app_states(use_comprehensive=False)
-                except Exception as e2:
-                    self.logger.error(f"Basic extraction also failed: {e2}")
-            return []
+            self.logger.error(f"Error creating element visualization: {e}")
+            return None
+
+    def _get_mouse_position(self) -> tuple:
+        """Get current mouse position from the VM"""
+        try:
+            # Use the VM server's cursor position endpoint
+            import requests
+
+            response = requests.get(f"{self.http_server}/cursor_position", timeout=5)
+            if response.status_code == 200:
+                coords = response.json()
+                if isinstance(coords, list) and len(coords) >= 2:
+                    return (coords[0], coords[1])
+            return (None, None)
+        except Exception as e:
+            self.logger.debug(f"Could not get mouse position: {e}")
+            return (None, None)

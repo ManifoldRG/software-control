@@ -6,12 +6,13 @@ Clean interface for curriculum generation
 import logging
 from typing import Any, Dict, List
 
+from perturbation_engine.pipeline.clean_llm_services import CleanCurriculumLLM
 from perturbation_engine.pipeline.data_models import (
     CurriculumConfig,
     ScenarioSpec,
     SeedTrajectory,
 )
-from perturbation_engine.pipeline.llm_services import CurriculumLLM
+from perturbation_engine.tools.autoglm_integration import AutoglmCurriculumGenerator
 
 
 class CurriculumPlanner:
@@ -19,7 +20,8 @@ class CurriculumPlanner:
 
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        self.curriculum_llm = CurriculumLLM()
+        self.curriculum_llm = CleanCurriculumLLM()
+        self.autoglm_curriculum_generator = AutoglmCurriculumGenerator()
 
     def plan_curriculum(
         self,
@@ -34,32 +36,51 @@ class CurriculumPlanner:
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                # Use LLM to generate scenario specs
-                scenario_specs = self.curriculum_llm.generate_scenario_specs(
+                # Use autoglm_v curriculum generator first
+                autoglm_scenarios = self.autoglm_curriculum_generator.generate_scenario_specs(
                     seed_trajectory, app_states, curriculum_config
                 )
 
-                if not scenario_specs:
-                    self.logger.warning(f"Attempt {attempt + 1}: No scenario specs generated")
-                    if attempt < max_retries - 1:
-                        continue
-                    return []
+                if autoglm_scenarios:
+                    # Convert autoglm scenarios to ScenarioSpec objects
+                    scenario_specs = self._convert_autoglm_scenarios(autoglm_scenarios)
 
-                # Validate and filter scenario specs
-                valid_specs = self.validate_scenario_specs(scenario_specs)
+                    # Validate and filter scenario specs
+                    valid_specs = self.validate_scenario_specs(scenario_specs)
 
-                # Enhanced validation for diversity and quality
-                diverse_specs = self._ensure_scenario_diversity(valid_specs)
+                    # Enhanced validation for diversity and quality
+                    diverse_specs = self._ensure_scenario_diversity(valid_specs)
 
-                if len(diverse_specs) < len(scenario_specs) * 0.4:  # Less than 40% valid and diverse
-                    self.logger.warning(
-                        f"Attempt {attempt + 1}: Only {len(diverse_specs)}/{len(scenario_specs)} scenarios valid and diverse"
-                    )
-                    if attempt < max_retries - 1:
-                        continue
+                    if (
+                        len(diverse_specs) >= curriculum_config.scenario_count * 0.5
+                    ):  # At least 50% from autoglm_v
+                        self.logger.info(f"Generated {len(diverse_specs)} valid scenarios using autoglm_v")
+                        return diverse_specs
 
-                self.logger.info(f"Generated {len(diverse_specs)} valid and diverse scenario specifications")
-                return diverse_specs
+                # Fallback to LLM if autoglm_v doesn't provide enough scenarios
+                self.logger.info("Falling back to LLM for additional scenario generation")
+                llm_scenarios = self.curriculum_llm.generate_scenario_specs(
+                    seed_trajectory, app_states, curriculum_config
+                )
+
+                if llm_scenarios:
+                    # Combine autoglm_v and LLM scenarios
+                    all_scenarios = autoglm_scenarios + llm_scenarios
+                    scenario_specs = self._convert_autoglm_scenarios(all_scenarios)
+
+                    # Validate and filter scenario specs
+                    valid_specs = self.validate_scenario_specs(scenario_specs)
+
+                    # Enhanced validation for diversity and quality
+                    diverse_specs = self._ensure_scenario_diversity(valid_specs)
+
+                    self.logger.info(f"Generated {len(diverse_specs)} valid scenarios using autoglm_v + LLM")
+                    return diverse_specs[: curriculum_config.scenario_count]
+
+                self.logger.warning(f"Attempt {attempt + 1}: No scenario specs generated")
+                if attempt < max_retries - 1:
+                    continue
+                return []
 
             except Exception as e:
                 self.logger.error(f"Attempt {attempt + 1} failed: {e}")
@@ -196,3 +217,38 @@ class CurriculumPlanner:
                     return True
 
         return False
+
+    def _convert_autoglm_scenarios(self, autoglm_scenarios: List[Dict[str, Any]]) -> List[ScenarioSpec]:
+        """Convert autoglm_v scenarios to ScenarioSpec objects"""
+        scenario_specs = []
+
+        for i, scenario_data in enumerate(autoglm_scenarios):
+            try:
+                # Parse perturbation types
+                perturbation_types = []
+                for pt_str in scenario_data.get("perturbation_types", []):
+                    from perturbation_engine.pipeline.data_models import PerturbationType
+
+                    mapped_type = PerturbationType.from_string(pt_str, default=PerturbationType.THEME)
+                    perturbation_types.append(mapped_type)
+
+                if not perturbation_types:
+                    from perturbation_engine.pipeline.data_models import PerturbationType
+
+                    perturbation_types.append(PerturbationType.THEME)
+
+                scenario_spec = ScenarioSpec(
+                    scenario_id=scenario_data.get("scenario_id", f"scenario_{i + 1}"),
+                    target_app=scenario_data.get("target_app", "unknown"),
+                    perturbation_trigger=scenario_data.get("perturbation_trigger", ""),
+                    available_perturbation_actions=scenario_data.get("available_perturbation_actions", ""),
+                    learning_objectives=scenario_data.get("learning_objectives", ""),
+                    target_components=scenario_data.get("target_components", []),
+                    perturbation_types=perturbation_types,
+                )
+                scenario_specs.append(scenario_spec)
+            except Exception as e:
+                self.logger.error(f"Error converting autoglm scenario: {e}")
+                continue
+
+        return scenario_specs

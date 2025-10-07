@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Tuple
 
 from OSWorld.desktop_env.desktop_env import DesktopEnv
 from perturbation_engine.control.perturbation_controller import PerturbationController
+from perturbation_engine.tools.autoglm_integration import AutoglmAppStateExtractor
 
 
 class AppType(Enum):
@@ -86,6 +87,7 @@ class PerturbationDesktopEnv(DesktopEnv):
         self.controller = PerturbationController(
             vm_ip=self.vm_ip, server_port=self.server_port, chromium_port=self.chromium_port
         )
+        self.autoglm_extractor = AutoglmAppStateExtractor()
         self.logger.info("Replaced controller with PerturbationController")
 
         # Ensure AT-SPI accessibility is enabled for proper state extraction
@@ -123,7 +125,7 @@ class PerturbationDesktopEnv(DesktopEnv):
                 if self.require_a11y_tree
                 else None,
                 "terminal": self.controller.get_terminal_output() if self.require_terminal else None,
-                "app_states": self.get_app_states_from_accessibility_tree(),
+                "app_states": self.controller.get_app_states(use_autoglm_enhancement=True),
                 "instruction": self.instruction,
                 "timestamp": self._get_timestamp(),
                 "url": getattr(self.controller, "current_url", ""),
@@ -143,41 +145,27 @@ class PerturbationDesktopEnv(DesktopEnv):
                 "window_size": {},
             }
 
+    def get_enhanced_app_states(self) -> List[Dict[str, Any]]:
+        """Get enhanced app states using autoglm_v tools"""
+        try:
+            # Get accessibility tree for autoglm_v processing
+            accessibility_tree = self.controller.get_accessibility_tree()
+            if accessibility_tree:
+                app_states = self.autoglm_extractor.extract_app_states(accessibility_tree)
+                if app_states:
+                    self.logger.info(f"Extracted {len(app_states)} enhanced app states using autoglm_v")
+                    return app_states
+
+            # Fallback to controller's app state extraction
+            self.logger.info("Falling back to controller app state extraction")
+            return self.controller.get_app_states(use_autoglm_enhancement=False)
+
+        except Exception as e:
+            self.logger.error(f"Error getting enhanced app states: {e}")
+            return []
+
     def _get_timestamp(self) -> str:
         """Get current timestamp"""
         import datetime
 
         return datetime.datetime.now().strftime("%Y%m%d@%H%M%S")
-
-    def get_app_states_from_accessibility_tree(self) -> List[Dict[str, Any]]:
-        """
-        Extract app states for LLM prompting.
-
-        Delegates to AppStateExtractor in PerturbationController with fallback handling.
-        """
-        try:
-            return self._extract_app_states_with_fallback()
-        except Exception as e:
-            self.logger.error(f"Error extracting app states: {e}")
-            return self._create_empty_app_state()
-
-    def _extract_app_states_with_fallback(self) -> List[Dict[str, Any]]:
-        """Extract app states with proper fallback handling."""
-        if hasattr(self.controller, "get_comprehensive_app_states"):
-            return self.controller.get_comprehensive_app_states()
-
-        self.logger.warning("Controller doesn't have app state extractor, returning empty states")
-        return self._create_empty_app_state()
-
-    def _create_empty_app_state(self) -> List[Dict[str, Any]]:
-        """Create empty app state for fallback scenarios."""
-        return [
-            {
-                "app_type": "unknown",
-                "app_name": "unknown",
-                "current_view": "unknown",
-                "key_elements": [],
-                "task_context": "No accessible applications detected",
-                "element_count": 0,
-            }
-        ]
