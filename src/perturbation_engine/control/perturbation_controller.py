@@ -11,7 +11,6 @@ from playwright.sync_api import Page, sync_playwright
 
 from OSWorld.desktop_env.controllers.python import PythonController
 from OSWorld.desktop_env.controllers.setup import SetupController
-from perturbation_engine.control.clean_app_state_extractor import CleanAppStateExtractor
 from perturbation_engine.tools.autoglm_integration import AutoglmAppStateExtractor
 
 
@@ -49,7 +48,6 @@ class PerturbationController(PythonController, SetupController):
         self._context = None
         self._page = None
 
-        self._app_state_extractor = CleanAppStateExtractor(self)
         self._autoglm_extractor = AutoglmAppStateExtractor()
 
     def execute_perturbation(
@@ -551,25 +549,17 @@ except Exception as e:
 
     def get_app_states(self, use_autoglm_enhancement: bool = True) -> list:
         """Get clean app states using autoglm_v tools"""
-        if use_autoglm_enhancement:
-            try:
-                # Get accessibility tree for autoglm_v processing
-                accessibility_tree = self.get_accessibility_tree()
-                if accessibility_tree:
-                    app_states = self._autoglm_extractor.extract_app_states(accessibility_tree)
-                    if app_states:
-                        self.logger.info(f"Extracted {len(app_states)} app states using autoglm_v")
-                        return app_states
+        try:
+            # Get accessibility tree for autoglm_v processing
+            accessibility_tree = self.get_accessibility_tree()
+            if accessibility_tree:
+                app_states = self._autoglm_extractor.extract_app_states(accessibility_tree)
+                if app_states:
+                    self.logger.info(f"Extracted {len(app_states)} app states using autoglm_v")
+                    return app_states
 
-                # Fallback to clean extractor
-                self.logger.info("Falling back to clean app state extractor")
-                return self._app_state_extractor.extract_app_states(False)
-
-            except Exception as e:
-                self.logger.error(f"Error with autoglm_v app state extraction: {e}")
-                return self._app_state_extractor.extract_app_states(False)
-        else:
-            return self._app_state_extractor.extract_app_states(False)
+        except Exception as e:
+            self.logger.exception(f"Error with autoglm_v app state extraction: {e}")
 
     def visualize_element_bounding_boxes(
         self, app_states: list, target_element_id: str = None, output_path: str = None

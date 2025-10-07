@@ -6,10 +6,19 @@ Enables isolated debugging and faster iteration
 import json
 import logging
 import os
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from perturbation_engine.control.clean_target_element_tracker import ElementIdentity
+
+@dataclass
+class ElementIdentity:
+    """Simple element identity for tracking"""
+
+    element_id: str
+    name: str
+    text: str
+    position: Dict[str, int]
 
 
 class PhaseDataManager:

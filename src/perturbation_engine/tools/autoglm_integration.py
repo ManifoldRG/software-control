@@ -318,17 +318,31 @@ class AutoglmAppStateExtractor:
                 checkable = node.get(f"{{{state_ns}}}checkable", "false") == "true"
                 expandable = node.get(f"{{{state_ns}}}expandable", "false") == "true"
 
-                # For menu-item elements, be more strict
+                # For menu-item elements, check for actual interactivity
                 if node.tag == "menu-item":
                     # Must have meaningful text and be enabled
                     if not text or len(text.strip()) == 0 or not enabled:
                         return False
 
-                    # Check if it's actually interactive (not just a label)
-                    # Look for action-related attributes or parent context
-                    has_action = any(attr.startswith("act:") for attr in node.attrib.keys())
-                    if not has_action and not checkable and not expandable:
-                        # This might be a non-interactive menu item
+                    # Check if it's actually interactive by looking for action attributes
+                    # Look for action-related attributes (ShowMenu, Click, etc.)
+                    has_action = any(
+                        attr.startswith("act:")
+                        or attr.endswith("_desc")
+                        or attr.endswith("_kb")
+                        or "ShowMenu" in attr
+                        or "Click" in attr
+                        or "Press" in attr
+                        for attr in node.attrib.keys()
+                    )
+
+                    # Also check for interactive states
+                    has_interactive_state = (
+                        checkable or expandable or node.get(f"{{{state_ns}}}sensitive", "false") == "true"
+                    )
+
+                    if not has_action and not has_interactive_state:
+                        # This might be a non-interactive menu item (just a label)
                         return False
 
                 # For check-box elements, prioritize them over menu-item for same text
@@ -339,6 +353,7 @@ class AutoglmAppStateExtractor:
             # Text-based filtering
             if not text or len(text.strip()) == 0:
                 # Only allow elements without text if they have specific interactive properties
+                logging.warning(f"Element at {center_x}, {center_y} without text: {node.tag}")
                 if node.tag in ["button", "check-box", "slider", "scroll-bar"]:
                     return True
                 return False
