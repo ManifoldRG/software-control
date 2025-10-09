@@ -5,7 +5,7 @@ Clean interface for VM manipulation
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from playwright.sync_api import Page, sync_playwright
 
@@ -28,7 +28,9 @@ class ManipulationResult:
 class PerturbationController(PythonController, SetupController):
     """Execute perturbation code with clean interface"""
 
-    def __init__(self, vm_ip: str, server_port: int, chromium_port: int = 9222, **kwargs):
+    def __init__(
+        self, vm_ip: str, server_port: int, chromium_port: int = 9222, client_password: str = "", **kwargs
+    ):
         # Ensure logging is configured for subprocess (only if not already configured)
         if not logging.getLogger().handlers:
             from perturbation_engine.configure_logging import configure_logging
@@ -40,6 +42,7 @@ class PerturbationController(PythonController, SetupController):
         self.vm_ip = vm_ip
         self.server_port = server_port
         self.chromium_port = chromium_port
+        self.client_password = client_password
         self.logger = logging.getLogger(__name__)
 
         # Playwright connection
@@ -48,22 +51,160 @@ class PerturbationController(PythonController, SetupController):
         self._context = None
         self._page = None
 
-        self._autoglm_extractor = AutoglmAppStateExtractor()
+        self._autoglm_extractor = AutoglmAppStateExtractor(controller=self)
+
+        # Track launched apps with enhanced capabilities
+        self._launched_apps = {"chrome": False, "vscode": False, "libreoffice": False}
+
+        # Setup X11 tools for enhanced window management
+        self._setup_x11_tools()
+
+    def _setup_x11_tools(self) -> bool:
+        """
+        Setup X11 tools required for enhanced window management and app state extraction.
+
+        Uses deterministic installation with sudo -S pattern for consistent server setup.
+
+        Returns:
+            True if setup successful, False on failure
+        """
+        try:
+            self.logger.info("Setting up X11 tools for enhanced window management...")
+
+            # Define required X11 packages for deterministic setup
+            x11_packages = [
+                "x11-utils",  # Contains xprop, xwininfo, xdpyinfo
+                "xdotool",  # Window manipulation tool
+                "wmctrl",  # Window manager control
+                "xclip",  # Clipboard utilities
+                "socat",  # Network utility for port forwarding
+                "gnome-screenshot",  # Screenshot utility
+                "ffmpeg",  # Video recording
+                "python3-tk",  # Python Tkinter support
+                "python3-dev",  # Python development headers
+            ]
+
+            # Use deterministic installation pattern like setup.py
+            install_command = f"""
+import subprocess
+import sys
+
+def install_x11_packages():
+    packages = {x11_packages}
+    client_password = "{getattr(self, "client_password", "")}"
+
+    # Update package list first
+    update_cmd = f"echo '{{client_password}}' | sudo -S bash -c \\"apt-get update\\""
+    result = subprocess.run(update_cmd, shell=True, capture_output=True, text=True, timeout=60)
+    if result.returncode != 0:
+        print(f"Failed to update package list: {{result.stderr}}")
+        return False
+
+    # Install each package deterministically
+    failed_packages = []
+    for package in packages:
+        try:
+            # Check if package is already installed
+            check_cmd = f"echo '{{client_password}}' | sudo -S bash -c \\"dpkg -l {{package}}\\""
+            check_result = subprocess.run(check_cmd, shell=True, capture_output=True, text=True, timeout=10)
+
+            if check_result.returncode == 0 and 'ii' in check_result.stdout:
+                print(f'Package {{package}} already installed')
+                continue
+
+            # Install package deterministically
+            print(f'Installing {{package}}...')
+            install_cmd = f"echo '{{client_password}}' | sudo -S bash -c \\"apt-get install -y {{package}}\\""
+            result = subprocess.run(install_cmd, shell=True, capture_output=True, text=True, timeout=120)
+
+            if result.returncode == 0:
+                print(f'Successfully installed {{package}}')
+            else:
+                print(f'Failed to install {{package}}: {{result.stderr}}')
+                failed_packages.append(package)
+
+        except Exception as e:
+            print(f'Error installing {{package}}: {{e}}')
+            failed_packages.append(package)
+
+    if failed_packages:
+        print(f'Failed to install packages: {{failed_packages}}')
+        return False
+    else:
+        print('All X11 packages installed successfully')
+        return True
+
+install_x11_packages()
+"""
+
+            result = self.execute_python_command(install_command)
+
+            if result and result.get("status") == "success":
+                output = result.get("output", "").strip()
+                self.logger.info(f"X11 tools installation completed: {output}")
+
+                # Verify installation deterministically
+                verification_command = """
+import subprocess
+
+def verify_x11_tools():
+    tools = ['xprop', 'xdotool', 'xwininfo', 'wmctrl']
+    available_tools = []
+
+    for tool in tools:
+        try:
+            result = subprocess.run([tool, '--version'],
+                                  capture_output=True, text=True, timeout=5)
+            if result.returncode == 0:
+                available_tools.append(tool)
+                print(f'{tool}: available')
+            else:
+                print(f'{tool}: not available')
+        except Exception as e:
+            print(f'{tool}: error - {e}')
+
+    print(f'Available tools: {available_tools}')
+    return len(available_tools) >= 3  # Require at least 3 tools for deterministic setup
+
+verify_x11_tools()
+"""
+
+                verify_result = self.execute_python_command(verification_command)
+                if verify_result and verify_result.get("status") == "success":
+                    output = verify_result.get("output", "").strip()
+                    self.logger.info(f"X11 tools verification: {output}")
+
+                    # Check if we have the minimum required tools
+                    if (
+                        "xprop" in output
+                        and "xwininfo" in output
+                        and ("xdotool" in output or "wmctrl" in output)
+                    ):
+                        self.logger.info("X11 tools setup completed successfully")
+                        return True
+                    else:
+                        self.logger.error("X11 tools verification failed - insufficient tools available")
+                        return False
+                else:
+                    self.logger.error("X11 tools verification failed")
+                    return False
+            else:
+                self.logger.error(f"X11 tools installation failed: {result}")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Error setting up X11 tools: {e}")
+            return False
 
     def execute_perturbation(
         self, perturbation_type: str, generated_code: str, api_call: str, parameters: Dict[str, Any]
     ) -> ManipulationResult:
-        """
-        Execute perturbation using generated code with sophisticated handling.
-
-        Note: Coordinate tracking is now handled externally by trajectory_generator
-        which identifies the target element from ground truth action coordinates,
-        then updates those coordinates after perturbation if the element moved.
-        """
+        """Execute perturbation using generated code with comprehensive operation support"""
         try:
             success = False
             result_data = {}
 
+            # Core execution methods
             if api_call == "execute_js_on_page":
                 success = self.execute_js_on_page(generated_code)
                 result_data = {"api_call": api_call, "code": generated_code}
@@ -78,18 +219,71 @@ class PerturbationController(PythonController, SetupController):
                 result = self.execute_uno_command(generated_code, parameters)
                 success = result.get("status") == "success" and result.get("returncode", -1) == 0
                 result_data = {"api_call": api_call, "code": generated_code, "result": result}
+
+            # Visual manipulation operations
+            elif api_call == "execute_css_injection":
+                success = self.execute_css_injection(generated_code, parameters)
+                result_data = {"api_call": api_call, "css": generated_code, "parameters": parameters}
+            elif api_call == "execute_dom_modification":
+                success = self.execute_dom_modification(generated_code, parameters)
+                result_data = {"api_call": api_call, "dom_code": generated_code, "parameters": parameters}
+            elif api_call == "execute_theme_randomization":
+                success = self.execute_theme_randomization(parameters)
+                result_data = {"api_call": api_call, "parameters": parameters}
+            elif api_call == "execute_layout_perturbation":
+                success = self.execute_layout_perturbation(parameters)
+                result_data = {"api_call": api_call, "parameters": parameters}
+            elif api_call == "execute_typography_randomization":
+                success = self.execute_typography_randomization(parameters)
+                result_data = {"api_call": api_call, "parameters": parameters}
+            elif api_call == "execute_animation_effects":
+                success = self.execute_animation_effects(generated_code, parameters)
+                result_data = {
+                    "api_call": api_call,
+                    "animation_code": generated_code,
+                    "parameters": parameters,
+                }
+            elif api_call == "execute_accessibility_perturbation":
+                success = self.execute_accessibility_perturbation(parameters)
+                result_data = {"api_call": api_call, "parameters": parameters}
+
+            # Freeform operations
+            elif api_call == "execute_python_execution":
+                success = self.execute_python_execution(generated_code, parameters)
+                result_data = {"api_call": api_call, "python_code": generated_code, "parameters": parameters}
+            elif api_call == "execute_javascript_injection":
+                success = self.execute_javascript_injection(generated_code, parameters)
+                result_data = {"api_call": api_call, "js_code": generated_code, "parameters": parameters}
+            elif api_call == "execute_bash_automation":
+                success = self.execute_bash_automation(generated_code, parameters)
+                result_data = {"api_call": api_call, "bash_code": generated_code, "parameters": parameters}
+            elif api_call == "execute_playwright_automation":
+                success = self.execute_playwright_automation(generated_code, parameters)
+                result_data = {
+                    "api_call": api_call,
+                    "playwright_code": generated_code,
+                    "parameters": parameters,
+                }
+            elif api_call == "execute_file_system_manipulation":
+                success = self.execute_file_system_manipulation(parameters)
+                result_data = {"api_call": api_call, "parameters": parameters}
+            elif api_call == "execute_network_perturbation":
+                success = self.execute_network_perturbation(parameters)
+                result_data = {"api_call": api_call, "parameters": parameters}
+            elif api_call == "execute_system_integration":
+                success = self.execute_system_integration(parameters)
+                result_data = {"api_call": api_call, "parameters": parameters}
+
+            # Legacy operations
             elif api_call == "manipulate_app_state":
                 success = self._manipulate_app_state(parameters)
                 result_data = {"api_call": api_call, "parameters": parameters}
             elif api_call == "execute_system_perturbation":
-                # Handle sophisticated system-level perturbations
                 system_type = parameters.get("system_type", "desktop_theme")
                 success = self.execute_system_perturbation(system_type, parameters)
                 result_data = {"api_call": api_call, "system_type": system_type, "parameters": parameters}
             else:
-                self.logger.warning(f"Unknown API call: {api_call}")
-                success = False
-                result_data = {"api_call": api_call, "error": "Unknown API call"}
+                raise ValueError(f"Unsupported API call: {api_call}")
 
             # Extract detailed error message if available
             error_message = None
@@ -232,10 +426,17 @@ class PerturbationController(PythonController, SetupController):
         """
         Build the Python wrapper for UNO execution with robust error handling.
         """
-        # Ensure code is properly indented for the try block
-        indented_code = "\n".join(
-            "    " + line if line.strip() else "" for line in formatted_uno_code.split("\n")
-        )
+        # Clean and format the UNO code properly
+        lines = formatted_uno_code.strip().split("\n")
+        indented_lines = []
+
+        for line in lines:
+            stripped = line.strip()
+            if stripped:  # Only process non-empty lines
+                # Add proper indentation for the try block
+                indented_lines.append("    " + stripped)
+
+        indented_code = "\n".join(indented_lines)
 
         return f"""import uno
 import subprocess
@@ -432,11 +633,253 @@ except Exception as e:
                 return True
 
             else:
-                self.logger.warning(f"Unknown system perturbation type: {perturbation_type}")
-                return False
+                raise ValueError(f"Unknown system perturbation type: {perturbation_type}")
 
         except Exception as e:
             self.logger.error(f"Error executing system perturbation: {e}")
+            return False
+
+    def execute_css_injection(self, css_code: str, parameters: Dict[str, Any]) -> bool:
+        """Execute CSS injection for visual manipulation"""
+        try:
+            page = self._get_page()
+            if not page:
+                return False
+
+            target_selector = parameters.get("target_selector", "body")
+            js_code = f"""
+            const style = document.createElement('style');
+            style.textContent = `{css_code}`;
+            document.querySelector('{target_selector}').appendChild(style);
+            """
+
+            page.evaluate(js_code)
+            return True
+        except Exception as e:
+            self.logger.error(f"Error executing CSS injection: {e}")
+            return False
+
+    def execute_dom_modification(self, dom_code: str, parameters: Dict[str, Any]) -> bool:
+        """Execute DOM modification for element manipulation"""
+        try:
+            page = self._get_page()
+            if not page:
+                return False
+
+            page.evaluate(dom_code)
+            return True
+        except Exception as e:
+            self.logger.error(f"Error executing DOM modification: {e}")
+            return False
+
+    def execute_theme_randomization(self, parameters: Dict[str, Any]) -> bool:
+        """Execute theme randomization"""
+        try:
+            _color_palette = parameters.get("color_palette", "random")
+            theme_variant = parameters.get("theme_variant", "dark")
+            accent_colors = parameters.get("accent_colors", ["#ff6b6b", "#4ecdc4", "#45b7d1"])
+
+            css_code = f"""
+            :root {{
+                --primary-color: {accent_colors[0]};
+                --secondary-color: {accent_colors[1]};
+                --accent-color: {accent_colors[2]};
+                --background-color: {"#1a1a1a" if theme_variant == "dark" else "#ffffff"};
+                --text-color: {"#ffffff" if theme_variant == "dark" else "#000000"};
+            }}
+            """
+
+            return self.execute_css_injection(css_code, parameters)
+        except Exception as e:
+            self.logger.error(f"Error executing theme randomization: {e}")
+            return False
+
+    def execute_layout_perturbation(self, parameters: Dict[str, Any]) -> bool:
+        """Execute layout perturbation"""
+        try:
+            element_selector = parameters.get("element_selector", ".main-content")
+            position_changes = parameters.get("position_changes", {})
+
+            css_code = f"""
+            {element_selector} {{
+                transform: translate({position_changes.get("x", 0)}px, {position_changes.get("y", 0)}px);
+                width: {position_changes.get("width", "auto")};
+                height: {position_changes.get("height", "auto")};
+            }}
+            """
+
+            return self.execute_css_injection(css_code, parameters)
+        except Exception as e:
+            self.logger.error(f"Error executing layout perturbation: {e}")
+            return False
+
+    def execute_typography_randomization(self, parameters: Dict[str, Any]) -> bool:
+        """Execute typography randomization"""
+        try:
+            font_family = parameters.get("font_family", "Arial, sans-serif")
+            font_size = parameters.get("font_size", "14px")
+            font_weight = parameters.get("font_weight", "normal")
+
+            css_code = f"""
+            body {{
+                font-family: {font_family};
+                font-size: {font_size};
+                font-weight: {font_weight};
+            }}
+            """
+
+            return self.execute_css_injection(css_code, parameters)
+        except Exception as e:
+            self.logger.error(f"Error executing typography randomization: {e}")
+            return False
+
+    def execute_animation_effects(self, animation_code: str, parameters: Dict[str, Any]) -> bool:
+        """Execute animation effects"""
+        try:
+            page = self._get_page()
+            if not page:
+                return False
+
+            page.evaluate(animation_code)
+            return True
+        except Exception as e:
+            self.logger.error(f"Error executing animation effects: {e}")
+            return False
+
+    def execute_accessibility_perturbation(self, parameters: Dict[str, Any]) -> bool:
+        """Execute accessibility perturbation"""
+        try:
+            aria_labels = parameters.get("aria_labels", {})
+            contrast_ratio = parameters.get("contrast_ratio", "normal")
+
+            js_code = f"""
+            Object.entries({aria_labels}).forEach(([selector, label]) => {{
+                const element = document.querySelector(selector);
+                if (element) {{
+                    element.setAttribute('aria-label', label);
+                }}
+            }});
+            """
+
+            page = self._get_page()
+            if page:
+                page.evaluate(js_code)
+
+            if contrast_ratio != "normal":
+                css_code = f"body {{ filter: contrast({contrast_ratio}); }}"
+                self.execute_css_injection(css_code, parameters)
+
+            return True
+        except Exception as e:
+            self.logger.error(f"Error executing accessibility perturbation: {e}")
+            return False
+
+    def execute_python_execution(self, python_code: str, parameters: Dict[str, Any]) -> bool:
+        """Execute Python code with enhanced capabilities"""
+        try:
+            result = self.execute_python_command(python_code)
+            return result.get("status") == "success"
+        except Exception as e:
+            self.logger.error(f"Error executing Python code: {e}")
+            return False
+
+    def execute_javascript_injection(self, js_code: str, parameters: Dict[str, Any]) -> bool:
+        """Execute JavaScript injection with enhanced capabilities"""
+        try:
+            page = self._get_page()
+            if not page:
+                return False
+
+            page.evaluate(js_code)
+            return True
+        except Exception as e:
+            self.logger.error(f"Error executing JavaScript injection: {e}")
+            return False
+
+    def execute_bash_automation(self, bash_code: str, parameters: Dict[str, Any]) -> bool:
+        """Execute bash automation with enhanced capabilities"""
+        try:
+            return self.execute_bash_command(bash_code)
+        except Exception as e:
+            self.logger.error(f"Error executing bash automation: {e}")
+            return False
+
+    def execute_playwright_automation(self, playwright_code: str, parameters: Dict[str, Any]) -> bool:
+        """Execute Playwright automation"""
+        try:
+            page = self._get_page()
+            if not page:
+                return False
+
+            page.evaluate(playwright_code)
+            return True
+        except Exception as e:
+            self.logger.error(f"Error executing Playwright automation: {e}")
+            return False
+
+    def execute_file_system_manipulation(self, parameters: Dict[str, Any]) -> bool:
+        """Execute file system manipulation"""
+        try:
+            operation = parameters.get("operation", "create_file")
+            file_path = parameters.get("file_path", "/tmp/perturbation_file")
+            content = parameters.get("content", "Perturbation content")
+
+            if operation == "create_file":
+                python_code = f"""
+                with open('{file_path}', 'w') as f:
+                    f.write('{content}')
+                """
+                return self.execute_python_command(python_code).get("status") == "success"
+            elif operation == "modify_file":
+                python_code = f"""
+                with open('{file_path}', 'a') as f:
+                    f.write('\\n{content}')
+                """
+                return self.execute_python_command(python_code).get("status") == "success"
+            else:
+                raise ValueError(f"Unknown file system operation: {operation}")
+        except Exception as e:
+            self.logger.error(f"Error executing file system manipulation: {e}")
+            return False
+
+    def execute_network_perturbation(self, parameters: Dict[str, Any]) -> bool:
+        """Execute network perturbation"""
+        try:
+            perturbation_type = parameters.get("perturbation_type", "delay")
+            delay_ms = parameters.get("delay_ms", 1000)
+
+            if perturbation_type == "delay":
+                js_code = f"""
+                const originalFetch = window.fetch;
+                window.fetch = function(...args) {{
+                    return new Promise(resolve => {{
+                        setTimeout(() => {{
+                            resolve(originalFetch.apply(this, args));
+                        }}, {delay_ms});
+                    }});
+                }};
+                """
+                return self.execute_javascript_injection(js_code, parameters)
+            else:
+                raise ValueError(f"Unknown network perturbation type: {perturbation_type}")
+        except Exception as e:
+            self.logger.error(f"Error executing network perturbation: {e}")
+            return False
+
+    def execute_system_integration(self, parameters: Dict[str, Any]) -> bool:
+        """Execute system integration operations"""
+        try:
+            operation = parameters.get("operation", "modify_settings")
+            setting_key = parameters.get("setting_key", "org.gnome.desktop.interface.gtk-theme")
+            setting_value = parameters.get("setting_value", "Adwaita-dark")
+
+            if operation == "modify_settings":
+                command = f"gsettings set {setting_key} '{setting_value}'"
+                return self.execute_bash_command(command)
+            else:
+                raise ValueError(f"Unknown system integration operation: {operation}")
+        except Exception as e:
+            self.logger.error(f"Error executing system integration: {e}")
             return False
 
     def _get_page(self) -> Optional[Page]:
@@ -550,16 +993,20 @@ except Exception as e:
     def get_app_states(self, use_autoglm_enhancement: bool = True) -> list:
         """Get clean app states using autoglm_v tools"""
         try:
-            # Get accessibility tree for autoglm_v processing
-            accessibility_tree = self.get_accessibility_tree()
-            if accessibility_tree:
-                app_states = self._autoglm_extractor.extract_app_states(accessibility_tree)
-                if app_states:
-                    self.logger.info(f"Extracted {len(app_states)} app states using autoglm_v")
-                    return app_states
+            if use_autoglm_enhancement:
+                return self.get_enhanced_app_states()
+            else:
+                # Fallback to basic extraction
+                accessibility_tree = self.get_accessibility_tree()
+                if accessibility_tree:
+                    app_states = self._autoglm_extractor.extract_app_states(accessibility_tree)
+                    if app_states:
+                        self.logger.info(f"Extracted {len(app_states)} app states")
+                        return app_states
 
         except Exception as e:
-            self.logger.exception(f"Error with autoglm_v app state extraction: {e}")
+            self.logger.exception(f"Error with app state extraction: {e}")
+            return []
 
     def visualize_element_bounding_boxes(
         self, app_states: list, target_element_id: str = None, output_path: str = None
@@ -750,3 +1197,485 @@ except Exception as e:
         except Exception as e:
             self.logger.debug(f"Could not get mouse position: {e}")
             return (None, None)
+
+    def launch_chrome_with_cdp(self, url: str = None) -> bool:
+        """Launch Chrome with CDP debugging enabled"""
+        try:
+            if self._launched_apps["chrome"]:
+                self.logger.info("Chrome already launched with CDP")
+                return True
+
+            # Build Chrome command with CDP flags
+            chrome_cmd = [
+                "google-chrome",
+                f"--remote-debugging-port={self.chromium_port}",
+                "--no-first-run",
+                "--no-default-browser-check",
+                "--disable-web-security",
+                "--disable-features=VizDisplayCompositor",
+                "--user-data-dir=/tmp/chrome-debug",
+            ]
+
+            if url:
+                chrome_cmd.append(url)
+
+            # Launch Chrome
+            result = self.execute_python_command(f"""
+import subprocess
+import time
+import requests
+
+try:
+    # Kill any existing Chrome processes
+    subprocess.run(['pkill', '-f', 'google-chrome'], capture_output=True)
+    time.sleep(1)
+
+    # Launch Chrome with CDP
+    subprocess.Popen({chrome_cmd}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    # Wait for Chrome to start and CDP to be available
+    for i in range(10):
+        try:
+            response = requests.get(f'http://localhost:{self.chromium_port}/json', timeout=1)
+            if response.status_code == 200:
+                print('Chrome launched with CDP successfully')
+                break
+        except:
+            time.sleep(1)
+    else:
+        print('Chrome CDP setup failed')
+""")
+
+            if result.get("status") == "success":
+                self._launched_apps["chrome"] = True
+                self.logger.info("Chrome launched with CDP debugging enabled")
+                return True
+            else:
+                self.logger.warning("Failed to launch Chrome with CDP")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Error launching Chrome with CDP: {e}")
+            return False
+
+    def launch_vscode_with_cdp(self, path: str = None) -> bool:
+        """Launch VS Code with CDP debugging enabled"""
+        try:
+            if self._launched_apps["vscode"]:
+                self.logger.info("VS Code already launched with CDP")
+                return True
+
+            # Build VS Code command with CDP flags
+            vscode_cmd = ["code", "--inspect-extensions=9229"]
+            if path:
+                vscode_cmd.append(path)
+
+            # Launch VS Code
+            result = self.execute_python_command(f"""
+import subprocess
+import time
+import requests
+
+try:
+    # Kill any existing VS Code processes
+    subprocess.run(['pkill', '-f', 'code'], capture_output=True)
+    time.sleep(1)
+
+    # Launch VS Code with CDP
+    subprocess.Popen({vscode_cmd}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    # Wait for VS Code to start
+    time.sleep(3)
+    print('VS Code launched with CDP debugging')
+""")
+
+            if result.get("status") == "success":
+                self._launched_apps["vscode"] = True
+                self.logger.info("VS Code launched with CDP debugging enabled")
+                return True
+            else:
+                self.logger.warning("Failed to launch VS Code with CDP")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Error launching VS Code with CDP: {e}")
+            return False
+
+    def launch_libreoffice_with_uno(self, app_type: str = "calc", file_path: str = None) -> bool:
+        """Launch LibreOffice with UNO API enabled"""
+        try:
+            if self._launched_apps["libreoffice"]:
+                self.logger.info("LibreOffice already launched with UNO")
+                return True
+
+            # Build LibreOffice command with UNO flags
+            if app_type == "calc":
+                app_cmd = ["libreoffice", "--calc"]
+            elif app_type == "writer":
+                app_cmd = ["libreoffice", "--writer"]
+            elif app_type == "impress":
+                app_cmd = ["libreoffice", "--impress"]
+            else:
+                app_cmd = ["libreoffice"]
+
+            # Add UNO socket flag
+            app_cmd.extend(
+                ["--accept=socket,host=localhost,port=2002;urp;StarOffice.ServiceManager", "--headless"]
+            )
+
+            if file_path:
+                app_cmd.append(file_path)
+
+            # Launch LibreOffice
+            result = self.execute_python_command(f"""
+import subprocess
+import time
+import socket
+
+try:
+    # Kill any existing LibreOffice processes
+    subprocess.run(['pkill', '-f', 'libreoffice'], capture_output=True)
+    time.sleep(1)
+
+    # Launch LibreOffice with UNO
+    subprocess.Popen({app_cmd}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    # Wait for UNO socket to be available
+    for i in range(10):
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)
+            result = sock.connect_ex(('localhost', 2002))
+            sock.close()
+            if result == 0:
+                print('LibreOffice launched with UNO successfully')
+                break
+        except:
+            time.sleep(1)
+    else:
+        print('LibreOffice UNO setup failed')
+""")
+
+            if result.get("status") == "success":
+                self._launched_apps["libreoffice"] = True
+                self.logger.info(f"LibreOffice {app_type} launched with UNO API enabled")
+                return True
+            else:
+                self.logger.warning("Failed to launch LibreOffice with UNO")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Error launching LibreOffice with UNO: {e}")
+            return False
+
+    def ensure_app_enhancement_setup(self) -> Dict[str, bool]:
+        """Ensure all target apps are launched with enhancement capabilities"""
+        setup_results = {}
+
+        try:
+            # Setup Chrome with CDP
+            setup_results["chrome"] = self.launch_chrome_with_cdp()
+
+            # Setup VS Code with CDP
+            setup_results["vscode"] = self.launch_vscode_with_cdp()
+
+            # Setup LibreOffice with UNO
+            setup_results["libreoffice"] = self.launch_libreoffice_with_uno()
+
+            self.logger.info(f"App enhancement setup results: {setup_results}")
+            return setup_results
+
+        except Exception as e:
+            self.logger.error(f"Error in app enhancement setup: {e}")
+            return {"chrome": False, "vscode": False, "libreoffice": False}
+
+    def integrate_existing_tools(self) -> Dict[str, Any]:
+        """Integrate with existing autoglm_v package tools where useful"""
+        try:
+            from perturbation_engine.tools.autoglm_v.tools.package.code import CodeTools
+            from perturbation_engine.tools.autoglm_v.tools.package.google_chrome import BrowserTools
+            from perturbation_engine.tools.autoglm_v.tools.package.vlc import VLCTools
+
+            # Store references to existing tools
+            self._existing_tools = {"chrome": BrowserTools, "code": CodeTools, "vlc": VLCTools}
+
+            self.logger.info("Integrated existing autoglm_v package tools")
+            return {"status": "success", "tools": list(self._existing_tools.keys())}
+
+        except Exception as e:
+            self.logger.warning(f"Could not integrate existing tools: {e}")
+            return {"status": "error", "error": str(e)}
+
+    def get_enhanced_app_states(self) -> List[Dict[str, Any]]:
+        """Get enhanced app states using the improved extractor"""
+        try:
+            # Get accessibility tree
+            accessibility_tree = self.get_accessibility_tree()
+            if not accessibility_tree:
+                self.logger.warning("No accessibility tree available")
+                return []
+
+            # Extract app states with X11+CDP+UNO enhancement
+            app_states = self._autoglm_extractor.extract_app_states(accessibility_tree)
+
+            if app_states:
+                self.logger.info(f"Extracted {len(app_states)} enhanced app states")
+                return app_states
+            else:
+                self.logger.warning("No app states extracted")
+                return []
+
+        except Exception as e:
+            self.logger.error(f"Error getting enhanced app states: {e}")
+            return []
+
+    def get_chrome_dom_data(self) -> Dict[str, Any]:
+        """Get Chrome DOM data using CDP"""
+        try:
+            page = self._get_page()
+            if not page:
+                self.logger.warning("No Chrome page available for DOM extraction")
+                return {}
+
+            # Extract comprehensive DOM data
+            dom_data = page.evaluate("""
+                () => {
+                    const data = {
+                        url: window.location.href,
+                        title: document.title,
+                        buttons: [],
+                        links: [],
+                        inputs: [],
+                        forms: [],
+                        tables: [],
+                        images: [],
+                        meta: {
+                            viewport: document.querySelector('meta[name="viewport"]')?.content || '',
+                            description: document.querySelector('meta[name="description"]')?.content || ''
+                        }
+                    };
+
+                    // Extract all interactive elements
+                    document.querySelectorAll('button, input[type="button"], input[type="submit"], input[type="reset"]').forEach((btn, i) => {
+                        const rect = btn.getBoundingClientRect();
+                        data.buttons.push({
+                            id: btn.id || `button_${i}`,
+                            text: btn.textContent?.trim() || btn.value || '',
+                            class: btn.className,
+                            type: btn.type || 'button',
+                            aria_label: btn.getAttribute('aria-label'),
+                            disabled: btn.disabled,
+                            visible: rect.width > 0 && rect.height > 0,
+                            position: {
+                                x: Math.round(rect.left),
+                                y: Math.round(rect.top),
+                                width: Math.round(rect.width),
+                                height: Math.round(rect.height),
+                                center_x: Math.round(rect.left + rect.width / 2),
+                                center_y: Math.round(rect.top + rect.height / 2)
+                            }
+                        });
+                    });
+
+                    // Extract links
+                    document.querySelectorAll('a[href]').forEach((link, i) => {
+                        const rect = link.getBoundingClientRect();
+                        data.links.push({
+                            id: link.id || `link_${i}`,
+                            text: link.textContent?.trim() || '',
+                            href: link.href,
+                            target: link.target || '_self',
+                            visible: rect.width > 0 && rect.height > 0,
+                            position: {
+                                x: Math.round(rect.left),
+                                y: Math.round(rect.top),
+                                width: Math.round(rect.width),
+                                height: Math.round(rect.height),
+                                center_x: Math.round(rect.left + rect.width / 2),
+                                center_y: Math.round(rect.top + rect.height / 2)
+                            }
+                        });
+                    });
+
+                    // Extract input fields
+                    document.querySelectorAll('input, textarea, select').forEach((input, i) => {
+                        const rect = input.getBoundingClientRect();
+                        data.inputs.push({
+                            id: input.id || `input_${i}`,
+                            type: input.type || input.tagName.toLowerCase(),
+                            name: input.name || '',
+                            placeholder: input.placeholder || '',
+                            value: input.value || '',
+                            required: input.required || false,
+                            disabled: input.disabled || false,
+                            visible: rect.width > 0 && rect.height > 0,
+                            position: {
+                                x: Math.round(rect.left),
+                                y: Math.round(rect.top),
+                                width: Math.round(rect.width),
+                                height: Math.round(rect.height),
+                                center_x: Math.round(rect.left + rect.width / 2),
+                                center_y: Math.round(rect.top + rect.height / 2)
+                            }
+                        });
+                    });
+
+                    return data;
+                }
+            """)
+
+            self.logger.info(
+                f"Extracted Chrome DOM data: {len(dom_data.get('buttons', []))} buttons, {len(dom_data.get('links', []))} links, {len(dom_data.get('inputs', []))} inputs"
+            )
+            return dom_data
+
+        except Exception as e:
+            self.logger.error(f"Error extracting Chrome DOM data: {e}")
+            return {}
+
+    def get_libreoffice_state(self, app_type: str = "calc") -> Dict[str, Any]:
+        """Get LibreOffice state using UNO API"""
+        try:
+            if app_type == "calc":
+                uno_code = """
+# Get comprehensive Calc document state
+doc = desktop.getCurrentComponent()
+if doc and doc.supportsService("com.sun.star.sheet.SpreadsheetDocument"):
+    sheets = doc.getSheets()
+    active_sheet = doc.getCurrentController().getActiveSheet()
+    current_cell = doc.getCurrentController().getActiveCell()
+    cell_address = current_cell.getCellAddress()
+
+    # Get sheet information
+    sheet_names = []
+    for i in range(sheets.getCount()):
+        sheet_names.append(sheets.getByIndex(i).getName())
+
+    # Get current cell information
+    cell_value = current_cell.getFormula()
+    cell_type = current_cell.getType()
+
+    # Get document properties
+    doc_props = doc.getDocumentInfo()
+
+    print(f"SHEETS: {sheet_names}")
+    print(f"ACTIVE_SHEET: {active_sheet.getName()}")
+    print(f"CURRENT_CELL: {cell_address.Column},{cell_address.Row}")
+    print(f"CELL_VALUE: {cell_value}")
+    print(f"CELL_TYPE: {cell_type}")
+    print(f"DOCUMENT_TITLE: {doc.getTitle()}")
+    print(f"DOCUMENT_URL: {doc.getURL()}")
+    print(f"HAS_LOCATION: {doc.hasLocation()}")
+    print(f"DOCUMENT_MODIFIED: {doc.isModified()}")
+else:
+    print("NO_CALC_DOCUMENT")
+"""
+            elif app_type == "writer":
+                uno_code = """
+# Get comprehensive Writer document state
+doc = desktop.getCurrentComponent()
+if doc and doc.supportsService("com.sun.star.text.TextDocument"):
+    text = doc.Text
+    cursor = text.createTextCursor()
+
+    # Get document information
+    print(f"DOCUMENT_TITLE: {doc.getTitle()}")
+    print(f"DOCUMENT_URL: {doc.getURL()}")
+    print(f"HAS_LOCATION: {doc.hasLocation()}")
+    print(f"DOCUMENT_MODIFIED: {doc.isModified()}")
+
+    # Get current selection/text
+    if cursor.getString():
+        print(f"CURRENT_TEXT: {cursor.getString()[:200]}")
+        print(f"TEXT_LENGTH: {len(cursor.getString())}")
+    else:
+        print("NO_SELECTION")
+
+    # Get page count
+    print(f"PAGE_COUNT: {doc.getPageCount()}")
+else:
+    print("NO_WRITER_DOCUMENT")
+"""
+            else:
+                uno_code = """
+# Get generic LibreOffice document state
+doc = desktop.getCurrentComponent()
+if doc:
+    print(f"DOCUMENT_TITLE: {doc.getTitle()}")
+    print(f"DOCUMENT_URL: {doc.getURL()}")
+    print(f"HAS_LOCATION: {doc.hasLocation()}")
+    print(f"DOCUMENT_MODIFIED: {doc.isModified()}")
+    print(f"DOCUMENT_TYPE: {doc.getClass().getName()}")
+else:
+    print("NO_DOCUMENT")
+"""
+
+            # Execute UNO code
+            result = self.execute_uno_command(uno_code, {})
+
+            if result and result.get("status") == "success":
+                output = result.get("output", "")
+                parsed_data = self._parse_libreoffice_output(output, app_type)
+                self.logger.info(f"Extracted LibreOffice {app_type} state successfully")
+                return parsed_data
+            else:
+                self.logger.warning(f"Failed to get LibreOffice {app_type} state: {result}")
+                return {}
+
+        except Exception as e:
+            self.logger.error(f"Error getting LibreOffice {app_type} state: {e}")
+            return {}
+
+    def _parse_libreoffice_output(self, output: str, app_type: str) -> Dict[str, Any]:
+        """Parse LibreOffice UNO output into structured data"""
+        data = {}
+
+        try:
+            lines = output.strip().split("\n")
+            for line in lines:
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    key = key.strip()
+                    value = value.strip()
+
+                    if key == "SHEETS":
+                        # Parse sheet names from list format
+                        if value.startswith("[") and value.endswith("]"):
+                            sheets_str = value[1:-1]  # Remove brackets
+                            data["sheets"] = [s.strip().strip("'\"") for s in sheets_str.split(",")]
+                        else:
+                            data["sheets"] = [value]
+                    elif key == "ACTIVE_SHEET":
+                        data["active_sheet"] = value
+                    elif key == "CURRENT_CELL":
+                        if "," in value:
+                            col, row = value.split(",")
+                            data["current_cell"] = {"column": int(col), "row": int(row)}
+                    elif key == "CELL_VALUE":
+                        data["cell_value"] = value
+                    elif key == "CELL_TYPE":
+                        data["cell_type"] = value
+                    elif key == "DOCUMENT_TITLE":
+                        data["document_title"] = value
+                    elif key == "DOCUMENT_URL":
+                        data["document_url"] = value
+                    elif key == "HAS_LOCATION":
+                        data["has_location"] = value.lower() == "true"
+                    elif key == "DOCUMENT_MODIFIED":
+                        data["document_modified"] = value.lower() == "true"
+                    elif key == "CURRENT_TEXT":
+                        data["current_text"] = value
+                    elif key == "TEXT_LENGTH":
+                        data["text_length"] = int(value) if value.isdigit() else 0
+                    elif key == "PAGE_COUNT":
+                        data["page_count"] = int(value) if value.isdigit() else 0
+                    elif key == "DOCUMENT_TYPE":
+                        data["document_type"] = value
+                    else:
+                        data[key.lower()] = value
+
+            return data
+
+        except Exception as e:
+            self.logger.error(f"Error parsing LibreOffice output: {e}")
+            return {}

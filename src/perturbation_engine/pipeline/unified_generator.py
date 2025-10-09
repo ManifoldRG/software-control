@@ -4,10 +4,9 @@ Clean interface for the entire pipeline
 """
 
 import logging
-import time
 from typing import List
 
-from perturbation_engine.pipeline.curriculum_planner import CurriculumPlanner
+from perturbation_engine.pipeline.clean_llm_services import CleanCurriculumGenerator
 from perturbation_engine.pipeline.data_models import (
     CurriculumConfig,
     ExecutionConfig,
@@ -30,7 +29,7 @@ class UnifiedGenerator:
         self.logger = logging.getLogger(__name__)
 
         # Initialize components
-        self.curriculum_planner = CurriculumPlanner()
+        self.curriculum_generator = CleanCurriculumGenerator()
         self.trajectory_generator = TrajectoryGenerator(result_base_dir)
         self.shared_execution_engine = SharedExecutionEngine(execution_config, result_base_dir)
         self.quality_evaluator = QualityEvaluator()
@@ -73,7 +72,6 @@ class UnifiedGenerator:
 
             env.reset(task_config=seed_trajectory.config)
 
-            # Extract enhanced app states using autoglm_v processing
             app_states = env.controller.get_app_states(use_autoglm_enhancement=True)
 
             env.close()
@@ -87,9 +85,6 @@ class UnifiedGenerator:
             except ImportError:
                 pass  # Not running from main script
 
-            time.sleep(5)
-
-            # Force garbage collection after environment cleanup
             force_garbage_collection(self.logger)
             log_memory_usage("After environment cleanup", self.logger)
 
@@ -98,17 +93,13 @@ class UnifiedGenerator:
                 return []
 
             # Step 2: Generate curriculum of scenario specs
-            scenario_specs = self.curriculum_planner.plan_curriculum(
+            scenario_specs = self.curriculum_generator.generate_scenario_specs(
                 seed_trajectory, app_states, curriculum_config
             )
 
             if not scenario_specs:
                 self.logger.error("No scenario specs generated")
                 return []
-
-            # Wait for main process VM to fully clean up before starting parallel processes
-            self.logger.info("Waiting for main process VM cleanup to complete")
-            time.sleep(5)  # Give extra time for VM cleanup
 
             # Step 3: Execute scenarios in parallel
             generated_trajectories = self.shared_execution_engine.execute_scenarios_parallel(

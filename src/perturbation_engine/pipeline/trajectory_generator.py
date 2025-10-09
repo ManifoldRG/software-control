@@ -11,8 +11,7 @@ import re
 import time
 from typing import Any, Dict
 
-from perturbation_engine.control.perturbation_controller import PerturbationController
-from perturbation_engine.pipeline.clean_llm_services import CleanPerturbationLLM
+from perturbation_engine.pipeline.clean_llm_services import CleanPerturbationGenerator
 from perturbation_engine.pipeline.data_models import (
     ExecutionContext,
     GeneratedTrajectory,
@@ -25,10 +24,8 @@ from perturbation_engine.pipeline.trajectory_replayer import TrajectoryReplayer
 
 # Autoglm_v integration
 from perturbation_engine.tools.autoglm_integration import (
-    AutoglmAppStateExtractor,
-    AutoglmCurriculumGenerator,
     AutoglmElementTracker,
-    AutoglmPerturbationGenerator,
+    ElementTester,
 )
 from perturbation_engine.utils.memory_utils import force_garbage_collection, log_memory_usage
 
@@ -82,14 +79,12 @@ class TrajectoryGenerator:
             configure_logging()
 
         self.logger = logging.getLogger(__name__)
-        self.perturbation_llm = CleanPerturbationLLM()
+        self.perturbation_generator = CleanPerturbationGenerator()
         self.path_manager = PathManager(result_base_dir)
 
         # Initialize autoglm_v components
-        self.autoglm_extractor = AutoglmAppStateExtractor()
         self.autoglm_tracker = AutoglmElementTracker()
-        self.autoglm_perturbation_generator = AutoglmPerturbationGenerator()
-        self.autoglm_curriculum_generator = AutoglmCurriculumGenerator()
+        self.element_tester = ElementTester()
 
         # Initialize phase data manager for debugging
         self.phase_data_manager = None  # Will be initialized per trajectory
@@ -109,7 +104,7 @@ class TrajectoryGenerator:
         """Execute trajectory with runtime perturbation and error handling"""
 
         start_time = time.time()
-        trajectory_id = f"{seed_trajectory.task_id}_{scenario_spec.scenario_id}"
+        trajectory_id = f"{scenario_spec.scenario_id}"
 
         # Initialize phase data manager for this trajectory
         self.phase_data_manager = PhaseDataManager(trajectory_id)
@@ -277,6 +272,7 @@ class TrajectoryGenerator:
             "learning_objectives": scenario_spec.learning_objectives,
             "target_components": scenario_spec.target_components,
             "perturbation_types": [pt.value for pt in scenario_spec.perturbation_types],
+            "perturbation_category": scenario_spec.perturbation_category.value,
         }
 
     def _extract_command_signature(self, generated_code: str) -> str:
@@ -432,8 +428,11 @@ class TrajectoryGenerator:
 
         self.logger.info(f"Step {step_idx + 1}: {action_str[:100]}")
 
-        # ========== Phase 1: Identify Target Element (BEFORE Perturbation) ==========
-        target_element = self.autoglm_tracker.identify_target_element(action_str, app_states)
+        # ========== Phase 1: Identify Target Element Candidates (BEFORE Perturbation) ==========
+        target_element_candidates = self.autoglm_tracker.identify_target_element_candidates(
+            action_str, app_states
+        )
+        target_element = target_element_candidates[0]
 
         # Save Phase 1 data
         if target_element:
@@ -454,9 +453,11 @@ class TrajectoryGenerator:
                 if visualization_path:
                     self.logger.info(f"Element visualization saved: {visualization_path}")
             except Exception as e:
-                self.logger.warning(f"Could not create element visualization: {e}")
+                self.logger.exception(f"Could not create element visualization: {e}")
         else:
-            self.logger.warning(f"✗ Could not identify target element for: {action_str[:100]}")
+            self.logger.error(
+                f"✗ Failed to identify valid target element from {len(target_element_candidates)} candidates"
+            )
 
         # Save app states before perturbation
         app_states_dict = (
@@ -481,21 +482,12 @@ class TrajectoryGenerator:
         # Save Phase 2 data
         self.phase_data_manager.save_execution_context(step_idx, execution_context)
 
-        # Generate perturbation decision using autoglm_v
-        target_app = scenario_spec.target_app.lower() if scenario_spec.target_app else "unknown"
+        perturbation_decision = self.perturbation_generator.decide_perturbation(
+            execution_context, scenario_spec
+        )
 
-        perturbation_decision = self.perturbation_llm.decide_perturbation(execution_context, scenario_spec)
-
-        # Enhance perturbation decision with autoglm_v capabilities
-        if perturbation_decision.get("should_apply", False):
-            perturbation_decision = self._enhance_perturbation_decision_autoglm(
-                perturbation_decision, execution_context, target_app
-            )
-
-        # Save perturbation decision
         self.phase_data_manager.save_perturbation_decision(step_idx, perturbation_decision)
 
-        # Create step log entry
         step_log_entry = self._create_step_log_entry(
             step_idx,
             action_timestamp,
@@ -510,9 +502,9 @@ class TrajectoryGenerator:
 
         if perturbation_decision.get("should_apply", False):
             # Check for duplicate commands (diversity)
-            generated_code = perturbation_decision.get("generated_code", "")
+            generated_command = perturbation_decision.get("generated_command", "")
 
-            if self._is_command_duplicate(generated_code):
+            if self._is_command_duplicate(generated_command):
                 self.logger.warning(f"Skipping duplicate perturbation at step {step_idx}")
                 step_log_entry["perturbation_failure_reason"] = "Duplicate command"
                 step_log_entry["perturbation_commands"].append(
@@ -542,7 +534,7 @@ class TrajectoryGenerator:
                         step_log_entry["perturbation_success"] = True
 
                         env.mark_perturbation_applied()
-                        self._record_applied_command(generated_code)
+                        self._record_applied_command(generated_command)
 
                         self.logger.info(
                             f"Perturbation applied: {perturbation_decision.get('reasoning', '')}"
@@ -578,30 +570,9 @@ class TrajectoryGenerator:
             self.phase_data_manager.save_app_states(step_idx, "after_perturbation", app_states_after_dict)
 
             # Track element in new states using autoglm_v
-            updated_element = self.autoglm_tracker.track_element_after_perturbation(
+            target_element = self.autoglm_tracker.track_element_after_perturbation(
                 target_element, app_states_after
             )
-
-            if updated_element:
-                # Update action coordinates if element moved
-                _ = self.autoglm_tracker.update_action_coordinates(action_str, updated_element.position)
-
-                # if changed:
-                #     # Save Phase 4 data
-                #     element_movement = {
-                #         "dx": updated_element.position["center_x"] - target_element.position["center_x"],
-                #         "dy": updated_element.position["center_y"] - target_element.position["center_y"],
-                #         "old_position": target_element.position,
-                #         "new_position": updated_element.position,
-                #     }
-                #     self.phase_data_manager.save_action_update(
-                #         step_idx, action_str, updated_action, element_movement
-                #     )
-
-                #     action = updated_action
-                #     action_str = updated_action
-                #     step_log_entry["action_updated"] = True
-                #     self.logger.info("Action updated after perturbation")
 
         # ========== Phase 5: Execute Action ==========
         self.logger.debug(f"Executing: {action_str[:100]}")
@@ -664,16 +635,18 @@ class TrajectoryGenerator:
             obs,
         )
 
-    def _apply_perturbation(
-        self, controller: PerturbationController, perturbation_decision: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Apply perturbation using autoglm_v enhanced controller"""
+    def _apply_perturbation(self, controller, perturbation_decision: Dict[str, Any]) -> Dict[str, Any]:
+        """Apply perturbation using enhanced controller"""
+
         try:
-            # Use the enhanced controller with autoglm_v capabilities
+            api_call = perturbation_decision.get("api_call")
+            if not api_call:
+                raise ValueError("Missing api_call in perturbation decision")
+
             result = controller.execute_perturbation(
                 perturbation_type=perturbation_decision.get("perturbation_type", "unknown"),
-                generated_code=perturbation_decision.get("generated_code", ""),
-                api_call=perturbation_decision.get("api_call", "execute_js_on_page"),
+                generated_code=perturbation_decision.get("generated_command", ""),
+                api_call=api_call,
                 parameters=perturbation_decision.get("parameters", {}),
             )
 
@@ -682,49 +655,12 @@ class TrajectoryGenerator:
                 "operation_type": result.operation_type,
                 "target_app": result.target_app,
                 "error_message": result.error_message,
-                "method": "autoglm_enhanced_controller",
+                "method": "clean_perturbation_generator",
             }
 
         except Exception as e:
             self.logger.error(f"Error applying perturbation: {e}")
             return {"success": False, "error": str(e)}
-
-    def _enhance_perturbation_decision_autoglm(
-        self, perturbation_decision: Dict[str, Any], execution_context: ExecutionContext, target_app: str
-    ) -> Dict[str, Any]:
-        """Enhance perturbation decision with autoglm_v capabilities"""
-        try:
-            # Generate app-specific perturbation command using autoglm_v
-            perturbation_type = perturbation_decision.get("perturbation_type", "theme")
-            parameters = perturbation_decision.get("parameters", {})
-
-            # Use autoglm_v perturbation generator
-            autoglm_code = self.autoglm_perturbation_generator.generate_perturbation_command(
-                target_app, perturbation_type, parameters
-            )
-
-            if autoglm_code:
-                perturbation_decision["generated_code"] = autoglm_code
-                perturbation_decision["api_call"] = self._determine_api_call(target_app, autoglm_code)
-
-            return perturbation_decision
-
-        except Exception as e:
-            self.logger.error(f"Error enhancing perturbation decision with autoglm_v: {e}")
-            return perturbation_decision
-
-    def _determine_api_call(self, target_app: str, generated_code: str) -> str:
-        """Determine appropriate API call based on target app and generated code"""
-        if target_app in ["libreoffice_calc", "libreoffice_writer", "libreoffice_impress"]:
-            return "execute_uno_command"
-        elif target_app == "chrome":
-            return "execute_js_on_page"
-        elif target_app == "code":
-            return "execute_python_command"
-        elif target_app == "vlc":
-            return "execute_python_command"
-        else:
-            return "execute_bash_command"
 
     def _save_trajectory_step(
         self,

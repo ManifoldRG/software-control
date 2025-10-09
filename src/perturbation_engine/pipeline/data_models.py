@@ -8,21 +8,110 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 
-class PerturbationType(Enum):
-    """Types of perturbations supported"""
+@dataclass
+class AppElement:
+    """Represents a UI element with position and properties"""
 
+    element_id: str
+    element_type: str
+    name: str
+    text: str
+    position: Dict[str, int]  # center_x, center_y, width, height
+    properties: Dict[str, Any]
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert AppElement to dictionary for JSON serialization"""
+        return {
+            "element_id": self.element_id,
+            "element_type": self.element_type,
+            "name": self.name,
+            "text": self.text,
+            "position": self.position,
+            "properties": self.properties,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AppElement":
+        """Create AppElement from dictionary"""
+        return cls(
+            element_id=data["element_id"],
+            element_type=data["element_type"],
+            name=data["name"],
+            text=data["text"],
+            position=data["position"],
+            properties=data["properties"],
+        )
+
+
+@dataclass
+class AppState:
+    """Represents the state of an application"""
+
+    app_name: str
+    app_type: str
+    window_title: str
+    elements: List[AppElement]
+    properties: Dict[str, Any]
+    timestamp: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert AppState to dictionary for JSON serialization"""
+        return {
+            "app_name": self.app_name,
+            "app_type": self.app_type,
+            "window_title": self.window_title,
+            "elements": [element.to_dict() for element in self.elements],
+            "properties": self.properties,
+            "timestamp": self.timestamp,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AppState":
+        """Create AppState from dictionary"""
+        return cls(
+            app_name=data["app_name"],
+            app_type=data["app_type"],
+            window_title=data["window_title"],
+            elements=[AppElement.from_dict(elem_data) for elem_data in data["elements"]],
+            properties=data["properties"],
+            timestamp=data["timestamp"],
+        )
+
+
+class PerturbationType(Enum):
+    """Types of perturbations supported - focused on visual/functional changes"""
+
+    # Visual appearance changes
     THEME = "theme"
     COLOR = "color"
-    DENSITY = "density"
     TYPOGRAPHY = "typography"
-    SHAPE = "shape"
     LAYOUT = "layout"
+    SHAPE = "shape"
+    DENSITY = "density"
+
+    # Content and data changes
     CONTENT_VARIATION = "content_variation"
+    DATA_MODIFICATION = "data_modification"
+
+    # UI structure changes
     UI_INJECTION = "ui_injection"
-    NOTIFICATION = "notification"
+    DOM_MODIFICATION = "dom_modification"
+    CSS_INJECTION = "css_injection"
+
+    # System and environment changes
+    SYSTEM_LEVEL = "system_level"
     BACKGROUND_PROCESS = "background_process"
     WINDOW_MANAGEMENT = "window_management"
     FILE_OPERATIONS = "file_operations"
+
+    # Cross-app interference
+    NOTIFICATION = "notification"
+    CROSS_APP_INTERFERENCE = "cross_app_interference"
+
+    # Generic categories for LLM flexibility
+    VISUAL_PERTURBATION = "visual_perturbation"
+    GUI_MANIPULATION = "gui_manipulation"
+    VISUAL_RANDOMIZATION = "visual_randomization"
 
     @classmethod
     def from_string(cls, value: str, default: Optional["PerturbationType"] = None) -> "PerturbationType":
@@ -67,9 +156,9 @@ class PerturbationType(Enum):
         except ValueError:
             pass
 
-        # Comprehensive LLM variations mapping (100+ aliases)
+        # Comprehensive LLM variations mapping with enhanced flexibility
         mappings = {
-            # Typography variations (20+)
+            # Typography variations
             "font": cls.TYPOGRAPHY,
             "fonts": cls.TYPOGRAPHY,
             "font_family": cls.TYPOGRAPHY,
@@ -78,38 +167,27 @@ class PerturbationType(Enum):
             "text": cls.TYPOGRAPHY,
             "text_style": cls.TYPOGRAPHY,
             "typeface": cls.TYPOGRAPHY,
-            "typefaces": cls.TYPOGRAPHY,
             "text_formatting": cls.TYPOGRAPHY,
-            "font_style": cls.TYPOGRAPHY,
-            "text_size": cls.TYPOGRAPHY,
-            "font_change": cls.TYPOGRAPHY,
-            "text_weight": cls.TYPOGRAPHY,
             "letter_spacing": cls.TYPOGRAPHY,
             "line_height": cls.TYPOGRAPHY,
-            # Color variations (20+)
+            # Color variations
             "colors": cls.COLOR,
             "colour": cls.COLOR,
             "colours": cls.COLOR,
             "color_scheme": cls.COLOR,
             "palette": cls.COLOR,
-            "palettes": cls.COLOR,
             "background_color": cls.COLOR,
             "text_color": cls.COLOR,
             "foreground": cls.COLOR,
             "background": cls.COLOR,
             "accent": cls.COLOR,
-            "accents": cls.COLOR,
-            "tint": cls.COLOR,
-            "tints": cls.COLOR,
             "hue": cls.COLOR,
             "saturation": cls.COLOR,
             "brightness": cls.COLOR,
-            # Layout variations (20+)
+            # Layout variations
             "spacing": cls.LAYOUT,
             "padding": cls.LAYOUT,
-            "paddings": cls.LAYOUT,
             "margin": cls.LAYOUT,
-            "margins": cls.LAYOUT,
             "alignment": cls.LAYOUT,
             "position": cls.LAYOUT,
             "positioning": cls.LAYOUT,
@@ -117,22 +195,18 @@ class PerturbationType(Enum):
             "arrangement": cls.LAYOUT,
             "grid": cls.LAYOUT,
             "flex": cls.LAYOUT,
-            "flexbox": cls.LAYOUT,
             "container": cls.LAYOUT,
             "width": cls.LAYOUT,
             "height": cls.LAYOUT,
             "size": cls.LAYOUT,
-            "sizing": cls.LAYOUT,
-            # Density variations (10+)
+            # Density variations
             "compact": cls.DENSITY,
             "spacious": cls.DENSITY,
             "comfortable": cls.DENSITY,
             "density_mode": cls.DENSITY,
             "tight": cls.DENSITY,
             "loose": cls.DENSITY,
-            "cozy": cls.DENSITY,
-            "spacing_mode": cls.DENSITY,
-            # Theme variations (15+)
+            # Theme variations
             "design_system": cls.THEME,
             "theme_change": cls.THEME,
             "appearance": cls.THEME,
@@ -146,7 +220,7 @@ class PerturbationType(Enum):
             "dark_mode": cls.THEME,
             "light_mode": cls.THEME,
             "theme_variant": cls.THEME,
-            # Shape variations (15+)
+            # Shape variations
             "border": cls.SHAPE,
             "borders": cls.SHAPE,
             "radius": cls.SHAPE,
@@ -161,7 +235,7 @@ class PerturbationType(Enum):
             "edge": cls.SHAPE,
             "edges": cls.SHAPE,
             "rounded": cls.SHAPE,
-            # Content variation (10+)
+            # Content and data variations
             "motion": cls.CONTENT_VARIATION,
             "animation": cls.CONTENT_VARIATION,
             "animations": cls.CONTENT_VARIATION,
@@ -170,22 +244,50 @@ class PerturbationType(Enum):
             "content": cls.CONTENT_VARIATION,
             "variation": cls.CONTENT_VARIATION,
             "transform": cls.CONTENT_VARIATION,
-            # Other dimensions
-            "depth": cls.SHAPE,
-            "z_index": cls.SHAPE,
-            "layer": cls.SHAPE,
-            "layers": cls.SHAPE,
-            "semantics": cls.THEME,
-            "semantic": cls.THEME,
-            "hierarchy": cls.THEME,
-            # Window/system (10+)
+            "data": cls.DATA_MODIFICATION,
+            "data_modification": cls.DATA_MODIFICATION,
+            "file_content": cls.DATA_MODIFICATION,
+            "content_modification": cls.DATA_MODIFICATION,
+            # UI structure changes
+            "injection": cls.UI_INJECTION,
+            "inject": cls.UI_INJECTION,
+            "add_element": cls.UI_INJECTION,
+            "insert": cls.UI_INJECTION,
+            "dom": cls.DOM_MODIFICATION,
+            "dom_modification": cls.DOM_MODIFICATION,
+            "css": cls.CSS_INJECTION,
+            "css_injection": cls.CSS_INJECTION,
+            "stylesheet": cls.CSS_INJECTION,
+            # System and environment changes
+            "system": cls.SYSTEM_LEVEL,
+            "system_level": cls.SYSTEM_LEVEL,
+            "system_theme": cls.SYSTEM_LEVEL,
+            "desktop": cls.SYSTEM_LEVEL,
+            "wallpaper": cls.SYSTEM_LEVEL,
+            "environment": cls.SYSTEM_LEVEL,
+            "os": cls.SYSTEM_LEVEL,
+            "operating_system": cls.SYSTEM_LEVEL,
+            # Window management
             "window": cls.WINDOW_MANAGEMENT,
             "windows": cls.WINDOW_MANAGEMENT,
             "resize": cls.WINDOW_MANAGEMENT,
             "resizing": cls.WINDOW_MANAGEMENT,
             "move": cls.WINDOW_MANAGEMENT,
             "reposition": cls.WINDOW_MANAGEMENT,
-            # Notifications (10+)
+            "window_management": cls.WINDOW_MANAGEMENT,
+            # Background processes
+            "background_process": cls.BACKGROUND_PROCESS,
+            "bg": cls.BACKGROUND_PROCESS,
+            "bg_process": cls.BACKGROUND_PROCESS,
+            "background_task": cls.BACKGROUND_PROCESS,
+            "process": cls.BACKGROUND_PROCESS,
+            # File operations
+            "file": cls.FILE_OPERATIONS,
+            "files": cls.FILE_OPERATIONS,
+            "file_operation": cls.FILE_OPERATIONS,
+            "file_system": cls.FILE_OPERATIONS,
+            "file_ops": cls.FILE_OPERATIONS,
+            # Notifications
             "notify": cls.NOTIFICATION,
             "notification": cls.NOTIFICATION,
             "alert": cls.NOTIFICATION,
@@ -194,22 +296,27 @@ class PerturbationType(Enum):
             "toasts": cls.NOTIFICATION,
             "popup": cls.NOTIFICATION,
             "popups": cls.NOTIFICATION,
-            # Background (10+)
-            "background_process": cls.BACKGROUND_PROCESS,
-            "bg": cls.BACKGROUND_PROCESS,
-            "bg_process": cls.BACKGROUND_PROCESS,
-            "background_task": cls.BACKGROUND_PROCESS,
-            "process": cls.BACKGROUND_PROCESS,
-            # Files (10+)
-            "file": cls.FILE_OPERATIONS,
-            "files": cls.FILE_OPERATIONS,
-            "file_operation": cls.FILE_OPERATIONS,
-            "file_system": cls.FILE_OPERATIONS,
-            # UI Injection
-            "injection": cls.UI_INJECTION,
-            "inject": cls.UI_INJECTION,
-            "add_element": cls.UI_INJECTION,
-            "insert": cls.UI_INJECTION,
+            # Cross-app interference
+            "cross_app": cls.CROSS_APP_INTERFERENCE,
+            "cross_app_interference": cls.CROSS_APP_INTERFERENCE,
+            "interference": cls.CROSS_APP_INTERFERENCE,
+            "competing": cls.CROSS_APP_INTERFERENCE,
+            "distraction": cls.CROSS_APP_INTERFERENCE,
+            # Generic visual categories (for LLM flexibility)
+            "visual": cls.VISUAL_PERTURBATION,
+            "visual_perturbation": cls.VISUAL_PERTURBATION,
+            "visual_change": cls.VISUAL_PERTURBATION,
+            "visual_modification": cls.VISUAL_PERTURBATION,
+            "gui": cls.GUI_MANIPULATION,
+            "gui_manipulation": cls.GUI_MANIPULATION,
+            "gui_change": cls.GUI_MANIPULATION,
+            "interface": cls.GUI_MANIPULATION,
+            "ui": cls.GUI_MANIPULATION,
+            "user_interface": cls.GUI_MANIPULATION,
+            "randomization": cls.VISUAL_RANDOMIZATION,
+            "visual_randomization": cls.VISUAL_RANDOMIZATION,
+            "random": cls.VISUAL_RANDOMIZATION,
+            "randomize": cls.VISUAL_RANDOMIZATION,
         }
 
         if normalized in mappings:
@@ -232,6 +339,110 @@ class PerturbationType(Enum):
             f"Valid types: {', '.join([e.value for e in cls])}"
         )
         return cls.THEME
+
+
+class PerturbationCategory(Enum):
+    """Categories of perturbation strategies"""
+
+    SYSTEM_LEVEL = "system_level"
+    CONTENT_RANDOMIZATION = "content_randomization"
+    APP_SPECIFIC = "app_specific"
+    CROSS_APP_INTERFERENCE = "cross_app_interference"
+
+    @classmethod
+    def get_valid_values(cls) -> List[str]:
+        """Get list of valid perturbation category values"""
+        return [category.value for category in cls]
+
+    @classmethod
+    def from_string(
+        cls, value: str, default: Optional["PerturbationCategory"] = None
+    ) -> "PerturbationCategory":
+        """Convert string to PerturbationCategory with fallback"""
+        if not value or not isinstance(value, str):
+            return default or cls.SYSTEM_LEVEL
+
+        normalized = value.lower().strip().replace("-", "_")
+        try:
+            return cls(normalized)
+        except ValueError:
+            return default or cls.SYSTEM_LEVEL
+
+
+class PerturbationIntensity(Enum):
+    """Intensity levels for perturbations"""
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+    @classmethod
+    def get_valid_values(cls) -> List[str]:
+        """Get list of valid perturbation intensity values"""
+        return [intensity.value for intensity in cls]
+
+    @classmethod
+    def from_string(
+        cls, value: str, default: Optional["PerturbationIntensity"] = None
+    ) -> "PerturbationIntensity":
+        """Convert string to PerturbationIntensity with fallback"""
+        if not value or not isinstance(value, str):
+            return default or cls.MEDIUM
+
+        normalized = value.lower().strip()
+        try:
+            return cls(normalized)
+        except ValueError:
+            return default or cls.MEDIUM
+
+
+class ApiCallType(Enum):
+    """Types of API calls for perturbation execution"""
+
+    # Core execution methods
+    EXECUTE_JS_ON_PAGE = "execute_js_on_page"
+    EXECUTE_BASH_COMMAND = "execute_bash_command"
+    EXECUTE_PYTHON_COMMAND = "execute_python_command"
+    EXECUTE_UNO_COMMAND = "execute_uno_command"
+
+    # Visual manipulation operations
+    EXECUTE_CSS_INJECTION = "execute_css_injection"
+    EXECUTE_DOM_MODIFICATION = "execute_dom_modification"
+    EXECUTE_THEME_RANDOMIZATION = "execute_theme_randomization"
+    EXECUTE_LAYOUT_PERTURBATION = "execute_layout_perturbation"
+    EXECUTE_TYPOGRAPHY_RANDOMIZATION = "execute_typography_randomization"
+    EXECUTE_ANIMATION_EFFECTS = "execute_animation_effects"
+    EXECUTE_ACCESSIBILITY_PERTURBATION = "execute_accessibility_perturbation"
+
+    # Freeform operations
+    EXECUTE_PYTHON_EXECUTION = "execute_python_execution"
+    EXECUTE_JAVASCRIPT_INJECTION = "execute_javascript_injection"
+    EXECUTE_BASH_AUTOMATION = "execute_bash_automation"
+    EXECUTE_PLAYWRIGHT_AUTOMATION = "execute_playwright_automation"
+    EXECUTE_FILE_SYSTEM_MANIPULATION = "execute_file_system_manipulation"
+    EXECUTE_NETWORK_PERTURBATION = "execute_network_perturbation"
+    EXECUTE_SYSTEM_INTEGRATION = "execute_system_integration"
+
+    # Legacy operations
+    MANIPULATE_APP_STATE = "manipulate_app_state"
+    EXECUTE_SYSTEM_PERTURBATION = "execute_system_perturbation"
+
+    @classmethod
+    def get_valid_values(cls) -> List[str]:
+        """Get list of valid API call values"""
+        return [api_call.value for api_call in cls]
+
+    @classmethod
+    def from_string(cls, value: str, default: Optional["ApiCallType"] = None) -> "ApiCallType":
+        """Convert string to ApiCallType with fallback"""
+        if not value or not isinstance(value, str):
+            return default or cls.EXECUTE_BASH_COMMAND
+
+        normalized = value.lower().strip()
+        try:
+            return cls(normalized)
+        except ValueError:
+            return default or cls.EXECUTE_BASH_COMMAND
 
 
 @dataclass(frozen=True)
@@ -288,6 +499,17 @@ class ScenarioSpec:
     learning_objectives: str  # Invariant themes
     target_components: List[str]  # e.g., ["buttons", "cells"]
     perturbation_types: List[PerturbationType]  # e.g., [THEME, LAYOUT]
+    perturbation_category: PerturbationCategory  # SYSTEM_LEVEL, CONTENT_RANDOMIZATION, etc.
+
+    # Additional fields for comprehensive scenario specification
+    perturbation_intensity: PerturbationIntensity = PerturbationIntensity.MEDIUM
+    maintains_functionality: bool = True
+    maintains_accessibility: bool = True
+    realistic_scenario: str = ""
+    initial_state_perturbation: bool = False
+    runtime_perturbation: bool = True
+    risk_mitigation: str = ""
+    educational_rationale: str = ""
 
 
 @dataclass(frozen=True)

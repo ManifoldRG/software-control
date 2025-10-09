@@ -2,9 +2,11 @@
 Pipeline Refactored: Clean data randomization pipeline
 """
 
-from .clean_llm_services import CleanCurriculumLLM, CleanPerturbationLLM, CleanQualityLLM
-from .curriculum_planner import CurriculumPlanner
+from .app_state_utils import get_element_property, normalize_app_states, normalize_elements
+from .clean_llm_services import CleanCurriculumGenerator, CleanPerturbationGenerator, CleanQualityLLM
 from .data_models import (
+    AppElement,
+    AppState,
     CurriculumConfig,
     ExecutionConfig,
     ExecutionContext,
@@ -29,10 +31,11 @@ __all__ = [
     "ExecutionContext",
     "PerturbationType",
     "PerturbationPhase",
-    "CleanCurriculumLLM",
-    "CleanPerturbationLLM",
-    "CleanQualityLLM",
-    "CurriculumPlanner",
+    "AppState",
+    "AppElement",
+    "normalize_app_states",
+    "normalize_elements",
+    "get_element_property",
     "TrajectoryGenerator",
     "SharedExecutionEngine",
     "QualityEvaluator",

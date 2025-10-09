@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Tuple
 
 from OSWorld.desktop_env.desktop_env import DesktopEnv
 from perturbation_engine.control.perturbation_controller import PerturbationController
-from perturbation_engine.tools.autoglm_integration import AutoglmAppStateExtractor
 
 
 class AppType(Enum):
@@ -83,11 +82,12 @@ class PerturbationDesktopEnv(DesktopEnv):
         """Override to use PerturbationController instead of PythonController"""
         super()._start_emulator()
 
-        # Replace the controller with our enhanced version
         self.controller = PerturbationController(
-            vm_ip=self.vm_ip, server_port=self.server_port, chromium_port=self.chromium_port
+            vm_ip=self.vm_ip,
+            server_port=self.server_port,
+            chromium_port=self.chromium_port,
+            client_password=self.client_password,
         )
-        self.autoglm_extractor = AutoglmAppStateExtractor()
         self.logger.info("Replaced controller with PerturbationController")
 
         # Ensure AT-SPI accessibility is enabled for proper state extraction
@@ -104,6 +104,41 @@ class PerturbationDesktopEnv(DesktopEnv):
         except Exception as e:
             self.logger.warning(f"AT-SPI setup encountered error (non-fatal): {e}")
             # Continue anyway - accessibility can be enabled later if needed
+
+        # Setup enhanced app launching capabilities
+        try:
+            self.logger.info("Setting up enhanced app launching capabilities...")
+            app_setup_results = self.controller.ensure_app_enhancement_setup()
+            successful_apps = [app for app, success in app_setup_results.items() if success]
+            failed_apps = [app for app, success in app_setup_results.items() if not success]
+
+            if successful_apps:
+                self.logger.info(f"Enhanced capabilities enabled for: {', '.join(successful_apps)}")
+            if failed_apps:
+                self.logger.warning(
+                    f"Enhanced capabilities failed for: {', '.join(failed_apps)} - will use AT-SPI2 fallback"
+                )
+
+            if not successful_apps:
+                self.logger.warning(
+                    "No apps with enhanced capabilities could be launched - will use AT-SPI2 fallback"
+                )
+        except Exception as e:
+            self.logger.warning(f"App enhancement setup encountered error (non-fatal): {e}")
+            # Continue anyway - apps can be launched later if needed
+
+        # Setup X11 tools for enhanced window management (deterministic setup)
+        try:
+            self.logger.info("Setting up X11 tools for enhanced window management...")
+            x11_setup_success = self.controller._setup_x11_tools()
+            if x11_setup_success:
+                self.logger.info("X11 tools setup completed successfully")
+            else:
+                self.logger.error("X11 tools setup failed - deterministic setup requires all tools")
+                raise RuntimeError("X11 tools setup failed - cannot proceed without deterministic setup")
+        except Exception as e:
+            self.logger.error(f"X11 tools setup encountered error: {e}")
+            raise
 
     def mark_perturbation_applied(self):
         """Mark that a perturbation has been applied - forces reset on next trajectory"""
@@ -125,7 +160,7 @@ class PerturbationDesktopEnv(DesktopEnv):
                 if self.require_a11y_tree
                 else None,
                 "terminal": self.controller.get_terminal_output() if self.require_terminal else None,
-                "app_states": self.controller.get_app_states(use_autoglm_enhancement=True),
+                "app_states": self.controller.get_enhanced_app_states(),
                 "instruction": self.instruction,
                 "timestamp": self._get_timestamp(),
                 "url": getattr(self.controller, "current_url", ""),

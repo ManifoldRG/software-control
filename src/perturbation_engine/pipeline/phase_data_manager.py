@@ -135,6 +135,11 @@ class PhaseDataManager:
         data = {"app_states": app_states, "phase": phase}
         return self.save_phase_data(step_idx, f"app_states_{phase}", data)
 
+    def save_element_test_results(self, step_idx: int, test_results: List[Dict[str, Any]]) -> str:
+        """Save element test results for debugging"""
+        data = {"test_results": test_results}
+        return self.save_phase_data(step_idx, "element_test_results", data)
+
     def load_app_states(self, step_idx: int, phase: str) -> Optional[List[Dict[str, Any]]]:
         """Load app states for specific phase"""
         data = self.load_phase_data(step_idx, f"app_states_{phase}")
