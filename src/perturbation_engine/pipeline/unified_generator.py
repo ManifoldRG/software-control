@@ -14,6 +14,7 @@ from perturbation_engine.pipeline.data_models import (
     SeedTrajectory,
 )
 from perturbation_engine.pipeline.perturbation_desktop_env import PerturbationDesktopEnv
+from perturbation_engine.pipeline.phase_data_manager import PhaseDataManager
 from perturbation_engine.pipeline.quality_evaluator import QualityEvaluator
 from perturbation_engine.pipeline.shared_execution_engine import SharedExecutionEngine
 from perturbation_engine.pipeline.trajectory_generator import TrajectoryGenerator
@@ -68,11 +69,15 @@ class UnifiedGenerator:
 
                 active_environments.append(env)
             except ImportError:
-                pass  # Not running from main script
+                pass
 
             env.reset(task_config=seed_trajectory.config)
 
-            app_states = env.controller.get_app_states(use_autoglm_enhancement=True)
+            window_states = env.controller.get_window_states()
+
+            # Save window states using phase data manager
+            phase_data_manager = PhaseDataManager(trajectory_id=seed_trajectory.task_id)
+            phase_data_manager.save_window_states(step_idx=0, phase="initial", window_states=window_states)
 
             env.close()
 
@@ -88,13 +93,13 @@ class UnifiedGenerator:
             force_garbage_collection(self.logger)
             log_memory_usage("After environment cleanup", self.logger)
 
-            if app_states == []:
-                self.logger.error("No app states found")
+            if window_states == []:
+                self.logger.error("No window states found")
                 return []
 
             # Step 2: Generate curriculum of scenario specs
             scenario_specs = self.curriculum_generator.generate_scenario_specs(
-                seed_trajectory, app_states, curriculum_config
+                seed_trajectory, window_states, curriculum_config
             )
 
             if not scenario_specs:

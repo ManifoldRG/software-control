@@ -11,7 +11,35 @@ from playwright.sync_api import Page, sync_playwright
 
 from OSWorld.desktop_env.controllers.python import PythonController
 from OSWorld.desktop_env.controllers.setup import SetupController
+from perturbation_engine.pipeline.data_models import WindowState
 from perturbation_engine.tools.autoglm_integration import AutoglmAppStateExtractor
+
+# Import existing autoglm_v logic
+from perturbation_engine.tools.autoglm_v.tools.package.code import CodeTools
+from perturbation_engine.tools.autoglm_v.tools.package.google_chrome import BrowserTools
+from perturbation_engine.tools.autoglm_v.tools.package.vlc import VLCTools
+
+# Import LibreOffice tools (with fallback if not available)
+try:
+    from perturbation_engine.tools.autoglm_v.tools.package.libreoffice_calc import CalcTools
+    from perturbation_engine.tools.autoglm_v.tools.package.libreoffice_impress import ImpressTools
+    from perturbation_engine.tools.autoglm_v.tools.package.libreoffice_writer import WriterTools
+except ImportError:
+    # Fallback classes if LibreOffice tools are not available
+    class CalcTools:
+        @classmethod
+        def env_info(cls):
+            return "LibreOffice Calc tools not available"
+
+    class WriterTools:
+        @classmethod
+        def env_info(cls):
+            return "LibreOffice Writer tools not available"
+
+    class ImpressTools:
+        @classmethod
+        def env_info(cls):
+            return "LibreOffice Impress tools not available"
 
 
 @dataclass
@@ -51,149 +79,110 @@ class PerturbationController(PythonController, SetupController):
         self._context = None
         self._page = None
 
-        self._autoglm_extractor = AutoglmAppStateExtractor(controller=self)
+        self._extractor = AutoglmAppStateExtractor(controller=self)
+        self._setup_accessibility()
 
-        # Track launched apps with enhanced capabilities
-        self._launched_apps = {"chrome": False, "vscode": False, "libreoffice": False}
-
-        # Setup X11 tools for enhanced window management
+    def _setup_accessibility(self) -> bool:
         self._setup_x11_tools()
+        accessibility_ok = self.ensure_accessibility_enabled()
+        if accessibility_ok:
+            self.logger.info("AT-SPI accessibility enabled successfully")
+        else:
+            self.logger.warning("AT-SPI accessibility may not be fully enabled - will retry later if needed")
 
     def _setup_x11_tools(self) -> bool:
-        """
-        Setup X11 tools required for enhanced window management and app state extraction.
+        """Setup X11 tools for window management."""
+        # Check if already set up to avoid duplicate setup
+        if hasattr(self, "_x11_tools_setup") and self._x11_tools_setup:
+            self.logger.info("X11 tools already set up, skipping...")
+            return True
 
-        Uses deterministic installation with sudo -S pattern for consistent server setup.
-
-        Returns:
-            True if setup successful, False on failure
-        """
         try:
-            self.logger.info("Setting up X11 tools for enhanced window management...")
+            self.logger.info("Setting up X11 tools...")
 
-            # Define required X11 packages for deterministic setup
-            x11_packages = [
-                "x11-utils",  # Contains xprop, xwininfo, xdpyinfo
-                "xdotool",  # Window manipulation tool
-                "wmctrl",  # Window manager control
-                "xclip",  # Clipboard utilities
-                "socat",  # Network utility for port forwarding
-                "gnome-screenshot",  # Screenshot utility
-                "ffmpeg",  # Video recording
-                "python3-tk",  # Python Tkinter support
-                "python3-dev",  # Python development headers
-            ]
+            packages = ["x11-utils", "xdotool", "wmctrl", "xclip"]
+            # pwd = getattr(self, 'client_password', '')
+            pwd = "password"
 
-            # Use deterministic installation pattern like setup.py
-            install_command = f"""
-import subprocess
-import sys
+            # Install packages
+            install_cmd = f"""
+import subprocess, os, platform
+env = os.environ.copy()
+env['DEBIAN_FRONTEND'] = 'noninteractive'
+pwd = "{pwd}"
 
-def install_x11_packages():
-    packages = {x11_packages}
-    client_password = "{getattr(self, "client_password", "")}"
+# Detect architecture and fix repos if needed
+arch = platform.machine()
+if arch in ['aarch64', 'arm64']:
+    print(f"Detected ARM64 architecture: {{arch}}")
+    # Fix repository configuration for ARM64
+    fix_repos_cmd = ['sudo', '-S', 'sed', '-i',
+                    's/http:\\/\\/.*\\.archive\\.ubuntu\\.com/http:\\/\\/ports.ubuntu.com/g',
+                    '/etc/apt/sources.list']
+    proc = subprocess.Popen(fix_repos_cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, text=True, env=env)
+    proc.communicate(input=f"{{pwd}}\\n", timeout=30)
+    print("Fixed ARM64 repository configuration")
+else:
+    print(f"Detected x86_64 architecture: {{arch}}")
 
-    # Update package list first
-    update_cmd = f"echo '{{client_password}}' | sudo -S bash -c \\"apt-get update\\""
-    result = subprocess.run(update_cmd, shell=True, capture_output=True, text=True, timeout=60)
-    if result.returncode != 0:
-        print(f"Failed to update package list: {{result.stderr}}")
-        return False
-
-    # Install each package deterministically
-    failed_packages = []
-    for package in packages:
-        try:
-            # Check if package is already installed
-            check_cmd = f"echo '{{client_password}}' | sudo -S bash -c \\"dpkg -l {{package}}\\""
-            check_result = subprocess.run(check_cmd, shell=True, capture_output=True, text=True, timeout=10)
-
-            if check_result.returncode == 0 and 'ii' in check_result.stdout:
-                print(f'Package {{package}} already installed')
-                continue
-
-            # Install package deterministically
-            print(f'Installing {{package}}...')
-            install_cmd = f"echo '{{client_password}}' | sudo -S bash -c \\"apt-get install -y {{package}}\\""
-            result = subprocess.run(install_cmd, shell=True, capture_output=True, text=True, timeout=120)
-
-            if result.returncode == 0:
-                print(f'Successfully installed {{package}}')
-            else:
-                print(f'Failed to install {{package}}: {{result.stderr}}')
-                failed_packages.append(package)
-
-        except Exception as e:
-            print(f'Error installing {{package}}: {{e}}')
-            failed_packages.append(package)
-
-    if failed_packages:
-        print(f'Failed to install packages: {{failed_packages}}')
-        return False
-    else:
-        print('All X11 packages installed successfully')
-        return True
-
-install_x11_packages()
+# Update and install
+for cmd in [
+    ['sudo', '-S', 'apt-get', 'update', '-y'],
+    ['sudo', '-S', 'apt-get', 'install', '-y', '--fix-missing'] + {packages}
+]:
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE, text=True, env=env)
+    out, err = proc.communicate(input=f"{{pwd}}\\n", timeout=180)
+    print(out)
+    if proc.returncode != 0:
+        print(f"Error: {{err}}")
+        # Only fail on install errors, not update warnings
+        if 'install' in ' '.join(cmd):
+            exit(1)
+print("Installation complete")
 """
 
-            result = self.execute_python_command(install_command)
-
-            if result and result.get("status") == "success":
-                output = result.get("output", "").strip()
-                self.logger.info(f"X11 tools installation completed: {output}")
-
-                # Verify installation deterministically
-                verification_command = """
-import subprocess
-
-def verify_x11_tools():
-    tools = ['xprop', 'xdotool', 'xwininfo', 'wmctrl']
-    available_tools = []
-
-    for tool in tools:
-        try:
-            result = subprocess.run([tool, '--version'],
-                                  capture_output=True, text=True, timeout=5)
-            if result.returncode == 0:
-                available_tools.append(tool)
-                print(f'{tool}: available')
-            else:
-                print(f'{tool}: not available')
-        except Exception as e:
-            print(f'{tool}: error - {e}')
-
-    print(f'Available tools: {available_tools}')
-    return len(available_tools) >= 3  # Require at least 3 tools for deterministic setup
-
-verify_x11_tools()
-"""
-
-                verify_result = self.execute_python_command(verification_command)
-                if verify_result and verify_result.get("status") == "success":
-                    output = verify_result.get("output", "").strip()
-                    self.logger.info(f"X11 tools verification: {output}")
-
-                    # Check if we have the minimum required tools
-                    if (
-                        "xprop" in output
-                        and "xwininfo" in output
-                        and ("xdotool" in output or "wmctrl" in output)
-                    ):
-                        self.logger.info("X11 tools setup completed successfully")
-                        return True
-                    else:
-                        self.logger.error("X11 tools verification failed - insufficient tools available")
-                        return False
-                else:
-                    self.logger.error("X11 tools verification failed")
-                    return False
-            else:
-                self.logger.error(f"X11 tools installation failed: {result}")
+            result = self.execute_python_command(install_cmd)
+            if not result or result.get("status") != "success":
+                self.logger.error(f"Installation failed: {result}")
                 return False
 
+            # Verify tools with better error reporting
+            verify_cmd = """
+import shutil
+tools = ['xprop', 'xdotool', 'xwininfo', 'wmctrl']
+available = [t for t in tools if shutil.which(t)]
+missing = [t for t in tools if t not in available]
+
+print(f"Available X11 tools: {available}")
+print(f"Missing X11 tools: {missing}")
+
+if len(available) >= 2:
+    print("SUCCESS: Enough X11 tools available for window management")
+    exit(0)
+else:
+    print(f"WARNING: Only {len(available)} X11 tools available, need at least 2")
+    print("X11 tools setup may be incomplete - some window operations may fail")
+    exit(1)
+"""
+
+            verify_result = self.execute_python_command(verify_cmd)
+            if verify_result and verify_result.get("status") == "success":
+                output = verify_result.get("output", "")
+                self.logger.info(f"X11 tools verification successful: {output}")
+                self._x11_tools_setup = True  # Mark as set up
+                return True
+
+            # Log verification failure with details
+            output = verify_result.get("output", "No output") if verify_result else "No result"
+            self.logger.warning(f"X11 tools verification failed: {output}")
+            self.logger.warning("Some window management operations may not work properly")
+            return False
+
         except Exception as e:
-            self.logger.error(f"Error setting up X11 tools: {e}")
+            self.logger.error(f"X11 tools setup error: {e}")
+            self._x11_tools_setup = False  # Mark setup as failed
             return False
 
     def execute_perturbation(
@@ -990,32 +979,14 @@ except Exception as e:
             self.logger.error(f"Error setting up accessibility: {e}")
             return False
 
-    def get_app_states(self, use_autoglm_enhancement: bool = True) -> list:
-        """Get clean app states using autoglm_v tools"""
-        try:
-            if use_autoglm_enhancement:
-                return self.get_enhanced_app_states()
-            else:
-                # Fallback to basic extraction
-                accessibility_tree = self.get_accessibility_tree()
-                if accessibility_tree:
-                    app_states = self._autoglm_extractor.extract_app_states(accessibility_tree)
-                    if app_states:
-                        self.logger.info(f"Extracted {len(app_states)} app states")
-                        return app_states
-
-        except Exception as e:
-            self.logger.exception(f"Error with app state extraction: {e}")
-            return []
-
     def visualize_element_bounding_boxes(
-        self, app_states: list, target_element_id: str = None, output_path: str = None
+        self, window_states: List[WindowState], target_element_id: str = None, output_path: str = None
     ) -> str:
         """
         Visualize bounding boxes of extracted elements on screenshot for debugging.
 
         Args:
-            app_states: List of AppState objects
+            window_states: List of WindowState objects
             target_element_id: Specific element ID to highlight (optional)
             output_path: Path to save the annotated screenshot (optional)
 
@@ -1063,17 +1034,15 @@ except Exception as e:
             mouse_x, mouse_y = self._get_mouse_position()
 
             # Draw bounding boxes for all elements
-            for app_state in app_states:
-                if not hasattr(app_state, "elements"):
-                    continue
-
+            for window_state in window_states:
+                elements = window_state.get_all_elements(include_structural=False)
                 color = colors[element_count % len(colors)]
 
-                for element in app_state.elements:
-                    if not hasattr(element, "position"):
+                for element in elements:
+                    pos = element.position
+                    if not pos:
                         continue
 
-                    pos = element.position
                     center_x = pos.get("center_x", 0)
                     center_y = pos.get("center_y", 0)
                     width = pos.get("width", 0)
@@ -1087,9 +1056,7 @@ except Exception as e:
 
                     # Check if this is the target element
                     is_target = (
-                        target_element_id
-                        and hasattr(element, "element_id")
-                        and element.element_id == target_element_id
+                        target_element_id and element.element_id and element.element_id == target_element_id
                     )
 
                     if is_target:
@@ -1107,8 +1074,8 @@ except Exception as e:
                     draw.rectangle([left, top, right, bottom], outline=box_color, width=thickness)
 
                     # Draw element label with coordinates
-                    label = f"{element.name or element.element_type}"
-                    if hasattr(element, "element_id"):
+                    label = element.name or element.element_type or "Unknown"
+                    if element.element_id:
                         label = f"{str(element.element_id)[:4]}: {label}"
 
                     # Add coordinates to label
@@ -1152,7 +1119,9 @@ except Exception as e:
             # Add summary information
             summary_text = f"Total elements: {element_count}"
             if highlighted_element:
-                summary_text += f"\nTarget: {highlighted_element.name} ({highlighted_element.element_id})"
+                summary_text += (
+                    f"\nTarget: {highlighted_element.name or 'Unknown'} ({highlighted_element.element_id})"
+                )
                 pos = highlighted_element.position
                 summary_text += (
                     f"\nCoords: ({pos['center_x']}, {pos['center_y']}) size {pos['width']}x{pos['height']}"
@@ -1198,236 +1167,499 @@ except Exception as e:
             self.logger.debug(f"Could not get mouse position: {e}")
             return (None, None)
 
-    def launch_chrome_with_cdp(self, url: str = None) -> bool:
-        """Launch Chrome with CDP debugging enabled"""
-        try:
-            if self._launched_apps["chrome"]:
-                self.logger.info("Chrome already launched with CDP")
-                return True
+    def setup(self, config: List[Dict[str, Any]], use_proxy: bool = False) -> bool:
+        """
+        Wrap SetupController.setup() to automatically enhance commands with app state extraction flags.
 
-            # Build Chrome command with CDP flags
-            chrome_cmd = [
-                "google-chrome",
-                f"--remote-debugging-port={self.chromium_port}",
+        This method intercepts the setup config, enhances Chrome/VS Code/LibreOffice commands
+        with necessary CDP/UNO flags, then calls the parent setup method.
+        """
+        # Enhance the config with app state extraction flags
+        enhanced_config = self._enhance_setup_commands(config)
+
+        # Call parent SetupController.setup() with enhanced config
+        return super().setup(enhanced_config, use_proxy)
+
+    def _enhance_setup_commands(self, config: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Enhance setup commands to include necessary flags for app state extraction.
+
+        Args:
+            config: Original setup configuration list
+
+        Returns:
+            Enhanced configuration with app state extraction flags
+        """
+        enhanced_config = []
+
+        for cfg in config:
+            config_type = cfg["type"]
+            parameters = cfg["parameters"].copy()
+
+            # Enhance Chrome commands
+            if config_type == "chrome_open_tabs":
+                # Chrome setup already includes CDP flags in _chrome_open_tabs_setup
+                urls = parameters.get("urls_to_open", [])
+                if urls:
+                    self.logger.info(
+                        f"Chrome setup detected with {len(urls)} URLs - CDP flags already included"
+                    )
+                enhanced_config.append(cfg)
+
+            # Enhance launch commands for VS Code and LibreOffice
+            elif config_type == "launch":
+                command = parameters.get("command", [])
+                if isinstance(command, str):
+                    command = command.split()
+
+                enhanced_command = self._enhance_launch_command(command)
+                if enhanced_command != command:
+                    parameters["command"] = enhanced_command
+                    self.logger.info(f"Enhanced launch command: {command} -> {enhanced_command}")
+
+                enhanced_config.append({"type": config_type, "parameters": parameters})
+            else:
+                # Pass through unchanged
+                enhanced_config.append(cfg)
+
+        return enhanced_config
+
+    def _enhance_launch_command(self, command: List[str]) -> List[str]:
+        """
+        Enhance a launch command with app state extraction flags if needed.
+
+        Args:
+            command: Original command list
+
+        Returns:
+            Enhanced command with necessary flags
+        """
+        if not command:
+            return command
+
+        enhanced_command = command.copy()
+        app_name = command[0].lower()
+
+        # VS Code enhancement
+        if app_name in ["code", "vscode", "visual-studio-code"]:
+            cdp_flags = ["--inspect-extensions=9229"]
+            for flag in cdp_flags:
+                if flag not in enhanced_command:
+                    enhanced_command.append(flag)
+                    self.logger.info(f"Added VS Code CDP flag: {flag}")
+
+        # Chrome/Chromium enhancement
+        elif app_name in ["google-chrome", "chrome", "chromium"]:
+            cdp_flags = [
+                "--remote-debugging-port=9222",
                 "--no-first-run",
                 "--no-default-browser-check",
                 "--disable-web-security",
                 "--disable-features=VizDisplayCompositor",
                 "--user-data-dir=/tmp/chrome-debug",
             ]
+            for flag in cdp_flags:
+                if flag not in enhanced_command:
+                    enhanced_command.append(flag)
+                    self.logger.info(f"Added Chrome CDP flag: {flag}")
 
-            if url:
-                chrome_cmd.append(url)
+        # LibreOffice enhancement
+        elif app_name in ["libreoffice", "soffice"]:
+            uno_flags = [
+                "--accept=socket,host=localhost,port=2002;urp;StarOffice.ServiceManager",
+                "--headless",
+            ]
+            for flag in uno_flags:
+                if flag not in enhanced_command:
+                    enhanced_command.append(flag)
+                    self.logger.info(f"Added LibreOffice UNO flag: {flag}")
 
-            # Launch Chrome
-            result = self.execute_python_command(f"""
-import subprocess
-import time
-import requests
+        return enhanced_command
 
-try:
-    # Kill any existing Chrome processes
-    subprocess.run(['pkill', '-f', 'google-chrome'], capture_output=True)
-    time.sleep(1)
-
-    # Launch Chrome with CDP
-    subprocess.Popen({chrome_cmd}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    # Wait for Chrome to start and CDP to be available
-    for i in range(10):
+    def get_window_states(self) -> List[WindowState]:
+        """Get enhanced window states using the improved extractor"""
         try:
-            response = requests.get(f'http://localhost:{self.chromium_port}/json', timeout=1)
-            if response.status_code == 200:
-                print('Chrome launched with CDP successfully')
-                break
-        except:
-            time.sleep(1)
-    else:
-        print('Chrome CDP setup failed')
-""")
-
-            if result.get("status") == "success":
-                self._launched_apps["chrome"] = True
-                self.logger.info("Chrome launched with CDP debugging enabled")
-                return True
-            else:
-                self.logger.warning("Failed to launch Chrome with CDP")
-                return False
-
-        except Exception as e:
-            self.logger.error(f"Error launching Chrome with CDP: {e}")
-            return False
-
-    def launch_vscode_with_cdp(self, path: str = None) -> bool:
-        """Launch VS Code with CDP debugging enabled"""
-        try:
-            if self._launched_apps["vscode"]:
-                self.logger.info("VS Code already launched with CDP")
-                return True
-
-            # Build VS Code command with CDP flags
-            vscode_cmd = ["code", "--inspect-extensions=9229"]
-            if path:
-                vscode_cmd.append(path)
-
-            # Launch VS Code
-            result = self.execute_python_command(f"""
-import subprocess
-import time
-import requests
-
-try:
-    # Kill any existing VS Code processes
-    subprocess.run(['pkill', '-f', 'code'], capture_output=True)
-    time.sleep(1)
-
-    # Launch VS Code with CDP
-    subprocess.Popen({vscode_cmd}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    # Wait for VS Code to start
-    time.sleep(3)
-    print('VS Code launched with CDP debugging')
-""")
-
-            if result.get("status") == "success":
-                self._launched_apps["vscode"] = True
-                self.logger.info("VS Code launched with CDP debugging enabled")
-                return True
-            else:
-                self.logger.warning("Failed to launch VS Code with CDP")
-                return False
-
-        except Exception as e:
-            self.logger.error(f"Error launching VS Code with CDP: {e}")
-            return False
-
-    def launch_libreoffice_with_uno(self, app_type: str = "calc", file_path: str = None) -> bool:
-        """Launch LibreOffice with UNO API enabled"""
-        try:
-            if self._launched_apps["libreoffice"]:
-                self.logger.info("LibreOffice already launched with UNO")
-                return True
-
-            # Build LibreOffice command with UNO flags
-            if app_type == "calc":
-                app_cmd = ["libreoffice", "--calc"]
-            elif app_type == "writer":
-                app_cmd = ["libreoffice", "--writer"]
-            elif app_type == "impress":
-                app_cmd = ["libreoffice", "--impress"]
-            else:
-                app_cmd = ["libreoffice"]
-
-            # Add UNO socket flag
-            app_cmd.extend(
-                ["--accept=socket,host=localhost,port=2002;urp;StarOffice.ServiceManager", "--headless"]
-            )
-
-            if file_path:
-                app_cmd.append(file_path)
-
-            # Launch LibreOffice
-            result = self.execute_python_command(f"""
-import subprocess
-import time
-import socket
-
-try:
-    # Kill any existing LibreOffice processes
-    subprocess.run(['pkill', '-f', 'libreoffice'], capture_output=True)
-    time.sleep(1)
-
-    # Launch LibreOffice with UNO
-    subprocess.Popen({app_cmd}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    # Wait for UNO socket to be available
-    for i in range(10):
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(1)
-            result = sock.connect_ex(('localhost', 2002))
-            sock.close()
-            if result == 0:
-                print('LibreOffice launched with UNO successfully')
-                break
-        except:
-            time.sleep(1)
-    else:
-        print('LibreOffice UNO setup failed')
-""")
-
-            if result.get("status") == "success":
-                self._launched_apps["libreoffice"] = True
-                self.logger.info(f"LibreOffice {app_type} launched with UNO API enabled")
-                return True
-            else:
-                self.logger.warning("Failed to launch LibreOffice with UNO")
-                return False
-
-        except Exception as e:
-            self.logger.error(f"Error launching LibreOffice with UNO: {e}")
-            return False
-
-    def ensure_app_enhancement_setup(self) -> Dict[str, bool]:
-        """Ensure all target apps are launched with enhancement capabilities"""
-        setup_results = {}
-
-        try:
-            # Setup Chrome with CDP
-            setup_results["chrome"] = self.launch_chrome_with_cdp()
-
-            # Setup VS Code with CDP
-            setup_results["vscode"] = self.launch_vscode_with_cdp()
-
-            # Setup LibreOffice with UNO
-            setup_results["libreoffice"] = self.launch_libreoffice_with_uno()
-
-            self.logger.info(f"App enhancement setup results: {setup_results}")
-            return setup_results
-
-        except Exception as e:
-            self.logger.error(f"Error in app enhancement setup: {e}")
-            return {"chrome": False, "vscode": False, "libreoffice": False}
-
-    def integrate_existing_tools(self) -> Dict[str, Any]:
-        """Integrate with existing autoglm_v package tools where useful"""
-        try:
-            from perturbation_engine.tools.autoglm_v.tools.package.code import CodeTools
-            from perturbation_engine.tools.autoglm_v.tools.package.google_chrome import BrowserTools
-            from perturbation_engine.tools.autoglm_v.tools.package.vlc import VLCTools
-
-            # Store references to existing tools
-            self._existing_tools = {"chrome": BrowserTools, "code": CodeTools, "vlc": VLCTools}
-
-            self.logger.info("Integrated existing autoglm_v package tools")
-            return {"status": "success", "tools": list(self._existing_tools.keys())}
-
-        except Exception as e:
-            self.logger.warning(f"Could not integrate existing tools: {e}")
-            return {"status": "error", "error": str(e)}
-
-    def get_enhanced_app_states(self) -> List[Dict[str, Any]]:
-        """Get enhanced app states using the improved extractor"""
-        try:
-            # Get accessibility tree
             accessibility_tree = self.get_accessibility_tree()
             if not accessibility_tree:
                 self.logger.warning("No accessibility tree available")
                 return []
 
-            # Extract app states with X11+CDP+UNO enhancement
-            app_states = self._autoglm_extractor.extract_app_states(accessibility_tree)
+            # Extract window states with X11+CDP+UNO enhancement
+            window_states = self._extractor.extract_window_states(accessibility_tree)
 
-            if app_states:
-                self.logger.info(f"Extracted {len(app_states)} enhanced app states")
-                return app_states
+            if window_states:
+                self.logger.info(f"Extracted {len(window_states)} enhanced window states")
+                return window_states
             else:
-                self.logger.warning("No app states extracted")
+                self.logger.warning("No window states extracted")
                 return []
 
         except Exception as e:
-            self.logger.error(f"Error getting enhanced app states: {e}")
+            self.logger.error(f"Error getting enhanced window states: {e}")
             return []
+
+    def _map_app_name_to_type(self, app_name: str) -> str:
+        """Map application name to app type"""
+        app_name_lower = app_name.lower()
+
+        if "code" in app_name_lower or "vscode" in app_name_lower:
+            return "code"
+        elif "chrome" in app_name_lower or "chromium" in app_name_lower or "google-chrome" in app_name_lower:
+            return "chrome"
+        elif "calc" in app_name_lower or "spreadsheet" in app_name_lower:
+            return "libreoffice_calc"
+        elif "writer" in app_name_lower or "document" in app_name_lower:
+            return "libreoffice_writer"
+        elif "impress" in app_name_lower or "presentation" in app_name_lower:
+            return "libreoffice_impress"
+        elif "soffice" in app_name_lower or "libreoffice" in app_name_lower:
+            return "libreoffice"
+        elif "vlc" in app_name_lower or "media" in app_name_lower:
+            return "vlc"
+        elif "gnome-shell" in app_name_lower:
+            return "desktop"
+        else:
+            return "unknown"
+
+    def _get_app_properties(self, app_type: str) -> Dict[str, Any]:
+        """Get application-specific properties"""
+        try:
+            # Initialize autoglm_v tool classes
+            tools = {
+                "code": CodeTools,
+                "chrome": BrowserTools,
+                "vlc": VLCTools,
+                "libreoffice_calc": CalcTools,
+                "libreoffice_writer": WriterTools,
+                "libreoffice_impress": ImpressTools,
+            }
+
+            if app_type in tools:
+                tool_class = tools[app_type]
+
+                # Get environment info from the tool
+                if hasattr(tool_class, "env_info"):
+                    result = tool_class.env_info()
+                    return {"env_info": result}
+
+                # Get specific properties based on app type
+                if app_type == "libreoffice_calc":
+                    if hasattr(tool_class, "get_workbook_info"):
+                        result = tool_class.get_workbook_info()
+                        return {"workbook_info": result}
+
+                elif app_type == "chrome":
+                    return {"browser_state": "active"}
+
+                elif app_type == "code":
+                    return {"editor_state": "active"}
+
+            return {}
+
+        except Exception as e:
+            self.logger.debug(f"Error getting app properties for {app_type}: {e}")
+            return {}
+
+    def _get_timestamp(self) -> str:
+        """Get current timestamp"""
+        import datetime
+
+        return datetime.datetime.now().strftime("%Y%m%d@%H%M%S")
+
+    def get_window_z_order(self) -> List[str]:
+        """Get actual window stacking order from window manager"""
+        python_code = """
+import subprocess
+import re
+
+try:
+    result = subprocess.run(
+        ["xprop", "-root", "_NET_CLIENT_LIST_STACKING"],
+        capture_output=True, text=True, timeout=2
+    )
+
+    if result.returncode != 0:
+        print("FAILED")
+        exit(1)
+
+    # Parse: _NET_CLIENT_LIST_STACKING(WINDOW): window id # 0x3400001, 0x3400002, ...
+    window_ids = re.findall(r"0x[0-9a-f]+", result.stdout)
+
+    # List is bottom-to-top, so reverse for top-to-bottom
+    window_ids = list(reversed(window_ids))
+
+    for wid in window_ids:
+        print(wid)
+
+except Exception as e:
+    print(f"ERROR: {e}")
+    exit(1)
+"""
+        result = self.execute_python_command(python_code)
+        if not result or result.get("status") != "success":
+            raise RuntimeError(f"Failed to get window z-order from VM: {result}")
+
+        output = result.get("output", "").strip()
+        if output.startswith("ERROR"):
+            raise RuntimeError(f"VM execution failed: {output}")
+        if output.startswith("FAILED"):
+            raise RuntimeError("VM command failed to execute")
+
+        window_ids = [line.strip() for line in output.split("\n") if line.strip()]
+        return window_ids
+
+    def get_window_geometry(self, window_id: str) -> Optional[Dict[str, int]]:
+        """Get window position and size from xwininfo"""
+        python_code = f"""
+import subprocess
+import json
+
+try:
+    result = subprocess.run(
+        ["xwininfo", "-id", "{window_id}", "-stats"],
+        capture_output=True, text=True, timeout=2
+    )
+
+    if result.returncode != 0:
+        print("FAILED")
+        exit(1)
+
+    geometry = {{}}
+    for line in result.stdout.split("\\n"):
+        if "Absolute upper-left X:" in line:
+            geometry["x"] = int(line.split(":")[1].strip())
+        elif "Absolute upper-left Y:" in line:
+            geometry["y"] = int(line.split(":")[1].strip())
+        elif "Width:" in line:
+            geometry["width"] = int(line.split(":")[1].strip())
+        elif "Height:" in line:
+            geometry["height"] = int(line.split(":")[1].strip())
+        elif "Map State:" in line:
+            geometry["mapped"] = "IsViewable" in line
+
+    print(json.dumps(geometry))
+
+except Exception as e:
+    print(f"ERROR: {{e}}")
+    exit(1)
+"""
+        result = self.execute_python_command(python_code)
+        if not result or result.get("status") != "success":
+            raise RuntimeError(f"Failed to get window geometry from VM: {result}")
+
+        output = result.get("output", "").strip()
+        if output.startswith("ERROR"):
+            raise RuntimeError(f"VM execution failed: {output}")
+        if output.startswith("FAILED"):
+            raise RuntimeError("VM command failed to execute")
+
+        try:
+            import json
+
+            geometry = json.loads(output)
+            return geometry if geometry else None
+        except json.JSONDecodeError as e:
+            raise e
+
+    def get_window_name(self, window_id: str) -> str:
+        """Get window title"""
+        python_code = f"""
+import subprocess
+
+try:
+    result = subprocess.run(
+        ["xdotool", "getwindowname", "{window_id}"],
+        capture_output=True, text=True, timeout=2
+    )
+
+    if result.returncode == 0:
+        print(result.stdout.strip())
+    else:
+        print("FAILED")
+        exit(1)
+
+except Exception as e:
+    print(f"ERROR: {{e}}")
+    exit(1)
+"""
+        result = self.execute_python_command(python_code)
+        if not result or result.get("status") != "success":
+            raise RuntimeError(f"Failed to get window name from VM: {result}")
+
+        output = result.get("output", "").strip()
+        if output.startswith("ERROR"):
+            raise RuntimeError(f"VM execution failed: {output}")
+        if output.startswith("FAILED"):
+            raise RuntimeError("VM command failed to execute")
+
+        return output
+
+    def get_focused_window(self) -> Optional[str]:
+        """Get currently focused window ID"""
+        python_code = """
+import subprocess
+
+try:
+    result = subprocess.run(
+        ["xdotool", "getactivewindow"],
+        capture_output=True, text=True, timeout=2
+    )
+
+    if result.returncode == 0:
+        window_id = result.stdout.strip()
+        if window_id.isdigit():
+            print(f"0x{int(window_id):x}")
+        else:
+            print("None")
+    else:
+        print("FAILED")
+        exit(1)
+
+except Exception as e:
+    print(f"ERROR: {{e}}")
+    exit(1)
+"""
+        result = self.execute_python_command(python_code)
+        if not result or result.get("status") != "success":
+            raise RuntimeError(f"Failed to get focused window from VM: {result}")
+
+        output = result.get("output", "").strip()
+        if output.startswith("ERROR"):
+            raise RuntimeError(f"VM execution failed: {output}")
+        if output.startswith("FAILED"):
+            raise RuntimeError("VM command failed to execute")
+
+        return output if output != "None" else None
+
+    def get_current_desktop(self) -> int:
+        """Get current virtual desktop"""
+        python_code = """
+import subprocess
+import re
+
+try:
+    result = subprocess.run(
+        ["xprop", "-root", "_NET_CURRENT_DESKTOP"],
+        capture_output=True, text=True, timeout=2
+    )
+
+    if result.returncode == 0:
+        match = re.search(r"= (\\d+)", result.stdout)
+        if match:
+            print(int(match.group(1)))
+        else:
+            print(0)
+    else:
+        print("FAILED")
+        exit(1)
+
+except Exception as e:
+    print(f"ERROR: {{e}}")
+    exit(1)
+"""
+        result = self.execute_python_command(python_code)
+        if not result or result.get("status") != "success":
+            raise RuntimeError(f"Failed to get current desktop from VM: {result}")
+
+        output = result.get("output", "").strip()
+        if output.startswith("ERROR"):
+            raise RuntimeError(f"VM execution failed: {output}")
+        if output.startswith("FAILED"):
+            raise RuntimeError("VM command failed to execute")
+
+        try:
+            return int(output)
+        except ValueError as e:
+            raise e
+
+    def get_window_desktop(self, window_id: str) -> int:
+        """Get which desktop window is on"""
+        python_code = f"""
+import subprocess
+import re
+
+try:
+    result = subprocess.run(
+        ["xprop", "-id", "{window_id}", "_NET_WM_DESKTOP"],
+        capture_output=True, text=True, timeout=2
+    )
+
+    if result.returncode == 0:
+        match = re.search(r"= (\\d+)", result.stdout)
+        if match:
+            print(int(match.group(1)))
+        else:
+            print(-1)
+    else:
+        print("FAILED")
+        exit(1)
+
+except Exception as e:
+    print(f"ERROR: {{e}}")
+    exit(1)
+"""
+        result = self.execute_python_command(python_code)
+        if not result or result.get("status") != "success":
+            raise RuntimeError(f"Failed to get window desktop from VM: {result}")
+
+        output = result.get("output", "").strip()
+        if output.startswith("ERROR"):
+            raise RuntimeError(f"VM execution failed: {output}")
+        if output.startswith("FAILED"):
+            raise RuntimeError("VM command failed to execute")
+
+        try:
+            return int(output)
+        except ValueError as e:
+            raise e
+
+    def find_windows_for_app(self, app_name: str) -> List[str]:
+        """Find all X11 window IDs for an application"""
+        python_code = f"""
+import subprocess
+
+try:
+    # Try by class name first
+    result = subprocess.run(
+        ["xdotool", "search", "--class", "{app_name}"],
+        capture_output=True, text=True, timeout=2
+    )
+
+    if result.returncode == 0 and result.stdout.strip():
+        window_ids = [f"0x{{int(wid):x}}" for wid in result.stdout.strip().split("\\n") if wid]
+        for wid in window_ids:
+            print(wid)
+        exit(0)
+
+    # Fallback: try by name
+    result = subprocess.run(
+        ["xdotool", "search", "--name", "{app_name}"],
+        capture_output=True, text=True, timeout=2
+    )
+
+    if result.returncode == 0 and result.stdout.strip():
+        window_ids = [f"0x{{int(wid):x}}" for wid in result.stdout.strip().split("\\n") if wid]
+        for wid in window_ids:
+            print(wid)
+    else:
+        print("NONE")
+
+except Exception as e:
+    print(f"ERROR: {{e}}")
+    exit(1)
+"""
+        result = self.execute_python_command(python_code)
+        if not result or result.get("status") != "success":
+            raise RuntimeError(f"Failed to find windows for app from VM: {result}")
+
+        output = result.get("output", "").strip()
+        if output.startswith("ERROR"):
+            raise RuntimeError(f"VM execution failed: {output}")
+        if output == "NONE":
+            return []
+
+        window_ids = [line.strip() for line in output.split("\n") if line.strip()]
+        return window_ids
 
     def get_chrome_dom_data(self) -> Dict[str, Any]:
         """Get Chrome DOM data using CDP"""

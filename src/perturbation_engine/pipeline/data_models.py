@@ -8,74 +8,107 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 
+class VisibilityState(Enum):
+    """Element visibility states"""
+
+    VISIBLE = "visible"  # Fully visible and interactable
+    HIDDEN_COLLAPSED = "collapsed"  # In collapsed menu/dropdown
+    HIDDEN_WINDOW = "hidden_window"  # In hidden/minimized window
+    HIDDEN_TAB = "hidden_tab"  # In inactive tab
+    STRUCTURAL = "structural"  # Container element (frame, panel)
+    HIDDEN_NOT_SHOWING = "not_showing"  # AT-SPI2 showing=false
+
+
 @dataclass
-class AppElement:
-    """Represents a UI element with position and properties"""
+class UIElement:
+    """Represents a UI element with hierarchy"""
 
     element_id: str
     element_type: str
     name: str
-    text: str
-    position: Dict[str, int]  # center_x, center_y, width, height
-    properties: Dict[str, Any]
+    position: Dict[str, int]
+
+    # Hierarchy
+    parent_id: Optional[str] = None
+    children: List["UIElement"] = field(default_factory=list)
+    depth: int = 0
+
+    # States
+    visibility: VisibilityState = VisibilityState.VISIBLE
+    is_enabled: bool = True
+    is_focused: bool = False
+    is_expanded: bool = False  # For menus, dropdowns, etc.
+
+    # Additional properties
+    properties: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert AppElement to dictionary for JSON serialization"""
+        """Convert to dictionary for serialization"""
         return {
             "element_id": self.element_id,
             "element_type": self.element_type,
             "name": self.name,
-            "text": self.text,
+            "text": self.name,
             "position": self.position,
-            "properties": self.properties,
+            "properties": {
+                **self.properties,
+                "parent_id": self.parent_id,
+                "depth": self.depth,
+                "visibility": self.visibility.value,
+                "is_enabled": self.is_enabled,
+                "is_focused": self.is_focused,
+                "is_expanded": self.is_expanded,
+                "children_count": len(self.children),
+            },
         }
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "AppElement":
-        """Create AppElement from dictionary"""
-        return cls(
-            element_id=data["element_id"],
-            element_type=data["element_type"],
-            name=data["name"],
-            text=data["text"],
-            position=data["position"],
-            properties=data["properties"],
-        )
 
 
 @dataclass
-class AppState:
-    """Represents the state of an application"""
+class WindowState:
+    """Represents a window with its elements and X11 window manager data"""
 
+    window_id: str
+    window_name: str
     app_name: str
-    app_type: str
-    window_title: str
-    elements: List[AppElement]
-    properties: Dict[str, Any]
-    timestamp: str
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert AppState to dictionary for JSON serialization"""
-        return {
-            "app_name": self.app_name,
-            "app_type": self.app_type,
-            "window_title": self.window_title,
-            "elements": [element.to_dict() for element in self.elements],
-            "properties": self.properties,
-            "timestamp": self.timestamp,
-        }
+    # Window properties
+    is_active: bool = False
+    is_modal: bool = False
+    is_minimized: bool = False
+    geometry: Dict[str, int] = field(default_factory=dict)
+    z_order: int = 0
 
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "AppState":
-        """Create AppState from dictionary"""
-        return cls(
-            app_name=data["app_name"],
-            app_type=data["app_type"],
-            window_title=data["window_title"],
-            elements=[AppElement.from_dict(elem_data) for elem_data in data["elements"]],
-            properties=data["properties"],
-            timestamp=data["timestamp"],
-        )
+    # X11 window manager data
+    x11_window_id: Optional[str] = None
+    is_mapped: bool = True  # Actually visible from X11
+    desktop: int = 0  # Virtual desktop number
+
+    # Elements tree
+    root_element: Optional[UIElement] = None
+
+    def get_all_elements(self, include_structural: bool = False) -> List[UIElement]:
+        """Get flat list of all elements (DFS traversal)"""
+        if not self.root_element:
+            return []
+
+        elements = []
+
+        def traverse(elem: UIElement):
+            # Filter based on visibility
+            if elem.visibility == VisibilityState.VISIBLE:
+                if include_structural or elem.element_type not in ["frame", "panel", "filler"]:
+                    elements.append(elem)
+
+            # Always traverse children (they might be visible even if parent is structural)
+            for child in elem.children:
+                traverse(child)
+
+        traverse(self.root_element)
+        return elements
+
+    def is_desktop_root(self) -> bool:
+        """Check if this window state represents the desktop root container"""
+        return self.window_id == "desktop_root" or self.app_name.lower() in ["gnome-shell", "gjs", "desktop"]
 
 
 class PerturbationType(Enum):
@@ -555,7 +588,7 @@ class ExecutionContext:
     current_action: str
     action_history: List[str] = field(default_factory=list)
     cot_context: str = ""
-    app_states: List[Dict[str, Any]] = field(default_factory=list)
+    window_states: List[Dict[str, Any]] = field(default_factory=list)
     task_instruction: str = ""
     task_type: str = ""
     scenario_spec: Optional[ScenarioSpec] = None

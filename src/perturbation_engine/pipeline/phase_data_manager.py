@@ -81,7 +81,7 @@ class PhaseDataManager:
         data = {
             "element_id": element.element_id,
             "name": element.name,
-            "text": element.text,
+            "text": element.name,  # UIElement only has 'name' field, not 'text'
             "position": element.position,
         }
         return self.save_phase_data(step_idx, "target_element", data)
@@ -107,7 +107,7 @@ class PhaseDataManager:
             "current_action": context.current_action,
             "action_history": context.action_history,
             "cot_context": context.cot_context,
-            "app_states": context.app_states,
+            "window_states": context.window_states,
             "task_instruction": context.task_instruction,
             "task_type": context.task_type,
             "scenario_spec": {
@@ -130,20 +130,23 @@ class PhaseDataManager:
         """Save perturbation result"""
         return self.save_phase_data(step_idx, "perturbation_result", result)
 
-    def save_app_states(self, step_idx: int, phase: str, app_states: List[Dict[str, Any]]) -> str:
-        """Save app states for specific phase"""
-        data = {"app_states": app_states, "phase": phase}
-        return self.save_phase_data(step_idx, f"app_states_{phase}", data)
+    def save_window_states(self, step_idx: int, phase: str, window_states: List[Any]) -> str:
+        """Save window states for specific phase"""
+        # Convert WindowState objects to serializable format using recursive method
+        serializable_window_states = [self._recursive_to_dict(ws) for ws in window_states]
+
+        data = {"window_states": serializable_window_states, "phase": phase}
+        return self.save_phase_data(step_idx, f"window_states_{phase}", data)
 
     def save_element_test_results(self, step_idx: int, test_results: List[Dict[str, Any]]) -> str:
         """Save element test results for debugging"""
         data = {"test_results": test_results}
         return self.save_phase_data(step_idx, "element_test_results", data)
 
-    def load_app_states(self, step_idx: int, phase: str) -> Optional[List[Dict[str, Any]]]:
-        """Load app states for specific phase"""
-        data = self.load_phase_data(step_idx, f"app_states_{phase}")
-        return data.get("app_states") if data else None
+    def load_window_states(self, step_idx: int, phase: str) -> Optional[List[Dict[str, Any]]]:
+        """Load window states for specific phase"""
+        data = self.load_phase_data(step_idx, f"window_states_{phase}")
+        return data.get("window_states") if data else None
 
     def save_action_update(
         self, step_idx: int, original_action: str, updated_action: str, element_movement: Dict[str, Any]
@@ -191,9 +194,125 @@ class PhaseDataManager:
             return [self._make_serializable(item) for item in data]
         elif isinstance(data, (str, int, float, bool, type(None))):
             return data
+        elif hasattr(data, "window_id") or hasattr(data, "element_id"):
+            # Handle WindowState/UIElement objects using recursive method
+            return self._recursive_to_dict(data)
         else:
             # Convert other types to string representation
             return str(data)
+
+    def _window_state_to_dict(self, window_state: Any) -> Dict[str, Any]:
+        """Convert WindowState object to serializable dictionary"""
+        return self._recursive_to_dict(window_state)
+
+    def _ui_element_to_dict(self, element: Any) -> Dict[str, Any]:
+        """Convert UIElement object to serializable dictionary"""
+        return self._recursive_to_dict(element)
+
+    def _recursive_to_dict(self, obj: Any) -> Dict[str, Any]:
+        """Recursively convert WindowState/UIElement objects to serializable dictionaries"""
+        if obj is None:
+            return None
+
+        # Handle WindowState objects
+        if hasattr(obj, "window_id"):
+            return {
+                "window_id": obj.window_id,
+                "window_name": obj.window_name,
+                "app_name": obj.app_name,
+                "is_active": obj.is_active,
+                "is_modal": obj.is_modal,
+                "is_minimized": obj.is_minimized,
+                "geometry": obj.geometry,
+                "z_order": obj.z_order,
+                "x11_window_id": obj.x11_window_id,
+                "is_mapped": obj.is_mapped,
+                "desktop": obj.desktop,
+                "root_element": self._recursive_to_dict(obj.root_element),
+            }
+
+        # Handle UIElement objects
+        elif hasattr(obj, "element_id"):
+            return {
+                "element_id": obj.element_id,
+                "element_type": obj.element_type,
+                "name": obj.name,
+                "position": obj.position,
+                "parent_id": obj.parent_id,
+                "children": [self._recursive_to_dict(child) for child in obj.children],
+                "depth": obj.depth,
+                "visibility": obj.visibility.value
+                if hasattr(obj.visibility, "value")
+                else str(obj.visibility),
+                "is_enabled": obj.is_enabled,
+                "is_focused": obj.is_focused,
+                "is_expanded": obj.is_expanded,
+                "properties": obj.properties,
+            }
+
+        # Handle other objects (fallback)
+        else:
+            return str(obj)
+
+    def load_window_states_as_objects(self, step_idx: int, phase: str) -> Optional[List[Dict[str, Any]]]:
+        """Load window states and return as reconstructed objects (for debugging)"""
+        data = self.load_phase_data(step_idx, f"window_states_{phase}")
+        if not data:
+            return None
+
+        window_states_data = data.get("window_states", [])
+        reconstructed_states = []
+
+        for ws_data in window_states_data:
+            reconstructed_state = self._dict_to_window_state(ws_data)
+            reconstructed_states.append(reconstructed_state)
+
+        return reconstructed_states
+
+    def _dict_to_window_state(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert dictionary back to WindowState-like structure (for debugging)"""
+        if not data:
+            return None
+
+        # Reconstruct WindowState
+        if "window_id" in data:
+            return {
+                "window_id": data["window_id"],
+                "window_name": data["window_name"],
+                "app_name": data["app_name"],
+                "is_active": data["is_active"],
+                "is_modal": data["is_modal"],
+                "is_minimized": data["is_minimized"],
+                "geometry": data["geometry"],
+                "z_order": data["z_order"],
+                "x11_window_id": data["x11_window_id"],
+                "is_mapped": data["is_mapped"],
+                "desktop": data["desktop"],
+                "root_element": self._dict_to_ui_element(data["root_element"]),
+            }
+
+        # Reconstruct UIElement
+        elif "element_id" in data:
+            return {
+                "element_id": data["element_id"],
+                "element_type": data["element_type"],
+                "name": data["name"],
+                "position": data["position"],
+                "parent_id": data["parent_id"],
+                "children": [self._dict_to_ui_element(child) for child in data.get("children", [])],
+                "depth": data["depth"],
+                "visibility": data["visibility"],
+                "is_enabled": data["is_enabled"],
+                "is_focused": data["is_focused"],
+                "is_expanded": data["is_expanded"],
+                "properties": data["properties"],
+            }
+
+        return data
+
+    def _dict_to_ui_element(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Convert dictionary back to UIElement-like structure (for debugging)"""
+        return self._dict_to_window_state(data)  # Same logic for both
 
 
 class PhaseDebugger:

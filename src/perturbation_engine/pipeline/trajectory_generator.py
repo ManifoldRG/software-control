@@ -23,10 +23,7 @@ from perturbation_engine.pipeline.phase_data_manager import PhaseDataManager
 from perturbation_engine.pipeline.trajectory_replayer import TrajectoryReplayer
 
 # Autoglm_v integration
-from perturbation_engine.tools.autoglm_integration import (
-    AutoglmElementTracker,
-    ElementTester,
-)
+from perturbation_engine.tools.autoglm_integration import AutoglmElementTracker
 from perturbation_engine.utils.memory_utils import force_garbage_collection, log_memory_usage
 
 
@@ -82,9 +79,7 @@ class TrajectoryGenerator:
         self.perturbation_generator = CleanPerturbationGenerator()
         self.path_manager = PathManager(result_base_dir)
 
-        # Initialize autoglm_v components
         self.autoglm_tracker = AutoglmElementTracker()
-        self.element_tester = ElementTester()
 
         # Initialize phase data manager for debugging
         self.phase_data_manager = None  # Will be initialized per trajectory
@@ -124,8 +119,8 @@ class TrajectoryGenerator:
             env.reset(task_config=seed_trajectory.config)
             env.controller.start_recording()
 
-            # Initialize execution state with enhanced app states
-            app_states = env.controller.get_app_states(use_autoglm_enhancement=True)
+            # Initialize execution state with enhanced window states
+            window_states = env.controller.get_window_states()
             done = False
             step_idx = 0
             perturbation_log = []
@@ -143,7 +138,7 @@ class TrajectoryGenerator:
                         perturbation_attempts,
                         perturbation_successes,
                         perturbation_failures,
-                        app_states,
+                        window_states,
                         done,
                         obs,
                     ) = self._execute_single_step(
@@ -151,7 +146,7 @@ class TrajectoryGenerator:
                         step_idx,
                         action,
                         response,
-                        app_states,
+                        window_states,
                         action_history,
                         seed_trajectory,
                         scenario_spec,
@@ -229,7 +224,7 @@ class TrajectoryGenerator:
                 step_by_step_log,
                 perturbation_attempts,
                 perturbation_successes,
-                env.controller.get_app_states(use_autoglm_enhancement=True),
+                env.controller.get_window_states(),
             )
 
             self.logger.info(
@@ -343,7 +338,7 @@ class TrajectoryGenerator:
         step_idx: int,
         timestamp: str,
         task_instruction: str,
-        app_states: list,
+        window_states: list,
         action: Any,
         perturbation_decision: Dict[str, Any],
     ) -> Dict[str, Any]:
@@ -352,11 +347,26 @@ class TrajectoryGenerator:
             "step": step_idx,
             "timestamp": timestamp,
             "task_instruction": task_instruction,
-            "app_state": [
-                app_state.to_dict() if hasattr(app_state, "to_dict") else app_state
-                for app_state in app_states
+            "window_states": [
+                {
+                    "window_id": window_state.window_id,
+                    "window_name": window_state.window_name,
+                    "app_name": window_state.app_name,
+                    "is_active": window_state.is_active,
+                    "is_modal": window_state.is_modal,
+                    "is_minimized": window_state.is_minimized,
+                    "geometry": window_state.geometry,
+                    "z_order": window_state.z_order,
+                    "x11_window_id": window_state.x11_window_id,
+                    "is_mapped": window_state.is_mapped,
+                    "desktop": window_state.desktop,
+                    "root_element": window_state.root_element.to_dict()
+                    if window_state.root_element
+                    else None,
+                }
+                for window_state in window_states
             ]
-            if app_states
+            if window_states
             else [],
             "action": str(action),
             "perturbation_commands": [],
@@ -376,7 +386,7 @@ class TrajectoryGenerator:
         step_by_step_log: list,
         perturbation_attempts: int,
         perturbation_successes: int,
-        final_app_states: list = None,
+        final_window_states: list = None,
     ) -> GeneratedTrajectory:
         """Create GeneratedTrajectory with all required fields"""
         # Extract successful and failed perturbation commands
@@ -399,7 +409,7 @@ class TrajectoryGenerator:
             trajectory_file_path=self.path_manager.get_trajectory_file_path(trajectory_id),
             perturbation_log=perturbation_log,
             scenario_spec_content=self._serialize_scenario_spec(scenario_spec),
-            final_app_states=final_app_states,
+            final_app_states=final_window_states,
             total_perturbation_attempts=perturbation_attempts,
             total_perturbation_successes=perturbation_successes,
             step_by_step_log=step_by_step_log,
@@ -413,7 +423,7 @@ class TrajectoryGenerator:
         step_idx: int,
         action: Any,
         response: Dict[str, Any],
-        app_states: list,
+        window_states: list,
         action_history: list,
         seed_trajectory: SeedTrajectory,
         scenario_spec: ScenarioSpec,
@@ -430,42 +440,41 @@ class TrajectoryGenerator:
 
         # ========== Phase 1: Identify Target Element Candidates (BEFORE Perturbation) ==========
         target_element_candidates = self.autoglm_tracker.identify_target_element_candidates(
-            action_str, app_states
+            action_str, window_states
         )
+        if len(target_element_candidates) == 0:
+            self.logger.warning("✗ No target element candidates found")
+
         target_element = target_element_candidates[0]
+
+        # Create element visualization for debugging
+        try:
+            # Use window_states directly for visualization
+            visualization_path = env.controller.visualize_element_bounding_boxes(
+                window_states,
+                target_element_id=target_element.element_id,
+                output_path=f"./debug/element_visualization_step_{step_idx}_{action_timestamp}.png",
+            )
+            if visualization_path:
+                self.logger.info(f"Element visualization saved: {visualization_path}")
+        except Exception as e:
+            self.logger.exception(f"Could not create element visualization: {e}")
 
         # Save Phase 1 data
         if target_element:
             self.phase_data_manager.save_element_identity(step_idx, target_element)
             self.logger.info(
                 f"✓ Target identified: {target_element.element_id} "
-                f"'{target_element.name or target_element.text[:20]}' "
+                f"'{target_element.name[:20] if target_element.name else 'unnamed'}' "
                 f"at ({target_element.position['center_x']}, {target_element.position['center_y']}) "
             )
-
-            # Create element visualization for debugging
-            try:
-                visualization_path = env.controller.visualize_element_bounding_boxes(
-                    app_states,
-                    target_element_id=target_element.element_id,
-                    output_path=f"./debug/element_visualization_step_{step_idx}_{action_timestamp}.png",
-                )
-                if visualization_path:
-                    self.logger.info(f"Element visualization saved: {visualization_path}")
-            except Exception as e:
-                self.logger.exception(f"Could not create element visualization: {e}")
         else:
             self.logger.error(
                 f"✗ Failed to identify valid target element from {len(target_element_candidates)} candidates"
             )
 
-        # Save app states before perturbation
-        app_states_dict = (
-            [app_state.to_dict() if hasattr(app_state, "to_dict") else app_state for app_state in app_states]
-            if app_states
-            else []
-        )
-        self.phase_data_manager.save_app_states(step_idx, "before_perturbation", app_states_dict)
+        # Save window states using phase data manager
+        self.phase_data_manager.save_window_states(step_idx, "before_perturbation", window_states)
 
         # ========== Phase 2: Perturbation Decision ==========
         execution_context = ExecutionContext(
@@ -473,7 +482,7 @@ class TrajectoryGenerator:
             current_action=action_str,
             action_history=action_history.copy(),
             cot_context=response.get("thought", ""),
-            app_states=app_states,
+            window_states=window_states,  # Pass window_states directly
             task_instruction=seed_trajectory.task_instruction,
             task_type=seed_trajectory.task_type,
             scenario_spec=scenario_spec,
@@ -492,7 +501,7 @@ class TrajectoryGenerator:
             step_idx,
             action_timestamp,
             seed_trajectory.task_instruction,
-            app_states,
+            window_states,
             action,
             perturbation_decision,
         )
@@ -555,23 +564,15 @@ class TrajectoryGenerator:
 
         # ========== Phase 4: Update Action Coordinates (if perturbation applied) ==========
         if target_element and perturbation_applied:
-            # Get fresh app states after perturbation
-            app_states_after = env.controller.get_app_states(use_autoglm_enhancement=True)
+            # Get fresh window states after perturbation
+            window_states_after = env.controller.get_window_states()
 
-            # Save app states after perturbation
-            app_states_after_dict = (
-                [
-                    app_state.to_dict() if hasattr(app_state, "to_dict") else app_state
-                    for app_state in app_states_after
-                ]
-                if app_states_after
-                else []
-            )
-            self.phase_data_manager.save_app_states(step_idx, "after_perturbation", app_states_after_dict)
+            # Save window states after perturbation using phase data manager
+            self.phase_data_manager.save_window_states(step_idx, "after_perturbation", window_states_after)
 
             # Track element in new states using autoglm_v
             target_element = self.autoglm_tracker.track_element_after_perturbation(
-                target_element, app_states_after
+                target_element, window_states_after
             )
 
         # ========== Phase 5: Execute Action ==========
@@ -585,16 +586,31 @@ class TrajectoryGenerator:
         if done:
             self.logger.info(f"Episode completed at step {step_idx + 1}")
 
-        # Update app states after action
-        app_states = env.controller.get_app_states(use_autoglm_enhancement=True)
+        # Update window states after action
+        window_states = env.controller.get_window_states()
 
         step_log_entry.update(
             {
-                "app_state_after_action": [
-                    app_state.to_dict() if hasattr(app_state, "to_dict") else app_state
-                    for app_state in app_states
+                "window_states_after_action": [
+                    {
+                        "window_id": window_state.window_id,
+                        "window_name": window_state.window_name,
+                        "app_name": window_state.app_name,
+                        "is_active": window_state.is_active,
+                        "is_modal": window_state.is_modal,
+                        "is_minimized": window_state.is_minimized,
+                        "geometry": window_state.geometry,
+                        "z_order": window_state.z_order,
+                        "x11_window_id": window_state.x11_window_id,
+                        "is_mapped": window_state.is_mapped,
+                        "desktop": window_state.desktop,
+                        "root_element": window_state.root_element.to_dict()
+                        if window_state.root_element
+                        else None,
+                    }
+                    for window_state in window_states
                 ]
-                if app_states
+                if window_states
                 else [],
                 "target_element": target_element.to_dict() if target_element else None,
                 "reward": reward,
@@ -619,7 +635,7 @@ class TrajectoryGenerator:
             obs,
             perturbation_decision.get("should_apply", False),
             task_instruction=seed_trajectory.task_instruction,
-            app_states=app_states,
+            window_states=window_states,
             target_element=target_element,
             scenario_spec=scenario_spec,
             perturbation_decision=perturbation_decision,
@@ -630,7 +646,7 @@ class TrajectoryGenerator:
             perturbation_attempts,
             perturbation_successes,
             perturbation_failures,
-            app_states,
+            window_states,
             done,
             obs,
         )
@@ -675,7 +691,7 @@ class TrajectoryGenerator:
         obs: Dict[str, Any],
         perturbation_applied: bool,
         task_instruction: str = "",
-        app_states: list = None,
+        window_states: list = None,
         target_element: Dict[str, Any] = None,
         scenario_spec: ScenarioSpec = None,
         perturbation_decision: Dict[str, Any] = None,
@@ -712,9 +728,6 @@ class TrajectoryGenerator:
 
             if task_instruction:
                 trajectory_data["task_instruction"] = task_instruction
-            # if app_states:
-            # Convert AppState objects to dictionaries for JSON serialization
-            # trajectory_data["app_states"] = [app_state.to_dict() if hasattr(app_state, 'to_dict') else app_state for app_state in app_states]
 
             if target_element:
                 trajectory_data["target_element"] = target_element.to_dict() if target_element else None
@@ -744,3 +757,32 @@ class TrajectoryGenerator:
 
         except Exception as e:
             self.logger.error(f"Error saving trajectory step: {e}")
+
+    def _map_app_name_to_type(self, app_name: str) -> str:
+        """Map application name to app type"""
+        app_name_lower = app_name.lower()
+
+        if "code" in app_name_lower or "vscode" in app_name_lower:
+            return "code"
+        elif "chrome" in app_name_lower or "chromium" in app_name_lower or "google-chrome" in app_name_lower:
+            return "chrome"
+        elif "calc" in app_name_lower or "spreadsheet" in app_name_lower:
+            return "libreoffice_calc"
+        elif "writer" in app_name_lower or "document" in app_name_lower:
+            return "libreoffice_writer"
+        elif "impress" in app_name_lower or "presentation" in app_name_lower:
+            return "libreoffice_impress"
+        elif "soffice" in app_name_lower or "libreoffice" in app_name_lower:
+            return "libreoffice"
+        elif "vlc" in app_name_lower or "media" in app_name_lower:
+            return "vlc"
+        elif "gnome-shell" in app_name_lower:
+            return "desktop"
+        else:
+            return "unknown"
+
+    def _get_timestamp(self) -> str:
+        """Get current timestamp"""
+        import datetime
+
+        return datetime.datetime.now().strftime("%Y%m%d@%H%M%S")

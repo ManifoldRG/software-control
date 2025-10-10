@@ -2,11 +2,13 @@
 Pipeline Refactored: Clean data randomization pipeline
 """
 
-from .app_state_utils import get_element_property, normalize_app_states, normalize_elements
+from .app_state_utils import (
+    get_element_property,
+    normalize_ui_elements,
+    normalize_window_states,
+)
 from .clean_llm_services import CleanCurriculumGenerator, CleanPerturbationGenerator, CleanQualityLLM
 from .data_models import (
-    AppElement,
-    AppState,
     CurriculumConfig,
     ExecutionConfig,
     ExecutionContext,
@@ -14,6 +16,9 @@ from .data_models import (
     PerturbationType,
     ScenarioSpec,
     SeedTrajectory,
+    UIElement,
+    VisibilityState,
+    WindowState,
 )
 from .perturbation_desktop_env import AppType, PerturbationDesktopEnv
 from .quality_evaluator import QualityEvaluator
@@ -21,6 +26,8 @@ from .shared_execution_engine import SharedExecutionEngine
 from .trajectory_generator import TrajectoryGenerator
 from .trajectory_replayer import TrajectoryReplayer
 from .unified_generator import UnifiedGenerator
+
+# Import WindowState and UIElement from data_models
 
 __all__ = [
     "ExecutionConfig",
@@ -31,10 +38,11 @@ __all__ = [
     "ExecutionContext",
     "PerturbationType",
     "PerturbationPhase",
-    "AppState",
-    "AppElement",
-    "normalize_app_states",
-    "normalize_elements",
+    "WindowState",
+    "UIElement",
+    "VisibilityState",
+    "normalize_window_states",
+    "normalize_ui_elements",
     "get_element_property",
     "TrajectoryGenerator",
     "SharedExecutionEngine",

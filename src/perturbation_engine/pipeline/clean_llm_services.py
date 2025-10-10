@@ -11,8 +11,8 @@ from google import genai
 from google.genai import types
 
 from perturbation_engine.pipeline.app_state_utils import (
-    normalize_app_states,
-    normalize_elements,
+    normalize_ui_elements,
+    normalize_window_states,
 )
 from perturbation_engine.pipeline.data_models import (
     ApiCallType,
@@ -24,6 +24,8 @@ from perturbation_engine.pipeline.data_models import (
     PerturbationType,
     ScenarioSpec,
     SeedTrajectory,
+    UIElement,
+    WindowState,
 )
 
 PROMPT_CONSTANTS = {
@@ -517,17 +519,17 @@ class OperationCatalog:
         """Get operations for specific app"""
         return self.catalog["app_tools"].get(app_name.lower(), {})
 
-    def format_operations_for_llm(self, app_states: List[Any] = None) -> str:
+    def format_operations_for_llm(self, window_states: List[Any] = None) -> str:
         """Format operations for LLM prompt based on app states"""
-        if not app_states:
-            self.logger.error("No app states provided to format_operations_for_llm")
-            raise ValueError("No app states provided")
+        if not window_states:
+            self.logger.error("No window states provided to format_operations_for_llm")
+            raise ValueError("No window states provided")
 
-        normalized_states = normalize_app_states(app_states)
+        normalized_states = normalize_window_states(window_states)
         formatted_operations = []
 
-        for app_state in normalized_states:
-            app_name = app_state.app_name
+        for window_state in normalized_states:
+            app_name = window_state.app_name
             app_ops = self.get_operations_for_app(app_name)
 
             if app_ops:
@@ -568,7 +570,7 @@ class OperationCatalog:
 class CleanLLM:
     """Clean, simplified LLM interface"""
 
-    def __init__(self, model_name: str = "gemini-2.0-flash-lite"):
+    def __init__(self, model_name: str = "gemini-2.5-flash-lite"):
         self.model_name = model_name
         self.logger = logging.getLogger(__name__)
         self.api_key = os.getenv("GEMINI_API_KEY")
@@ -589,18 +591,34 @@ class CleanLLM:
         while retries < max_retries:
             try:
                 retries += 1
-                response = self.client.models.generate_content(
-                    model=self.model_name,
-                    contents=prompt,
-                    config=types.GenerateContentConfig(
-                        thinking_config=types.ThinkingConfig(thinking_budget=0)
-                    ),
-                )
-                return response.text
+                if self.model_name.startswith("gemini-"):
+                    response = self.client.models.generate_content(
+                        model=self.model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            thinking_config=types.ThinkingConfig(thinking_budget=0)
+                        ),
+                    )
+                    return response.text
+                elif self.model_name.startswith("openrouter"):
+                    from openai import OpenAI
+
+                    client = OpenAI(
+                        base_url="https://openrouter.ai/api/v1",
+                        api_key=os.getenv("OPENROUTER_API_KEY"),
+                    )
+
+                    completion = client.chat.completions.create(
+                        extra_headers={},
+                        extra_body={},
+                        model="moonshotai/kimi-dev-72b:free",
+                        messages=[{"role": "user", "content": prompt}],
+                    )
+                    return completion.choices[0].message.content
             except Exception as e:
                 self.logger.error(f"Error calling LLM: {e}, retrying {retries}/{max_retries}...")
 
-        return f'{"error": "LLM call failed after {max_retries} attempts"}'
+        return f"{'error: LLM call failed after {max_retries} attempts'}"
 
     def extract_json(self, response: str) -> List[Dict[str, Any]]:
         """Extract JSON from LLM response"""
@@ -638,10 +656,10 @@ class CleanCurriculumGenerator(CleanLLM):
         self.verifier = LLMOutputVerifier()
 
     def generate_scenario_specs(
-        self, seed_trajectory: SeedTrajectory, app_states: List[Any], curriculum_config: CurriculumConfig
+        self, seed_trajectory: SeedTrajectory, window_states: List[Any], curriculum_config: CurriculumConfig
     ) -> List[ScenarioSpec]:
         """Generate diverse and strategic scenario specifications using LLM with full operation awareness"""
-        task_context = self._analyze_task_context_with_llm(seed_trajectory, app_states, curriculum_config)
+        task_context = self._analyze_task_context_with_llm(seed_trajectory, window_states, curriculum_config)
         scenarios = self._generate_diverse_scenarios_with_llm(task_context, curriculum_config.scenario_count)
         validated_scenarios = self._validate_scenarios(scenarios, task_context, seed_trajectory.task_id)
         diverse_scenarios = self._ensure_curriculum_diversity(validated_scenarios, task_context)
@@ -802,11 +820,11 @@ CRITICAL REQUIREMENTS:
         return scenarios
 
     def _analyze_task_context_with_llm(
-        self, seed_trajectory: SeedTrajectory, app_states: List[Any], curriculum_config: CurriculumConfig
+        self, seed_trajectory: SeedTrajectory, window_states: List[Any], curriculum_config: CurriculumConfig
     ) -> Dict[str, Any]:
         """Analyze task and create comprehensive context for LLM using LLM-driven analysis only"""
         task_instruction = seed_trajectory.task_instruction
-        llm_analysis = self._get_llm_task_analysis_with_retries(task_instruction, app_states)
+        llm_analysis = self._get_llm_task_analysis_with_retries(task_instruction, window_states)
 
         task_analysis = {
             "instruction": task_instruction,
@@ -815,8 +833,8 @@ CRITICAL REQUIREMENTS:
             "learning_objectives": llm_analysis.get(
                 "learning_objectives", ["Learn visual invariance across different UI states"]
             ),
-            "app_types": [app_state.app_name for app_state in normalize_app_states(app_states)],
-            "available_operations": self.operation_catalog.format_operations_for_llm(app_states),
+            "app_types": [window_state.app_name for window_state in normalize_window_states(window_states)],
+            "available_operations": self.operation_catalog.format_operations_for_llm(window_states),
             "scenario_count": curriculum_config.scenario_count,
             "task_characteristics": llm_analysis.get("task_characteristics", {}),
             "perturbation_opportunities": llm_analysis.get("perturbation_opportunities", []),
@@ -825,13 +843,13 @@ CRITICAL REQUIREMENTS:
         return task_analysis
 
     def _get_llm_task_analysis_with_retries(
-        self, task_instruction: str, app_states: List[Any]
+        self, task_instruction: str, window_states: List[Any]
     ) -> Dict[str, Any]:
         """Use LLM to intelligently analyze task characteristics with retry mechanism"""
 
         try:
-            app_states_summary = self._format_app_states_for_analysis(app_states)
-            app_manipulation_analysis = self._analyze_app_manipulation_capabilities(app_states)
+            app_states_summary = self._format_window_states_for_analysis(window_states)
+            app_manipulation_analysis = self._analyze_app_manipulation_capabilities(window_states)
 
             prompt = f"""
 {PROMPT_CONSTANTS["task_analysis_role"]}
@@ -846,7 +864,7 @@ APP MANIPULATION CAPABILITIES ANALYSIS:
 {app_manipulation_analysis}
 
 AVAILABLE OPERATIONS:
-{self.operation_catalog.format_operations_for_llm(app_states)}
+{self.operation_catalog.format_operations_for_llm(window_states)}
 
 ANALYSIS REQUIREMENTS:
 {chr(10).join(PROMPT_CONSTANTS["analysis_requirements"])}
@@ -901,29 +919,29 @@ Return JSON:
             self.logger.exception(f"LLM task analysis failed after 3 attempts: {e}")
             return {}
 
-    def _format_app_states_for_analysis(self, app_states: List[Any]) -> str:
-        """Format app states for LLM task analysis with granular element details"""
-        if not app_states:
-            return "No app states available"
+    def _format_window_states_for_analysis(self, window_states: List[Any]) -> str:
+        """Format window states for LLM task analysis with granular element details"""
+        if not window_states:
+            return "No window states available"
 
-        normalized_states = normalize_app_states(app_states)
+        normalized_states = normalize_window_states(window_states)
         formatted = []
 
-        for app_state in normalized_states:
-            app_name = app_state.app_name
-            elements = app_state.elements
+        for window_state in normalized_states:
+            app_name = window_state.app_name
+            elements = window_state.get_all_elements()
 
             if not elements:
                 formatted.append(f"App: {app_name} (no elements)")
                 continue
 
-            normalized_elements = normalize_elements(elements)
+            normalized_elements = normalize_ui_elements(elements)
 
             # Group elements by type and show names
             element_types = {}
             for element in normalized_elements:
                 elem_type = element.element_type
-                elem_name = element.name or element.text or "unnamed"
+                elem_name = element.name or "unnamed"
 
                 if elem_type not in element_types:
                     element_types[elem_type] = []
@@ -949,11 +967,11 @@ Return JSON:
         if not app_states:
             return "No app states available for analysis"
 
-        normalized_states = normalize_app_states(app_states)
+        normalized_states = normalize_window_states(app_states)
         analysis_parts = []
 
-        for app_state in normalized_states:
-            app_name = app_state.app_name
+        for window_state in normalized_states:
+            app_name = window_state.app_name
             app_ops = self.operation_catalog.get_operations_for_app(app_name)
 
             if not app_ops:
@@ -1174,7 +1192,7 @@ class CleanPerturbationGenerator(CleanLLM):
         Step: {execution_context.step_idx}
         Action: {execution_context.current_action}
         Task: {execution_context.task_instruction}
-        App States: {self._format_app_states_for_decision(execution_context.app_states)}
+        App States: {self._format_app_states_for_decision(execution_context.window_states)}
 
         SCENARIO SPECIFICATION:
         Target App: {scenario_spec.target_app}
@@ -1267,18 +1285,18 @@ COMMAND GENERATION EXAMPLES:
         if not app_states:
             return "No app states available"
 
-        normalized_states = normalize_app_states(app_states)
+        normalized_states = normalize_window_states(app_states)
         formatted = []
 
-        for app_state in normalized_states:
-            app_name = app_state.app_name
-            elements = app_state.elements
+        for window_state in normalized_states:
+            app_name = window_state.app_name
+            elements = window_state.get_all_elements()
 
             if not elements:
                 formatted.append(f"App: {app_name} (no elements detected)")
                 continue
 
-            normalized_elements = normalize_elements(elements)
+            normalized_elements = normalize_ui_elements(elements)
 
             interactive_elements = [
                 elem
@@ -1303,7 +1321,7 @@ COMMAND GENERATION EXAMPLES:
             # Show key interactive elements
             if interactive_elements:
                 key_elements = interactive_elements[:3]  # Show first 3
-                element_names = [elem.name or elem.text or elem.element_type for elem in key_elements]
+                element_names = [elem.name or elem.element_type for elem in key_elements]
                 formatted.append(f"  Key interactive: {', '.join(element_names)}")
 
         return "\n".join(formatted)
@@ -1383,7 +1401,7 @@ COMMAND GENERATION EXAMPLES:
                     target_app,
                     perturbation_type,
                     generated_command,
-                    execution_context.app_states[0] if execution_context.app_states else {},
+                    execution_context.window_states[0] if execution_context.window_states else {},
                 )
 
                 llm_decision["procedural_memory_enhanced"] = True
@@ -1407,11 +1425,11 @@ class CleanElementIdentificationLLM(CleanLLM):
         return candidates[0] if candidates else None
 
     def identify_target_element_candidates(
-        self, action_str: str, app_states: List[Dict[str, Any]]
+        self, action_str: str, window_states: List[WindowState]
     ) -> List[Dict[str, Any]]:
-        """Use LLM to identify ALL potential target elements from action string and app states"""
+        """Use LLM to identify ALL potential target elements from action string and window states"""
 
-        app_states_summary = self._format_app_states_for_llm(app_states)
+        window_states_summary = self._format_window_states_for_llm(window_states)
 
         prompt = f"""
         Find ALL possible UI elements that this action could be trying to interact with.
@@ -1420,7 +1438,7 @@ class CleanElementIdentificationLLM(CleanLLM):
         Action: "{action_str}"
 
         Available Elements:
-        {app_states_summary}
+        {window_states_summary}
 
         IMPORTANT DISAMBIGUATION RULES:
         - If multiple elements have the same name, consider ALL of them as potential candidates
@@ -1429,6 +1447,7 @@ class CleanElementIdentificationLLM(CleanLLM):
         - Elements with coordinates outside screen bounds (0-1920, 0-1080) are likely invalid
         - Elements marked as "[collapsed menu - likely invisible]" or "[hidden dropdown - likely invisible]" should be deprioritized
         - Elements marked as "[inactive tab - likely invisible]" should be deprioritized
+        - Elements marked as "[blocked by higher window]" should be deprioritized
         - Rank by: 1) Element type appropriateness, 2) Coordinate reasonableness, 3) Hierarchy visibility, 4) Context relevance
 
         Return JSON array with element identifiers, ranked by likelihood from 0.00 to 1.00 and only return elements with confidence values greater than 0.70:
@@ -1474,112 +1493,248 @@ class CleanElementIdentificationLLM(CleanLLM):
 
         return valid_candidates
 
-    def _format_app_states_for_llm(self, app_states: List[Any]) -> str:
-        """Format app states with window hierarchy information for LLM consumption"""
-        if not app_states:
-            return "No app states available"
+    def _format_window_states_for_llm(self, window_states: List[WindowState]) -> str:
+        """Format window states with complete hierarchical element tree for LLM consumption"""
+        if not window_states:
+            return "No window states available"
 
-        normalized_states = normalize_app_states(app_states)
+        normalized_states = normalize_window_states(window_states)
         formatted_states = []
 
-        for app_state in normalized_states:
-            app_name = app_state.app_name
-            window_title = app_state.window_title
-            elements = app_state.elements
-
-            if not elements:
-                continue
-
-            normalized_elements = normalize_elements(elements)
+        for window_state in normalized_states:
+            app_name = window_state.app_name
+            window_name = window_state.window_name
 
             # Show window hierarchy information
-            if window_title != app_name:
-                app_summary = f"App: {app_name} - Window: {window_title}\n"
+            if window_name != app_name:
+                app_summary = f"App: {app_name} - Window: {window_name}\n"
             else:
                 app_summary = f"App: {app_name}\n"
 
             # Add window properties if available
-            window_props = app_state.properties
-            if window_props.get("is_top_window"):
+            if window_state.is_active:
                 app_summary += "  [TOP WINDOW]\n"
-            if window_props.get("window_z_order", 0) > 500:
+            if window_state.z_order > 500:
                 app_summary += "  [HIGH PRIORITY WINDOW]\n"
 
-            # Group elements by name to show different types for same text
-            elements_by_name = {}
-            for element in normalized_elements:
-                element_type = element.element_type
-                name = element.name
-                text = element.text
-
-                # Format name/text
-                display_name = name if name else text
-                if not display_name:
-                    display_name = f"{element_type}"
-
-                if display_name not in elements_by_name:
-                    elements_by_name[display_name] = []
-                elements_by_name[display_name].append(
-                    {"type": element_type, "position": element.position, "properties": element.properties}
+            # Traverse the hierarchical element tree with z-order blocking consideration
+            if window_state.root_element:
+                app_summary += self._format_element_tree_hierarchical(
+                    window_state.root_element,
+                    depth=0,
+                    window_state=window_state,
+                    all_window_states=normalized_states,
                 )
-
-            # Format grouped elements with enhanced context
-            for display_name, element_info_list in elements_by_name.items():
-                if len(element_info_list) == 1:
-                    element_info = element_info_list[0]
-                    pos = element_info["position"]
-                    element_type = element_info["type"]
-
-                    # Add window context (new format)
-                    context_hint = ""
-                    if element_info.get("properties", {}).get("is_top_window"):
-                        context_hint = " [top window]"
-                    elif element_info.get("properties", {}).get("is_modal"):
-                        context_hint = " [modal window]"
-
-                    app_summary += f"  - {display_name} ({element_type}){context_hint} at ({pos.get('center_x', 0)}, {pos.get('center_y', 0)})\n"
-                else:
-                    # Multiple elements with same name - show context to help disambiguation
-                    app_summary += f"  - {display_name} (multiple found):\n"
-                    for i, element_info in enumerate(element_info_list, 1):
-                        pos = element_info["position"]
-                        element_type = element_info["type"]
-
-                        # Add comprehensive context hints (new format)
-                        context_hint = ""
-                        properties = element_info.get("properties", {})
-
-                        # Element type hints
-                        if "menu-item" in element_type:
-                            context_hint = " [menu]"
-                        elif "check-box" in element_type:
-                            context_hint = " [checkbox]"
-                        elif "button" in element_type:
-                            context_hint = " [button]"
-                        elif "tab" in element_type:
-                            context_hint = " [tab]"
-
-                        # Window context hints (new format)
-                        if properties.get("is_top_window"):
-                            context_hint += " [top window]"
-                        elif properties.get("is_modal"):
-                            context_hint += " [modal window]"
-
-                        # Visibility-based context hints (new format)
-                        if properties.get("visibility") == "collapsed":
-                            context_hint += " [collapsed menu - likely invisible]"
-                        elif properties.get("visibility") == "hidden_window":
-                            context_hint += " [hidden window - likely invisible]"
-                        elif properties.get("visibility") == "hidden_tab":
-                            context_hint += " [inactive tab - likely invisible]"
-                        elif properties.get("visibility") == "structural":
-                            context_hint += " [structural container]"
-
-                        app_summary += f"    {i}. {element_type}{context_hint} at ({pos.get('center_x', 0)}, {pos.get('center_y', 0)})\n"
+            else:
+                app_summary += "  (no elements detected)\n"
 
             formatted_states.append(app_summary)
 
         return "\n".join(formatted_states)
+
+    def _format_app_states_for_llm(self, app_states: List[Any]) -> str:
+        """Format app states with hierarchical element tree for LLM consumption"""
+        if not app_states:
+            return "No app states available"
+
+        normalized_states = normalize_window_states(app_states)
+        formatted_states = []
+
+        for window_state in normalized_states:
+            app_name = window_state.app_name
+            window_name = window_state.window_name
+
+            # Show window hierarchy information
+            if window_name != app_name:
+                app_summary = f"App: {app_name} - Window: {window_name}\n"
+            else:
+                app_summary = f"App: {app_name}\n"
+
+            # Add window properties if available
+            if window_state.is_active:
+                app_summary += "  [TOP WINDOW]\n"
+            if window_state.z_order > 500:
+                app_summary += "  [HIGH PRIORITY WINDOW]\n"
+
+            # Traverse the hierarchical element tree with z-order blocking consideration
+            if window_state.root_element:
+                app_summary += self._format_element_tree_hierarchical(
+                    window_state.root_element,
+                    depth=0,
+                    window_state=window_state,
+                    all_window_states=normalized_states,
+                )
+            else:
+                app_summary += "  (no elements detected)\n"
+
+            formatted_states.append(app_summary)
+
+        return "\n".join(formatted_states)
+
+    def _format_element_tree_hierarchical(
+        self,
+        element: UIElement,
+        depth: int = 0,
+        window_state: WindowState = None,
+        all_window_states: List[WindowState] = None,
+    ) -> str:
+        """Format element tree with complete hierarchical structure and visibility context"""
+        if not element:
+            return ""
+
+        result = ""
+        indent = "  " * (depth + 1)  # +1 because we're inside the window
+
+        # Show ALL elements in the tree (autoglm_integration.py already filtered hidden parents)
+        # Add context hints based on element properties and z-order blocking
+        context_hints = self._get_element_context_hints(element, window_state, all_window_states)
+
+        # Format element name and type
+        display_name = element.name if element.name else f"{element.element_type}"
+
+        # Format position
+        pos = element.position
+        position_str = f"at ({pos.get('center_x', 0)}, {pos.get('center_y', 0)})" if pos else "no position"
+
+        # Add element line
+        result += f"{indent}- {display_name} ({element.element_type}){context_hints} {position_str}\n"
+
+        # Traverse all children since autoglm_integration.py already filtered out hidden parent children
+        for child in element.children:
+            child_result = self._format_element_tree_hierarchical(
+                child, depth + 1, window_state, all_window_states
+            )
+            result += child_result
+
+        return result
+
+    def _should_show_element(
+        self,
+        element: UIElement,
+        window_state: WindowState = None,
+        all_window_states: List[WindowState] = None,
+    ) -> bool:
+        """Determine if element should be shown based on visibility and z-order blocking"""
+        # Always show structural elements (they provide context)
+        if element.element_type in ["frame", "panel", "filler", "layered-pane"]:
+            return True
+
+        # Show visible elements (autoglm_integration.py already filtered out children of hidden parents)
+        if element.visibility.value == "visible":
+            # Check if element is blocked by higher z-order windows
+            if self._is_element_blocked_by_z_order(element, window_state, all_window_states):
+                return False
+            return True
+
+        # Show elements that might be interactive even if not fully visible
+        if element.element_type in [
+            "button",
+            "link",
+            "input",
+            "menu",
+            "checkbox",
+            "radio",
+            "slider",
+            "combo-box",
+        ]:
+            # Still check z-order blocking for interactive elements
+            if self._is_element_blocked_by_z_order(element, window_state, all_window_states):
+                return False
+            return True
+
+    def _is_element_blocked_by_z_order(
+        self, element: UIElement, window_state: WindowState, all_window_states: List[WindowState]
+    ) -> bool:
+        """Check if element is blocked by a higher z-order window"""
+        if not element.position or not window_state or not all_window_states:
+            return False
+
+        element_x = element.position.get("x", 0)
+        element_y = element.position.get("y", 0)
+        element_width = element.position.get("width", 0)
+        element_height = element.position.get("height", 0)
+
+        if element_width <= 0 or element_height <= 0:
+            return False
+
+        # Check all windows with higher z-order than current window
+        current_z_order = window_state.z_order
+        for other_window in all_window_states:
+            if other_window.z_order > current_z_order and other_window.is_mapped:
+                # Check if other window's geometry overlaps with element
+                other_geometry = other_window.geometry
+                if not other_geometry:
+                    continue
+
+                other_x = other_geometry.get("x", 0)
+                other_y = other_geometry.get("y", 0)
+                other_width = other_geometry.get("width", 0)
+                other_height = other_geometry.get("height", 0)
+
+                # Check for overlap
+                if (
+                    other_x < element_x + element_width
+                    and other_x + other_width > element_x
+                    and other_y < element_y + element_height
+                    and other_y + other_height > element_y
+                ):
+                    return True
+
+        return False
+
+    def _get_element_context_hints(
+        self,
+        element: UIElement,
+        window_state: WindowState = None,
+        all_window_states: List[WindowState] = None,
+    ) -> str:
+        """Get context hints for element based on its properties and z-order blocking"""
+        hints = []
+
+        # Element type hints
+        if "menu-item" in element.element_type:
+            hints.append("[menu]")
+        elif "check-box" in element.element_type:
+            hints.append("[checkbox]")
+        elif "button" in element.element_type:
+            hints.append("[button]")
+        elif "tab" in element.element_type:
+            hints.append("[tab]")
+        elif "input" in element.element_type:
+            hints.append("[input]")
+        elif "link" in element.element_type:
+            hints.append("[link]")
+
+        # Visibility hints (simplified since autoglm_integration.py handles parent filtering)
+        if element.visibility.value == "collapsed":
+            hints.append("[collapsed - likely invisible]")
+        elif element.visibility.value == "hidden_window":
+            hints.append("[hidden window - likely invisible]")
+        elif element.visibility.value == "hidden_tab":
+            hints.append("[inactive tab - likely invisible]")
+        elif element.visibility.value == "structural":
+            hints.append("[structural container]")
+        elif element.visibility.value == "not_showing":
+            hints.append("[not showing - likely invisible]")
+
+        # Z-order blocking hints
+        if window_state and all_window_states:
+            if self._is_element_blocked_by_z_order(element, window_state, all_window_states):
+                hints.append("[blocked by higher window]")
+
+        # State hints
+        if element.is_focused:
+            hints.append("[focused]")
+        if not element.is_enabled:
+            hints.append("[disabled]")
+        if element.is_expanded:
+            hints.append("[expanded]")
+
+        # Depth hint for context
+        if element.depth > 3:
+            hints.append(f"[deep: {element.depth}]")
+
+        return " " + " ".join(hints) if hints else ""
 
 
 class CleanQualityLLM(CleanLLM):
