@@ -6,13 +6,13 @@ Clean interface for the entire pipeline
 import logging
 from typing import List
 
-from perturbation_engine.pipeline.clean_llm_services import CleanCurriculumGenerator
 from perturbation_engine.pipeline.data_models import (
     CurriculumConfig,
     ExecutionConfig,
     GeneratedTrajectory,
     SeedTrajectory,
 )
+from perturbation_engine.pipeline.llm_services import CurriculumGenerator
 from perturbation_engine.pipeline.perturbation_desktop_env import PerturbationDesktopEnv
 from perturbation_engine.pipeline.phase_data_manager import PhaseDataManager
 from perturbation_engine.pipeline.quality_evaluator import QualityEvaluator
@@ -30,7 +30,7 @@ class UnifiedGenerator:
         self.logger = logging.getLogger(__name__)
 
         # Initialize components
-        self.curriculum_generator = CleanCurriculumGenerator()
+        self.curriculum_generator = CurriculumGenerator()
         self.trajectory_generator = TrajectoryGenerator(result_base_dir)
         self.shared_execution_engine = SharedExecutionEngine(execution_config, result_base_dir)
         self.quality_evaluator = QualityEvaluator()

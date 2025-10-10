@@ -11,13 +11,13 @@ import re
 import time
 from typing import Any, Dict
 
-from perturbation_engine.pipeline.clean_llm_services import CleanPerturbationGenerator
 from perturbation_engine.pipeline.data_models import (
     ExecutionContext,
     GeneratedTrajectory,
     ScenarioSpec,
     SeedTrajectory,
 )
+from perturbation_engine.pipeline.llm_services import PerturbationGenerator
 from perturbation_engine.pipeline.perturbation_desktop_env import PerturbationDesktopEnv
 from perturbation_engine.pipeline.phase_data_manager import PhaseDataManager
 from perturbation_engine.pipeline.trajectory_replayer import TrajectoryReplayer
@@ -76,7 +76,7 @@ class TrajectoryGenerator:
             configure_logging()
 
         self.logger = logging.getLogger(__name__)
-        self.perturbation_generator = CleanPerturbationGenerator()
+        self.perturbation_generator = PerturbationGenerator()
         self.path_manager = PathManager(result_base_dir)
 
         self.autoglm_tracker = AutoglmElementTracker()

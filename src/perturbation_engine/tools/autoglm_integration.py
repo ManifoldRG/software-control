@@ -780,9 +780,9 @@ class AutoglmElementTracker:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         self.grounding_agent = GroundingAgent()
-        from perturbation_engine.pipeline.clean_llm_services import CleanElementIdentificationLLM
+        from perturbation_engine.pipeline.llm_services import ElementIdentificationLLM
 
-        self.llm = CleanElementIdentificationLLM()
+        self.llm = ElementIdentificationLLM()
 
     def identify_target_element_candidates(
         self, action_str: str, window_states: List[WindowState]
