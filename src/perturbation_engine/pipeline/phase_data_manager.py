@@ -269,13 +269,8 @@ class PhaseDataManager:
 
             draw = ImageDraw.Draw(screenshot)
 
-            # Try to load a font, fallback to default if not available
-            try:
-                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 12)
-                small_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 10)
-            except Exception:
-                font = ImageFont.load_default()
-                small_font = ImageFont.load_default()
+            font = ImageFont.load_default()
+            small_font = ImageFont.load_default()
 
             colors = [
                 (255, 0, 0),  # Red

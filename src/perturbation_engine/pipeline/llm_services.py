@@ -628,7 +628,6 @@ class OperationCatalog:
             ],
             "window_management": ["activate_window", "close_window", "launch_app", "open_file"],
             "system_settings": ["change_wallpaper", "get_wallpaper", "get_cursor_position"],
-            "recording": ["start_recording", "end_recording"],
         }
 
     def _load_server_endpoints(self) -> Dict[str, List[str]]:
@@ -657,7 +656,6 @@ class OperationCatalog:
                 "/cursor_position",
             ],
             "execution": ["/run_python", "/run_bash_script"],
-            "recording": ["/start_recording", "/end_recording"],
         }
 
     def _load_python_controller_operations(self) -> Dict[str, List[str]]:
@@ -669,7 +667,6 @@ class OperationCatalog:
             "files": ["get_file"],
             "execution": ["execute_python_command", "run_python_script", "run_bash_script"],
             "actions": ["execute_action"],
-            "recording": ["start_recording", "end_recording"],
             "system_info": [
                 "get_vm_platform",
                 "get_vm_screen_size",

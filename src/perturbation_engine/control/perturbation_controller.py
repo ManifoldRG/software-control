@@ -819,6 +819,8 @@ except Exception as e:
                 try:
                     # Clean up the parameters string
                     params_str = params_str.strip()
+                    # Convert single quotes to double quotes for valid JSON
+                    params_str = params_str.replace("'", '"')
                     parsed_params.update(json.loads(params_str))
                 except (json.JSONDecodeError, ValueError) as e:
                     self.logger.warning(f"Failed to parse parameters '{params_str}': {e}")

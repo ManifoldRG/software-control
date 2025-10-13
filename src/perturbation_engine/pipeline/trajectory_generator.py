@@ -8,6 +8,8 @@ import json
 import logging
 import os
 import re
+import signal
+import sys
 import time
 from typing import Any, Dict
 
@@ -74,9 +76,7 @@ class PathManager:
 
         # Create subdirectories for better organization
         screenshots_dir = os.path.join(trajectory_dir, "screenshots")
-        metadata_dir = os.path.join(trajectory_dir, "metadata")
         os.makedirs(screenshots_dir, exist_ok=True)
-        os.makedirs(metadata_dir, exist_ok=True)
 
         return trajectory_dir
 
@@ -113,6 +113,35 @@ class TrajectoryGenerator:
         # Track applied perturbation commands for runtime diversity checking
         self._applied_command_signatures = set()
 
+        # Store current environment for signal handling
+        self._current_env = None
+        self._current_trajectory_id = None
+
+        # Set up signal handler for graceful shutdown
+        self._setup_signal_handlers()
+
+    def _setup_signal_handlers(self):
+        """Set up signal handlers for graceful shutdown"""
+
+        def signal_handler(signum, frame):
+            self.logger.info(f"Received signal {signum}, attempting to save recording...")
+            self._save_recording_on_interrupt()
+            sys.exit(0)
+
+        # Handle SIGINT (Ctrl+C) and SIGTERM
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+
+    def _save_recording_on_interrupt(self):
+        """Save recording when process is interrupted"""
+        if self._current_env and self._current_trajectory_id:
+            try:
+                recording_path = self.path_manager.get_recording_path(self._current_trajectory_id)
+                self._current_env.controller.end_recording(recording_path)
+                self.logger.info(f"Recording saved on interrupt: {recording_path}")
+            except Exception as e:
+                self.logger.warning(f"Failed to save recording on interrupt: {e}")
+
     def execute_trajectory(
         self,
         env: PerturbationDesktopEnv,
@@ -124,6 +153,10 @@ class TrajectoryGenerator:
 
         start_time = time.time()
         trajectory_id = f"{scenario_spec.scenario_id}"
+
+        # Store current state for signal handling
+        self._current_env = env
+        self._current_trajectory_id = trajectory_id
 
         self.phase_data_manager = PhaseDataManager(trajectory_id, run_id=self.path_manager.run_id)
         self.logger.info(f"Executing trajectory {trajectory_id}: {seed_trajectory.task_instruction}")
@@ -247,6 +280,9 @@ class TrajectoryGenerator:
             )
 
             self._cleanup_resources()
+            # Clear current state
+            self._current_env = None
+            self._current_trajectory_id = None
             return generated_trajectory
 
         except Exception as e:
@@ -254,6 +290,9 @@ class TrajectoryGenerator:
             self.logger.exception(f"Error executing trajectory {trajectory_id}: {repr(e)}")
             # Clean up resources even on failure
             self._cleanup_resources()
+            # Clear current state
+            self._current_env = None
+            self._current_trajectory_id = None
             return self._create_generated_trajectory(
                 trajectory_id,
                 seed_trajectory,
