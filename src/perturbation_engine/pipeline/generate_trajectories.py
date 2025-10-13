@@ -109,22 +109,19 @@ def load_seed_trajectories(config_base_dir: str, trajectory_base_dir: str) -> Li
                 with open(config_file, "r", encoding="utf-8") as f:
                     task_config = json.load(f)
 
-                # Verify required fields
-                if not all(field in task_config for field in ["id", "instruction", "config", "evaluator"]):
-                    logger.warning(f"Skipping {config_file.name} - missing required fields")
-                    continue
-
                 # Construct trajectory path based on the task ID
                 task_id = task_config["id"]
-                task_trajectory_dir = os.path.join(trajectory_base_dir, app_name, task_id)
+                # task_trajectory_dir = os.path.join(trajectory_base_dir, app_name, task_id + ".json")
+                traj_file = os.path.join(trajectory_base_dir, app_name, task_id + ".json")
 
-                # Verify trajectory directory exists
-                if not os.path.exists(task_trajectory_dir):
-                    logger.warning(f"Trajectory directory not found: {task_trajectory_dir}")
-                    continue
+                # # Verify trajectory directory exists
+                # if not os.path.exists(task_trajectory_dir):
+                #     logger.warning(f"Trajectory directory not found: {task_trajectory_dir}")
+                #     continue
 
                 # Verify traj.jsonl exists
-                traj_file = os.path.join(task_trajectory_dir, "traj.jsonl")
+                # traj_file = os.path.join(task_trajectory_dir, "traj.jsonl")
+
                 if not os.path.exists(traj_file):
                     logger.warning(f"Trajectory file not found: {traj_file}")
                     continue
@@ -132,7 +129,7 @@ def load_seed_trajectories(config_base_dir: str, trajectory_base_dir: str) -> Li
                 # Create seed trajectory
                 seed_trajectory = SeedTrajectory(
                     task_id=task_id,
-                    task_type=task_config.get("snapshot", "chrome"),
+                    task_type=app_name,
                     task_instruction=task_config["instruction"],
                     config=task_config,
                     gt_actions_file_path=traj_file,
@@ -199,28 +196,49 @@ def main():
     generator = UnifiedGenerator(execution_config, curriculum_config.result_base_dir)
 
     # Load seed trajectories
-    task_config_base_dir = "src/OSWorld/evaluation_examples"
+    # task_config_base_dir = "src/OSWorld/evaluation_examples"
+    task_config_base_dir = "osworld-human-main"
+
     # trajectory_base_dir = "external_data/osworld-verified/autoglm_50steps"
     # trajectory_base_dir = "external_data/osworld-verified/o3_gta1_100steps/o3_gta1_100steps"
-    trajectory_base_dir = "external_data/osworld-verified/jedi-7b-4o-15steps/jedi-7b-4o-15steps"
+    # trajectory_base_dir = "external_data/osworld-verified/jedi-7b-4o-15steps/jedi-7b-4o-15steps"
+    trajectory_base_dir = "osworld-human-main"
 
     seed_trajectories = load_seed_trajectories(task_config_base_dir, trajectory_base_dir)
 
     # TODO: get 1 seed traj for each task type for testing
-    traj_task_type_set = set()
-    test_seed_trajectories = []
-    for traj in seed_trajectories:
-        if traj.task_type not in traj_task_type_set and traj.task_type in ["chrome", "code", "vlc"]:
-            with open(f"{traj.gt_actions_file_path}") as f:
-                temp_gt_actions = [json.loads(line) for line in f]
-                if temp_gt_actions[-1]["action"] != "FAIL":
-                    test_seed_trajectories.append(traj)
-                    traj_task_type_set.add(traj.task_type)
-                else:
-                    logger.info(f"Task type already exists: {traj.task_type}, skipping")
-                    continue
+    # traj_task_type_set = set()
+    # test_seed_trajectories = []
+    # for traj in seed_trajectories:
+    #     if traj.task_type not in traj_task_type_set:
+    #         with open(f"{traj.gt_actions_file_path}") as f:
+    #             temp_gt_actions = [json.loads(line) for line in f]
+    #             if temp_gt_actions[-1]["action"] != "FAIL":
+    #                 test_seed_trajectories.append(traj)
+    #                 traj_task_type_set.add(traj.task_type)
+    #             else:
+    #                 logger.info(f"Task type already exists: {traj.task_type}, skipping")
+    #                 continue
+    # logger.info(f"Task types: {traj_task_type_set}")
 
-    logger.info(f"Task types: {traj_task_type_set}")
+    test_seed_trajectories = [
+        traj
+        for traj in seed_trajectories
+        if traj.task_type == "chrome" and traj.task_id == "7f52cab9-535c-4835-ac8c-391ee64dc930"
+    ][:2]
+    # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "vlc"][:1]
+    # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "chrome"][:1]
+    # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "vs_code"][:1]
+    # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "os"][:1]
+    # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "multi_apps" or traj.task_type == "multiapps"][:1]
+    # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "libreoffice_calc"][:1]
+    # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "libreoffice_impress"][:1]
+    # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "libreoffice_writer"][:1]
+
+    # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "gimp"][:1]
+    # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "vlc"][:1]
+    # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "thunderbird"][:1]
+
     logger.info(f"Test seed trajectories: {len(test_seed_trajectories)}")
 
     seed_trajectories = test_seed_trajectories

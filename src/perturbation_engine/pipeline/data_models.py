@@ -122,6 +122,12 @@ class PerturbationType(Enum):
     SHAPE = "shape"
     DENSITY = "density"
 
+    # Realistic GUI environmental conditions (REVISED - GUI-focused)
+    DISPLAY_SCALING = "display_scaling"
+    SCREEN_RESOLUTION = "screen_resolution"
+    SYSTEM_THEME = "system_theme"
+    ACCESSIBILITY_MODE = "accessibility_mode"
+
     # Content and data changes
     CONTENT_VARIATION = "content_variation"
     DATA_MODIFICATION = "data_modification"
@@ -140,6 +146,15 @@ class PerturbationType(Enum):
     # Cross-app interference
     NOTIFICATION = "notification"
     CROSS_APP_INTERFERENCE = "cross_app_interference"
+
+    # Realistic GUI state variations (REVISED - GUI-focused)
+    UI_STATE = "ui_state"
+    WINDOW_STATE = "window_state"
+    CONTENT_STATE = "content_state"
+
+    # Realistic GUI timing variations (REVISED - GUI-focused)
+    LOADING_STATE = "loading_state"
+    ANIMATION_STATE = "animation_state"
 
     # Generic categories for LLM flexibility
     VISUAL_PERTURBATION = "visual_perturbation"
@@ -268,6 +283,14 @@ class PerturbationType(Enum):
             "edge": cls.SHAPE,
             "edges": cls.SHAPE,
             "rounded": cls.SHAPE,
+            # Realistic GUI environmental conditions
+            "display_scaling": cls.DISPLAY_SCALING,
+            "display_scale": cls.DISPLAY_SCALING,
+            "screen_resolution": cls.SCREEN_RESOLUTION,
+            "resolution": cls.SCREEN_RESOLUTION,
+            "accessibility_mode": cls.ACCESSIBILITY_MODE,
+            "high_contrast": cls.ACCESSIBILITY_MODE,
+            "screen_reader": cls.ACCESSIBILITY_MODE,
             # Content and data variations
             "motion": cls.CONTENT_VARIATION,
             "animation": cls.CONTENT_VARIATION,
@@ -335,6 +358,18 @@ class PerturbationType(Enum):
             "interference": cls.CROSS_APP_INTERFERENCE,
             "competing": cls.CROSS_APP_INTERFERENCE,
             "distraction": cls.CROSS_APP_INTERFERENCE,
+            # Realistic GUI state variations
+            "ui_state": cls.UI_STATE,
+            "window_state": cls.WINDOW_STATE,
+            "content_state": cls.CONTENT_STATE,
+            "state": cls.UI_STATE,
+            "enabled": cls.UI_STATE,
+            "disabled": cls.UI_STATE,
+            "visible": cls.UI_STATE,
+            "hidden": cls.UI_STATE,
+            # Realistic GUI timing variations
+            "loading_state": cls.LOADING_STATE,
+            "loading": cls.LOADING_STATE,
             # Generic visual categories (for LLM flexibility)
             "visual": cls.VISUAL_PERTURBATION,
             "visual_perturbation": cls.VISUAL_PERTURBATION,
@@ -511,7 +546,7 @@ class ExecutionConfig:
 class CurriculumConfig:
     """Scenario generation settings - immutable configuration"""
 
-    scenario_count: int = 10
+    scenario_count: int = 100
     num_parallel_vms: int = 1
     result_base_dir: str = "./curriculum_results"
 
@@ -592,3 +627,4 @@ class ExecutionContext:
     task_instruction: str = ""
     task_type: str = ""
     scenario_spec: Optional[ScenarioSpec] = None
+    total_steps: Optional[int] = None  # Total steps for strategic timing

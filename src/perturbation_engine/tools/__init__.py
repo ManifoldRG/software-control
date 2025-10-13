@@ -1,9 +1,9 @@
-from .autoglm_integration import (
-    AutoglmAppStateExtractor,
-    AutoglmElementTracker,
+from .app_state_manager import (
+    AppStateExtractor,
+    ElementTracker,
 )
 
 __all__ = [
-    "AutoglmAppStateExtractor",
-    "AutoglmElementTracker",
+    "AppStateExtractor",
+    "ElementTracker",
 ]

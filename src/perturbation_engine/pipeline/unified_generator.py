@@ -3,9 +3,13 @@ UnifiedGenerator: Main orchestrator
 Clean interface for the entire pipeline
 """
 
+import datetime
+import json
 import logging
-from typing import List
+import os
+from typing import Any, Dict, List
 
+from perturbation_engine.configure_logging import set_run_context
 from perturbation_engine.pipeline.data_models import (
     CurriculumConfig,
     ExecutionConfig,
@@ -29,11 +33,19 @@ class UnifiedGenerator:
         self.result_base_dir = result_base_dir
         self.logger = logging.getLogger(__name__)
 
+        # Generate a unique run ID for this execution
+        self.run_id = self._generate_run_id()
+
         # Initialize components
         self.curriculum_generator = CurriculumGenerator()
-        self.trajectory_generator = TrajectoryGenerator(result_base_dir)
+        self.trajectory_generator = TrajectoryGenerator(result_base_dir, self.run_id)
         self.shared_execution_engine = SharedExecutionEngine(execution_config, result_base_dir)
         self.quality_evaluator = QualityEvaluator()
+
+    def _generate_run_id(self) -> str:
+        """Generate a unique run ID for this execution"""
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        return f"run_{timestamp}"
 
     def generate_trajectories(
         self, seed_trajectory: SeedTrajectory, curriculum_config: CurriculumConfig
@@ -42,6 +54,9 @@ class UnifiedGenerator:
 
         self.logger.info(f"Starting trajectory generation for {seed_trajectory.task_id}")
         log_memory_usage("Start of trajectory generation", self.logger)
+
+        # Set run context for logging
+        set_run_context(seed_trajectory.task_id, self.run_id)
 
         try:
             # Step 1: Extract environment state
@@ -76,7 +91,7 @@ class UnifiedGenerator:
             window_states = env.controller.get_window_states()
 
             # Save window states using phase data manager
-            phase_data_manager = PhaseDataManager(trajectory_id=seed_trajectory.task_id)
+            phase_data_manager = PhaseDataManager(trajectory_id=seed_trajectory.task_id, run_id=self.run_id)
             phase_data_manager.save_window_states(step_idx=0, phase="initial", window_states=window_states)
 
             env.close()
@@ -166,8 +181,123 @@ class UnifiedGenerator:
             # Final cleanup and memory check
             force_garbage_collection(self.logger)
             log_memory_usage("End of trajectory generation", self.logger)
+
+            # Save run summary
+            self._save_run_summary(seed_trajectory, generated_trajectories, quality_stats)
+
             return generated_trajectories
 
         except Exception as e:
             self.logger.error(f"Error generating trajectories: {e}")
             return []
+
+    def _save_run_summary(
+        self,
+        seed_trajectory: SeedTrajectory,
+        generated_trajectories: List[GeneratedTrajectory],
+        quality_stats: Dict[str, Any],
+    ):
+        """Save a comprehensive summary of this run"""
+        try:
+            # Create seed directory if it doesn't exist
+            seed_dir = os.path.join(self.result_base_dir, seed_trajectory.task_id)
+            os.makedirs(seed_dir, exist_ok=True)
+
+            # Create run directory
+            run_dir = os.path.join(seed_dir, self.run_id)
+            os.makedirs(run_dir, exist_ok=True)
+
+            # Prepare summary data
+            summary_data = {
+                "run_info": {
+                    "run_id": self.run_id,
+                    "seed_trajectory_id": seed_trajectory.task_id,
+                    "task_instruction": seed_trajectory.task_instruction,
+                    "task_type": seed_trajectory.task_type,
+                    "timestamp": datetime.datetime.now().isoformat(),
+                },
+                "execution_config": {
+                    "provider_name": self.execution_config.provider_name,
+                    "region": self.execution_config.region,
+                    "snapshot_name": self.execution_config.snapshot_name,
+                    "screen_size": self.execution_config.screen_size,
+                    "headless": self.execution_config.headless,
+                    "os_type": self.execution_config.os_type,
+                },
+                "results": {
+                    "total_trajectories_generated": quality_stats["total_trajectories"],
+                    "high_quality_trajectories": quality_stats["high_quality_trajectories"],
+                    "low_perturbation_success": quality_stats["low_perturbation_success"],
+                    "failed_trajectories": quality_stats["failed_trajectories"],
+                    "final_valid_trajectories": len(generated_trajectories),
+                },
+                "trajectory_details": [
+                    {
+                        "trajectory_id": traj.trajectory_id,
+                        "scenario_spec_id": traj.scenario_spec_id,
+                        "success": traj.success,
+                        "quality_score": traj.quality_score,
+                        "generation_time": traj.generation_time,
+                        "total_perturbation_attempts": traj.total_perturbation_attempts,
+                        "total_perturbation_successes": traj.total_perturbation_successes,
+                        "perturbation_success_rate": (
+                            traj.total_perturbation_successes / traj.total_perturbation_attempts
+                            if traj.total_perturbation_attempts > 0
+                            else 0.0
+                        ),
+                        "trajectory_file_path": traj.trajectory_file_path,
+                    }
+                    for traj in generated_trajectories
+                ],
+                "folder_structure": {
+                    "debug_folder": f"./debug/{seed_trajectory.task_id}/{self.run_id}",
+                    "results_folder": f"{self.result_base_dir}/{seed_trajectory.task_id}/{self.run_id}",
+                    "phases_subfolder": "phases",
+                    "visualizations_subfolder": "visualizations",
+                    "window_states_subfolder": "window_states",
+                    "summaries_subfolder": "summaries",
+                },
+            }
+
+            # Save run summary
+            summary_path = os.path.join(run_dir, "run_summary.json")
+            with open(summary_path, "w") as f:
+                json.dump(summary_data, f, indent=2)
+
+            self.logger.info(f"Run summary saved: {summary_path}")
+
+            # Also save a seed-level summary for easy comparison across runs
+            seed_summary_path = os.path.join(seed_dir, "seed_summary.json")
+            seed_summary = {
+                "seed_trajectory_id": seed_trajectory.task_id,
+                "task_instruction": seed_trajectory.task_instruction,
+                "task_type": seed_trajectory.task_type,
+                "latest_run_id": self.run_id,
+                "latest_run_timestamp": datetime.datetime.now().isoformat(),
+                "total_runs": self._count_runs_for_seed(seed_dir),
+                "latest_run_results": summary_data["results"],
+            }
+
+            with open(seed_summary_path, "w") as f:
+                json.dump(seed_summary, f, indent=2)
+
+            self.logger.info(f"Seed summary updated: {seed_summary_path}")
+
+        except Exception as e:
+            self.logger.error(f"Error saving run summary: {e}")
+
+    def _count_runs_for_seed(self, seed_dir: str) -> int:
+        """Count the number of runs for a seed trajectory"""
+        try:
+            if not os.path.exists(seed_dir):
+                return 0
+
+            # Count directories that start with "run_"
+            run_dirs = [
+                d
+                for d in os.listdir(seed_dir)
+                if os.path.isdir(os.path.join(seed_dir, d)) and d.startswith("run_")
+            ]
+            return len(run_dirs)
+        except Exception:
+            return 0

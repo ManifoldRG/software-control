@@ -5,27 +5,13 @@ Clean interface for environment management
 
 import logging
 import os
-from enum import Enum
 from typing import Tuple
 
 from OSWorld.desktop_env.desktop_env import DesktopEnv
-from perturbation_engine.control.perturbation_controller import PerturbationController
-
-
-class AppType(Enum):
-    """Application types"""
-
-    BROWSER = "browser"
-    LIBREOFFICE_CALC = "libreoffice_calc"
-    LIBREOFFICE_WRITER = "libreoffice_writer"
-    LIBREOFFICE_IMPRESS = "libreoffice_impress"
-    VS_CODE = "vs_code"
-    GIMP = "gimp"
-    VLC = "vlc"
-    THUNDERBIRD = "thunderbird"
-    FILE_MANAGER = "file_manager"
-    TERMINAL = "terminal"
-    UNKNOWN = "unknown"
+from perturbation_engine.control.perturbation_controller import (
+    PerturbationController,
+    PerturbationSetupController,
+)
 
 
 class PerturbationDesktopEnv(DesktopEnv):
@@ -51,7 +37,6 @@ class PerturbationDesktopEnv(DesktopEnv):
         client_password: str = "",
         chromium_port: int = 9222,
     ):
-        # Ensure logging is configured for subprocess (only if not already configured)
         if not logging.getLogger().handlers:
             from perturbation_engine.configure_logging import configure_logging
 
@@ -80,19 +65,46 @@ class PerturbationDesktopEnv(DesktopEnv):
 
     def _start_emulator(self):
         """Override to use PerturbationController instead of PythonController"""
-        super()._start_emulator()
+        try:
+            self.provider.start_emulator(self.path_to_vm, self.headless, self.os_type)
+            vm_ip_ports = self.provider.get_ip_address(self.path_to_vm).split(":")
+            self.vm_ip = vm_ip_ports[0]
+            if len(vm_ip_ports) > 1:
+                self.server_port = int(vm_ip_ports[1])
+                self.chromium_port = int(vm_ip_ports[2])
+                self.vnc_port = int(vm_ip_ports[3])
+                self.vlc_port = int(vm_ip_ports[4])
 
-        # Only replace if not already a PerturbationController
-        if not isinstance(self.controller, PerturbationController):
+            self.logger.info(f"PerturbationDesktopEnv using chromium_port: {self.chromium_port}")
+
+            self.setup_controller = PerturbationSetupController(
+                vm_ip=self.vm_ip,
+                server_port=self.server_port,
+                chromium_port=self.chromium_port,
+                client_password=self.client_password,
+                vlc_port=self.vlc_port,
+                cache_dir=self.cache_dir_base,
+                screen_width=self.screen_width,
+                screen_height=self.screen_height,
+            )
+
             self.controller = PerturbationController(
                 vm_ip=self.vm_ip,
                 server_port=self.server_port,
                 chromium_port=self.chromium_port,
                 client_password=self.client_password,
+                vlc_port=self.vlc_port,
+                cache_dir=self.cache_dir_base,
+                screen_width=self.screen_width,
+                screen_height=self.screen_height,
             )
-            self.logger.info("Replaced controller with PerturbationController")
-        else:
-            self.logger.info("Controller is already PerturbationController - skipping duplicate setup")
+
+        except Exception:
+            try:
+                self.provider.stop_emulator(self.path_to_vm)
+            except Exception as stop_err:
+                self.logger.warning(f"Cleanup after interrupt failed: {stop_err}")
+            raise
 
     def mark_perturbation_applied(self):
         """Mark that a perturbation has been applied - forces reset on next trajectory"""

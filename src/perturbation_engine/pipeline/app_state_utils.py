@@ -125,7 +125,7 @@ def _dict_to_window_state(data: dict) -> WindowState:
 
 def _dict_to_ui_element(data: dict) -> UIElement:
     """Convert dictionary to UIElement object"""
-    from perturbation_engine.tools.autoglm_integration import VisibilityState
+    from perturbation_engine.pipeline.data_models import VisibilityState
 
     return UIElement(
         element_id=data.get("element_id", ""),
