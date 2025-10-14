@@ -1202,11 +1202,19 @@ class BaseLLM:
         app_name = window_state.app_name
         window_name = window_state.window_name
 
-        # Show window hierarchy information
+        # Show window hierarchy information with better context
         if window_name != app_name:
             app_summary = f"App: {app_name} - Window: {window_name}\n"
         else:
             app_summary = f"App: {app_name}\n"
+
+        # Add context about whether this is browser chrome or webpage content
+        if app_name.lower() in ["chrome", "chromium", "google-chrome"]:
+            # Check if this window contains webpage content vs browser chrome
+            if "chrome://" in window_name.lower() or "chrome-" in window_name.lower():
+                app_summary += "  [BROWSER CHROME - NOT WEBPAGE CONTENT]\n"
+            else:
+                app_summary += "  [WEBPAGE CONTENT - PRIORITIZE THESE ELEMENTS]\n"
 
         # Add window properties if available
         if window_state.is_active:
@@ -1282,6 +1290,27 @@ class BaseLLM:
     ) -> str:
         """Get context hints for element based on its properties and z-order blocking"""
         hints = []
+
+        # Browser chrome detection hints
+        if window_state and window_state.app_name.lower() in ["chrome", "chromium", "google-chrome"]:
+            # Check if this is likely a browser chrome element vs webpage element
+            element_name_lower = (element.name or "").lower()
+            if any(
+                chrome_indicator in element_name_lower
+                for chrome_indicator in [
+                    "address",
+                    "omnibox",
+                    "bookmark",
+                    "toolbar",
+                    "menu",
+                    "tab",
+                    "chrome",
+                    "browser",
+                ]
+            ):
+                hints.append("[BROWSER CHROME]")
+            elif element_name_lower in ["search", "shop", "google"]:
+                hints.append("[WEBPAGE ELEMENT]")
 
         # Element type hints
         if "menu-item" in element.element_type:
@@ -3256,17 +3285,27 @@ class ElementIdentificationLLM(BaseLLM):
         Available Elements:
         {window_states_summary}
 
-        IMPORTANT DISAMBIGUATION RULES:
+        CRITICAL PRIORITIZATION RULES:
+        1. WEBPAGE CONTENT OVER BROWSER CHROME: Always prioritize elements marked as "[WEBPAGE CONTENT - PRIORITIZE THESE ELEMENTS]" over elements in "[BROWSER CHROME - NOT WEBPAGE CONTENT]"
+        2. CONTEXT RELEVANCE: For actions mentioning "search bar", "page", "website", or specific webpage content, prioritize webpage elements
+        3. ELEMENT TYPE APPROPRIATENESS: Match element types to action types (e.g., "CLICK" actions should prioritize clickable elements)
+        4. VISIBILITY AND INTERACTIVITY: Prioritize visible, enabled, and interactive elements
+        5. COORDINATE REASONABLENESS: Elements with coordinates (0,0) or outside screen bounds (0-1920, 0-1080) should be deprioritized
+
+        DISAMBIGUATION RULES:
         - If multiple elements have the same name, consider ALL of them as potential candidates
-        - Prioritize elements that are likely visible and interactive based on coordinates and type
-        - Elements with coordinates (0,0) or very small sizes are likely hidden/invisible
-        - Elements with coordinates outside screen bounds (0-1920, 0-1080) are likely invalid
         - Elements marked as "[collapsed menu - likely invisible]" or "[hidden dropdown - likely invisible]" should be deprioritized
         - Elements marked as "[inactive tab - likely invisible]" should be deprioritized
         - Elements marked as "[blocked by higher window]" should be deprioritized
         - Elements marked as "[disabled]" should be deprioritized
         - Very small elements (≤16x16 pixels) without names should be deprioritized unless they have interactive properties
-        - Rank by: 1) Element type appropriateness, 2) Coordinate reasonableness, 3) Hierarchy visibility, 4) Context relevance, 5) Element naming, 6) Interactive properties
+
+        RANKING PRIORITY (in order):
+        1. Webpage content elements (marked with "[WEBPAGE CONTENT - PRIORITIZE THESE ELEMENTS]")
+        2. Element type appropriateness for the action
+        3. Coordinate reasonableness and visibility
+        4. Hierarchy visibility and context relevance
+        5. Element naming and interactive properties
 
         Return JSON array with element identifiers, ranked by likelihood from 0.00 to 1.00 and only return elements with confidence values greater than 0.70:
         [
@@ -3275,14 +3314,14 @@ class ElementIdentificationLLM(BaseLLM):
                 "element_type": "element_type",
                 "app_name": "app_name",
                 "confidence": 0.95,
-                "reasoning": "detailed_reasoning_for_element_selection_including_coordinate_analysis"
+                "reasoning": "detailed_reasoning_for_element_selection_including_webpage_priority_and_coordinate_analysis"
             }},
             {{
                 "name": "alternative_element_name",
                 "element_type": "element_type",
                 "app_name": "app_name",
                 "confidence": 0.75,
-                "reasoning": "alternative_reasoning_with_coordinate_considerations"
+                "reasoning": "alternative_reasoning_with_webpage_context_considerations"
             }}
         ]
         """

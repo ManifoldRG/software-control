@@ -165,7 +165,15 @@ class AppStateExtractor:
                 continue
 
             window_name = child_node.get("name", f"{app_name} Window")
-            self.logger.info(f"Found {child_node.tag} window: {window_name}")
+
+            # Add context for Chrome windows to help with webpage vs browser chrome distinction
+            if app_name.lower() in ["chrome", "chromium", "google-chrome"]:
+                if "chrome://" in window_name.lower() or "chrome-" in window_name.lower():
+                    self.logger.info(f"Found {child_node.tag} window (BROWSER CHROME): {window_name}")
+                else:
+                    self.logger.info(f"Found {child_node.tag} window (WEBPAGE CONTENT): {window_name}")
+            else:
+                self.logger.info(f"Found {child_node.tag} window: {window_name}")
 
             # Parse elements with LibreOffice-specific enhancements
             elements = self.parser._parse_element_tree(
@@ -263,24 +271,15 @@ class AppStateExtractor:
                 )
 
             if not x11_window_id:
+                # Try Chrome fallback for any unmatched Chrome windows
+                x11_window_id = self._find_chrome_window_fallback(
+                    atspi_window["app_name"], atspi_window["window_name"]
+                )
+
+            if not x11_window_id:
                 self.logger.warning(
                     f"No X11 window found for '{atspi_window['window_name']}' from '{atspi_window['app_name']}'"
                 )
-                # Log available X11 windows for debugging
-                try:
-                    variants = self._get_app_name_variants(atspi_window["app_name"])
-                    for variant in variants:
-                        window_ids = self.controller.find_windows_for_app(variant)
-                        if window_ids:
-                            self.logger.info(f"  Available X11 windows for '{variant}': {len(window_ids)}")
-                            for wid in window_ids[:3]:  # Show first 3
-                                try:
-                                    x11_title = self.controller.get_window_name(wid)
-                                    self.logger.info(f"    - {wid}: '{x11_title}'")
-                                except Exception as e:
-                                    self.logger.info(f"    - {wid}: ERROR - {e}")
-                except Exception as e:
-                    self.logger.debug(f"Error getting X11 window info: {e}")
                 continue
 
             # Get real geometry from X11
@@ -438,10 +437,10 @@ class AppStateExtractor:
                 for window_id in window_ids:
                     x11_title = self.controller.get_window_name(window_id)
 
-                    # Check if this window has valid geometry
+                    # Check if this window is mapped (visible) and has geometry
                     try:
                         geometry = self.controller.get_window_geometry(window_id)
-                        if geometry and geometry.get("width", 0) > 100 and geometry.get("height", 0) > 100:
+                        if geometry and geometry.get("mapped", True):
                             # Match generic LibreOffice titles (version-based or VCL-based)
                             if (
                                 "LibreOffice" in x11_title and "VCL" not in x11_title
@@ -454,7 +453,7 @@ class AppStateExtractor:
                         self.logger.debug(f"Error checking geometry for window {window_id}: {e}")
                         continue
 
-                # If multiple windows, prefer the main LibreOffice window over VCL windows with valid geometry
+                # If multiple windows, prefer the main LibreOffice window over VCL windows
                 if len(window_ids) > 1:
                     for window_id in window_ids:
                         x11_title = self.controller.get_window_name(window_id)
@@ -462,8 +461,7 @@ class AppStateExtractor:
                             geometry = self.controller.get_window_geometry(window_id)
                             if (
                                 geometry
-                                and geometry.get("width", 0) > 100
-                                and geometry.get("height", 0) > 100
+                                and geometry.get("mapped", True)
                                 and "LibreOffice" in x11_title
                                 and "VCL" not in x11_title
                             ):
@@ -475,14 +473,14 @@ class AppStateExtractor:
                             self.logger.debug(f"Error checking geometry for window {window_id}: {e}")
                             continue
 
-                # Last resort: use the first window with valid geometry
+                # Last resort: use the first mapped window
                 for window_id in window_ids:
                     try:
                         geometry = self.controller.get_window_geometry(window_id)
-                        if geometry and geometry.get("width", 0) > 100 and geometry.get("height", 0) > 100:
+                        if geometry and geometry.get("mapped", True):
                             x11_title = self.controller.get_window_name(window_id)
                             self.logger.info(
-                                f"LibreOffice --norestore fallback: using first valid window '{x11_title}' ({window_id})"
+                                f"LibreOffice --norestore fallback: using first mapped window '{x11_title}' ({window_id})"
                             )
                             return window_id
                     except Exception as e:
@@ -493,6 +491,56 @@ class AppStateExtractor:
 
         except Exception as e:
             self.logger.debug(f"Error in LibreOffice --norestore matching: {e}")
+            return None
+
+    def _find_chrome_window_fallback(self, app_name: str, window_name: str) -> Optional[str]:
+        """Find any Chrome window when exact matching fails - handles popups, settings, dev tools, etc."""
+        # Only apply to Chrome applications
+        if not any(chrome in app_name.lower() for chrome in ["chrome", "chromium", "google-chrome"]):
+            return None
+
+        try:
+            # Get Chrome windows
+            variants = self._get_app_name_variants(app_name)
+            for variant in variants:
+                window_ids = self.controller.find_windows_for_app(variant)
+
+                if not window_ids:
+                    continue
+
+                # Strategy 1: Look for any valid Chrome window (regardless of size)
+                for window_id in window_ids:
+                    try:
+                        geometry = self.controller.get_window_geometry(window_id)
+                        x11_title = self.controller.get_window_name(window_id)
+
+                        # Only check if geometry exists and window is mapped (not hidden)
+                        if geometry and geometry.get("mapped", True):
+                            self.logger.info(
+                                f"Chrome window fallback match: '{window_name}' → '{x11_title}' ({window_id})"
+                            )
+                            return window_id
+
+                    except Exception as e:
+                        self.logger.debug(f"Error checking Chrome window {window_id}: {e}")
+                        continue
+
+                # Strategy 2: If no mapped windows found, use any available window
+                if window_ids:
+                    try:
+                        first_window = window_ids[0]
+                        x11_title = self.controller.get_window_name(first_window)
+                        self.logger.info(
+                            f"Chrome window fallback (any available): '{window_name}' → '{x11_title}' ({first_window})"
+                        )
+                        return first_window
+                    except Exception as e:
+                        self.logger.debug(f"Error getting first Chrome window: {e}")
+
+            return None
+
+        except Exception as e:
+            self.logger.debug(f"Error in Chrome window fallback: {e}")
             return None
 
     def _flatten_elements(self, root_element: UIElement) -> List[UIElement]:

@@ -1542,6 +1542,9 @@ except Exception as e:
                 "--no-first-run",
                 "--disable-web-security",
                 "--user-data-dir=/tmp/chrome-debug",
+                "--disable-restore-session-state",  # Prevent restore pages popup
+                "--disable-session-crashed-bubble",  # Prevent crash recovery popup
+                "--disable-infobars",  # Disable info bars and popups
             ]
 
             self.logger.info(f"Launching Chrome with command: {' '.join(command)}")
@@ -1684,7 +1687,52 @@ except Exception as e:
         This preserves OSWorld's original setup flow completely.
         """
         # Delegate directly to parent SetupController.setup() without any modifications
-        return super().setup(config, use_proxy)
+        result = super().setup(config, use_proxy)
+
+        # Add Chrome autocomplete/history clearing after setup
+        if result:
+            self._clear_chrome_autocomplete_history()
+
+        return result
+
+    def _clear_chrome_autocomplete_history(self):
+        """Clear Chrome autocomplete and search history to prevent interference"""
+        try:
+            self.logger.info("Clearing Chrome autocomplete and search history...")
+
+            # Clear autocomplete data using JavaScript
+            js_code = """
+            // Clear autocomplete data
+            if (document.activeElement && document.activeElement.tagName === 'INPUT') {
+                document.activeElement.blur();
+            }
+
+            // Clear any stored form data
+            if (window.localStorage) {
+                try {
+                    window.localStorage.clear();
+                } catch(e) {}
+            }
+
+            if (window.sessionStorage) {
+                try {
+                    window.sessionStorage.clear();
+                } catch(e) {}
+            }
+
+            console.log('Chrome autocomplete data cleared');
+            """
+
+            # Execute JavaScript to clear autocomplete
+            page = self._get_page()
+            if page:
+                page.evaluate(js_code)
+                self.logger.info("Chrome autocomplete cleared successfully")
+            else:
+                self.logger.warning("Could not get Chrome page to clear autocomplete")
+
+        except Exception as e:
+            self.logger.warning(f"Failed to clear Chrome autocomplete: {e}")
 
     def _launch_setup(self, command: Union[str, List[str]], shell: bool = False):
         """

@@ -221,17 +221,17 @@ def main():
     #                 continue
     # logger.info(f"Task types: {traj_task_type_set}")
 
-    test_seed_trajectories = [
-        traj
-        for traj in seed_trajectories
-        if traj.task_type == "chrome" and traj.task_id == "7f52cab9-535c-4835-ac8c-391ee64dc930"
-    ][:2]
+    # test_seed_trajectories = [
+    #     traj
+    #     for traj in seed_trajectories
+    #     if traj.task_type == "chrome" and traj.task_id == "7f52cab9-535c-4835-ac8c-391ee64dc930"
+    # ][:2]
     # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "vlc"][:1]
     # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "chrome"][:1]
     # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "vs_code"][:1]
     # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "os"][:1]
     # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "multi_apps" or traj.task_type == "multiapps"][:1]
-    # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "libreoffice_calc"][:1]
+    test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "libreoffice_calc"][:1]
     # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "libreoffice_impress"][:1]
     # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "libreoffice_writer"][:1]
 
