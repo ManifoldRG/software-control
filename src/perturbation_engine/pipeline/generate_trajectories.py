@@ -228,10 +228,10 @@ def main():
     # ][:2]
     # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "vlc"][:1]
     # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "chrome"][:1]
-    # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "vs_code"][:1]
+    test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "vs_code"][:1]
     # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "os"][:1]
     # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "multi_apps" or traj.task_type == "multiapps"][:1]
-    test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "libreoffice_calc"][:1]
+    # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "libreoffice_calc"][:1]
     # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "libreoffice_impress"][:1]
     # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "libreoffice_writer"][:1]
 

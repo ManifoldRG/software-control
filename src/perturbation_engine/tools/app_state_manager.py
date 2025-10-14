@@ -3,6 +3,16 @@ import re
 import xml.etree.ElementTree as ET
 from typing import Any, Dict, List, Optional, Tuple
 
+from perturbation_engine.pipeline.app_state_utils import (
+    get_timestamp,
+    get_window_quality_score,
+    infer_app_name_from_title,
+    is_libreoffice_app,
+    is_libreoffice_filename_match,
+    is_valid_window_geometry,
+    map_app_name_to_type,
+    should_skip_app,
+)
 from perturbation_engine.pipeline.data_models import UIElement, VisibilityState, WindowState
 
 
@@ -97,7 +107,24 @@ class AppStateExtractor:
 
             if not atspi_windows:
                 self.logger.warning("No windows found in AT-SPI2 tree")
-                return []
+                # Fallback: Try CDP extraction for Electron apps (VS Code) first
+                self.logger.info("Attempting CDP fallback extraction for Electron apps...")
+                cdp_windows = self._extract_cdp_windows(z_order_list, focused_window, current_desktop)
+                if cdp_windows:
+                    self.logger.info(f"CDP fallback found {len(cdp_windows)} windows")
+                    return cdp_windows
+
+                # Fallback: Try X11-only extraction for other applications
+                self.logger.info("Attempting X11-only fallback extraction...")
+                fallback_windows = self._extract_x11_only_windows(
+                    z_order_list, focused_window, current_desktop
+                )
+                if fallback_windows:
+                    self.logger.info(f"X11-only fallback found {len(fallback_windows)} windows")
+                    return fallback_windows
+                else:
+                    self.logger.warning("Both CDP and X11-only fallbacks found no windows")
+                    return []
 
             # Step 4: Match with X11 windows and assign real z-order
             if not z_order_list:
@@ -140,6 +167,289 @@ class AppStateExtractor:
         self.logger.info(f"Extracted {len(windows)} windows from {len(all_apps)} applications")
         return windows
 
+    def _extract_cdp_windows(
+        self, z_order_list: List[str], focused_window: Optional[str], current_desktop: int
+    ) -> List[WindowState]:
+        """Extract windows using CDP for Electron apps (VS Code, Chrome, etc.)"""
+        window_states = []
+
+        self.logger.info("CDP extraction: Checking for Electron apps...")
+
+        # Try Chrome/Electron CDP extraction (works for both Chrome and VS Code)
+        try:
+            dom_data = self.controller.get_chrome_dom_data()
+            if dom_data and (dom_data.get("url") or dom_data.get("is_vscode", False)):
+                app_name = "code" if dom_data.get("is_vscode", False) else "chrome"
+                app_title = "VS Code" if dom_data.get("is_vscode", False) else "Chrome"
+
+                self.logger.info(f"{app_title} detected via CDP, creating window state...")
+
+                # Find X11 window for geometry
+                x11_window = None
+                for window_id in z_order_list:
+                    try:
+                        window_title = self.controller.get_window_name(window_id)
+                        if window_title:
+                            if dom_data.get("is_vscode", False):
+                                # VS Code patterns
+                                if any(
+                                    pattern in window_title.lower()
+                                    for pattern in ["visual studio code", "code -", "vscode"]
+                                ):
+                                    geometry = self.controller.get_window_geometry(window_id)
+                                    if geometry and self._is_valid_window_geometry(geometry):
+                                        x11_window = window_id
+                                        break
+                            else:
+                                # Chrome patterns
+                                if any(
+                                    pattern in window_title.lower()
+                                    for pattern in ["chrome", "chromium", "google chrome"]
+                                ):
+                                    geometry = self.controller.get_window_geometry(window_id)
+                                    if geometry and self._is_valid_window_geometry(geometry):
+                                        x11_window = window_id
+                                        break
+                    except Exception:
+                        continue
+
+                if x11_window:
+                    geometry = self.controller.get_window_geometry(x11_window)
+
+                    # Get z-order position
+                    try:
+                        z_order = len(z_order_list) - z_order_list.index(x11_window)
+                    except ValueError:
+                        z_order = 0
+
+                    # Get desktop
+                    window_desktop = self.controller.get_window_desktop(x11_window)
+
+                    # Create WindowState with CDP data
+                    window_state = WindowState(
+                        window_id=x11_window,
+                        window_name=dom_data.get("title", app_title),
+                        app_name=app_name,
+                        is_active=(x11_window == focused_window),
+                        is_modal=False,
+                        geometry=geometry,
+                        z_order=z_order,
+                        is_mapped=geometry.get("mapped", True),
+                        desktop=window_desktop,
+                        root_element=self._create_cdp_element_tree(dom_data, app_name),
+                    )
+
+                    window_states.append(window_state)
+
+                    if dom_data.get("is_vscode", False):
+                        self.logger.info(
+                            f"CDP: Created VS Code window state with {len(dom_data.get('buttons', []))} buttons, {len(dom_data.get('tabs', []))} tabs"
+                        )
+                    else:
+                        self.logger.info(
+                            f"CDP: Created Chrome window state with {len(dom_data.get('buttons', []))} buttons, {len(dom_data.get('links', []))} links"
+                        )
+                else:
+                    self.logger.warning(f"{app_title} detected via CDP but no valid X11 window found")
+
+        except Exception as e:
+            self.logger.debug(f"CDP extraction failed: {e}")
+
+        self.logger.info(f"CDP extraction: Created {len(window_states)} window states")
+        return window_states
+
+    def _create_cdp_element_tree(self, dom_data: Dict[str, Any], app_name: str) -> Optional[UIElement]:
+        """Create UIElement tree from CDP DOM data (works for both Chrome and VS Code)"""
+        try:
+            from perturbation_engine.pipeline.data_models import UIElement, VisibilityState
+
+            # Create root element
+            root_name = "Visual Studio Code" if app_name == "code" else "Chrome Browser"
+            root_element = UIElement(
+                element_id=f"{app_name}_root",
+                element_type="application",
+                name=root_name,
+                text="",
+                position={"x": 0, "y": 0, "width": 0, "height": 0},
+                visibility=VisibilityState.VISIBLE,
+                properties={"is_vscode": dom_data.get("is_vscode", False), "url": dom_data.get("url", "")},
+                parent_id=None,
+                children=[],
+            )
+
+            # Add button elements
+            for i, button in enumerate(dom_data.get("buttons", [])):
+                button_element = UIElement(
+                    element_id=f"button_{i}",
+                    element_type="button",
+                    name=button.get("text", f"Button {i}"),
+                    text=button.get("text", ""),
+                    position=button.get("position", {}),
+                    visibility=VisibilityState.VISIBLE
+                    if button.get("visible", False)
+                    else VisibilityState.HIDDEN,
+                    properties={"class": button.get("class", ""), "aria_label": button.get("aria_label", "")},
+                    parent_id=f"{app_name}_root",
+                    children=[],
+                )
+                root_element.children.append(button_element)
+
+            # Add input elements
+            for i, input_elem in enumerate(dom_data.get("inputs", [])):
+                input_element = UIElement(
+                    element_id=f"input_{i}",
+                    element_type="input",
+                    name=input_elem.get("name", f"Input {i}"),
+                    text=input_elem.get("value", ""),
+                    position=input_elem.get("position", {}),
+                    visibility=VisibilityState.VISIBLE
+                    if input_elem.get("visible", False)
+                    else VisibilityState.HIDDEN,
+                    properties={
+                        "type": input_elem.get("type", ""),
+                        "placeholder": input_elem.get("placeholder", ""),
+                    },
+                    parent_id=f"{app_name}_root",
+                    children=[],
+                )
+                root_element.children.append(input_element)
+
+            # Add VS Code-specific elements
+            if app_name == "code":
+                # Add editor elements
+                for i, editor in enumerate(dom_data.get("editor_elements", [])):
+                    editor_element = UIElement(
+                        element_id=f"editor_{i}",
+                        element_type="editor",
+                        name=f"Editor {i}",
+                        text="",
+                        position=editor.get("position", {}),
+                        visibility=VisibilityState.VISIBLE
+                        if editor.get("visible", False)
+                        else VisibilityState.HIDDEN,
+                        properties={"class": editor.get("class", "")},
+                        parent_id=f"{app_name}_root",
+                        children=[],
+                    )
+                    root_element.children.append(editor_element)
+
+                # Add tab elements
+                for i, tab in enumerate(dom_data.get("tabs", [])):
+                    tab_element = UIElement(
+                        element_id=f"tab_{i}",
+                        element_type="tab",
+                        name=tab.get("text", f"Tab {i}"),
+                        text=tab.get("text", ""),
+                        position=tab.get("position", {}),
+                        visibility=VisibilityState.VISIBLE
+                        if tab.get("visible", False)
+                        else VisibilityState.HIDDEN,
+                        properties={"class": tab.get("class", "")},
+                        parent_id=f"{app_name}_root",
+                        children=[],
+                    )
+                    root_element.children.append(tab_element)
+
+            # Add Chrome-specific elements
+            else:
+                # Add link elements
+                for i, link in enumerate(dom_data.get("links", [])):
+                    link_element = UIElement(
+                        element_id=f"link_{i}",
+                        element_type="link",
+                        name=link.get("text", f"Link {i}"),
+                        text=link.get("text", ""),
+                        position=link.get("position", {}),
+                        visibility=VisibilityState.VISIBLE
+                        if link.get("visible", False)
+                        else VisibilityState.HIDDEN,
+                        properties={"href": link.get("href", ""), "class": link.get("class", "")},
+                        parent_id=f"{app_name}_root",
+                        children=[],
+                    )
+                    root_element.children.append(link_element)
+
+            return root_element
+
+        except Exception as e:
+            self.logger.debug(f"Error creating CDP element tree: {e}")
+            return None
+
+    def _extract_x11_only_windows(
+        self, z_order_list: List[str], focused_window: Optional[str], current_desktop: int
+    ) -> List[WindowState]:
+        """Fallback: Extract windows using only X11 information when AT-SPI2 fails"""
+        window_states = []
+
+        self.logger.info(f"X11-only extraction: Processing {len(z_order_list)} X11 windows")
+
+        for window_id in z_order_list:
+            try:
+                # Get window geometry and title
+                geometry = self.controller.get_window_geometry(window_id)
+                if not geometry:
+                    self.logger.debug(f"No geometry for window {window_id}")
+                    continue
+
+                # Skip invalid windows
+                if not self._is_valid_window_geometry(geometry):
+                    self.logger.debug(f"Invalid geometry for window {window_id}: {geometry}")
+                    continue
+
+                # Get window title
+                window_title = self.controller.get_window_name(window_id)
+                if not window_title or window_title.strip() == "":
+                    self.logger.debug(f"Empty title for window {window_id}")
+                    continue
+
+                # Determine app name from window title
+                app_name = self._infer_app_name_from_title(window_title)
+                if not app_name:
+                    self.logger.debug(f"Could not infer app name from title: {window_title}")
+                    continue
+
+                # Skip system apps
+                if self._should_skip_app(app_name):
+                    self.logger.debug(f"Skipping system app: {app_name}")
+                    continue
+
+                # Get z-order position
+                try:
+                    z_order = len(z_order_list) - z_order_list.index(window_id)
+                except ValueError:
+                    z_order = 0
+
+                # Get desktop
+                window_desktop = self.controller.get_window_desktop(window_id)
+
+                # Create basic WindowState with minimal element tree
+                window_state = WindowState(
+                    window_id=window_id,
+                    window_name=window_title,
+                    app_name=app_name,
+                    is_active=(window_id == focused_window),
+                    is_modal=False,  # Can't determine from X11 alone
+                    geometry=geometry,
+                    z_order=z_order,
+                    is_mapped=geometry.get("mapped", True),
+                    desktop=window_desktop,
+                    root_element=None,  # No AT-SPI2 tree available
+                )
+
+                window_states.append(window_state)
+                self.logger.info(f"X11-only: Found window '{window_title}' from '{app_name}'")
+
+            except Exception as e:
+                self.logger.debug(f"Error processing X11 window {window_id}: {e}")
+                continue
+
+        self.logger.info(f"X11-only extraction: Created {len(window_states)} window states")
+        return window_states
+
+    def _infer_app_name_from_title(self, window_title: str) -> Optional[str]:
+        """Infer application name from window title - delegate to shared utility"""
+        return infer_app_name_from_title(window_title)
+
     def _extract_windows_from_app(self, app_node: ET.Element, app_name: str) -> List[Dict[str, Any]]:
         """Extract windows from a single application"""
         windows = []
@@ -165,6 +475,11 @@ class AppStateExtractor:
                 continue
 
             window_name = child_node.get("name", f"{app_name} Window")
+
+            # Skip windows with empty or invalid names
+            if not window_name or window_name.strip() == "":
+                self.logger.debug(f"Skipping {child_node.tag} window with empty name from {app_name}")
+                continue
 
             # Add context for Chrome windows to help with webpage vs browser chrome distinction
             if app_name.lower() in ["chrome", "chromium", "google-chrome"]:
@@ -282,33 +597,11 @@ class AppStateExtractor:
                 )
                 continue
 
-            # Get real geometry from X11
+            # Get real geometry from X11 (already validated in matching functions)
             geometry = self.controller.get_window_geometry(x11_window_id)
             if not geometry:
+                self.logger.warning(f"No geometry found for matched window {x11_window_id}")
                 continue
-
-            # Validate X11 geometry for LibreOffice applications
-            if any(
-                libreoffice in atspi_window["app_name"].lower()
-                for libreoffice in ["libreoffice", "soffice", "calc", "writer", "impress"]
-            ):
-                # Check if X11 geometry is invalid (too small or unmapped)
-                if (
-                    geometry.get("width", 0) < 100
-                    or geometry.get("height", 0) < 100
-                    or not geometry.get("mapped", False)
-                ):
-                    self.logger.warning(
-                        f"Invalid X11 geometry for LibreOffice window {x11_window_id}: {geometry}"
-                    )
-                    # Use AT-SPI2 geometry as fallback for LibreOffice
-                    atspi_geometry = atspi_window.get("geometry", {})
-                    if atspi_geometry and atspi_geometry.get("width", 0) > 100:
-                        self.logger.info(f"Using AT-SPI2 geometry as fallback: {atspi_geometry}")
-                        geometry = atspi_geometry
-                    else:
-                        self.logger.warning("Skipping LibreOffice window due to invalid geometry")
-                        continue
 
             # Get z-order position
             try:
@@ -345,10 +638,12 @@ class AppStateExtractor:
         return window_states
 
     def _find_matching_x11_window(self, app_name: str, window_name: str) -> Optional[str]:
-        """Find X11 window ID that matches AT-SPI2 window"""
+        """Find X11 window ID that matches AT-SPI2 window using adaptive scoring"""
         try:
             # Try multiple application name variants
             app_variants = self._get_app_name_variants(app_name)
+            best_match = None
+            best_score = 0.0
 
             for variant in app_variants:
                 window_ids = self.controller.find_windows_for_app(variant)
@@ -356,30 +651,66 @@ class AppStateExtractor:
                 if not window_ids:
                     continue
 
-                # Match by window title
+                # Score all windows and find the best match
                 for window_id in window_ids:
-                    x11_title = self.controller.get_window_name(window_id)
+                    try:
+                        x11_title = self.controller.get_window_name(window_id)
+                        geometry = self.controller.get_window_geometry(window_id)
 
-                    # Exact match
-                    if window_name == x11_title:
-                        self.logger.debug(f"Exact match: '{window_name}' = '{x11_title}'")
-                        return window_id
+                        if not geometry:
+                            continue
 
-                    # Partial match
-                    if window_name in x11_title or x11_title in window_name:
-                        self.logger.debug(f"Partial match: '{window_name}' in '{x11_title}'")
-                        return window_id
+                        # Calculate quality score
+                        score = self._get_window_quality_score(window_id, geometry, x11_title, app_name)
 
-                # If only one window for this variant, assume it's the one
-                if len(window_ids) == 1:
-                    self.logger.debug(f"Single window assumption for {variant}: {window_ids[0]}")
-                    return window_ids[0]
+                        if score > best_score:
+                            # Additional title matching validation
+                            if (
+                                window_name == x11_title  # Exact match
+                                or window_name in x11_title
+                                or x11_title in window_name  # Partial match
+                                or (
+                                    self._is_libreoffice_app(app_name)
+                                    and self._is_libreoffice_filename_match(window_name, x11_title)
+                                )
+                            ):  # LibreOffice filename match
+                                best_match = window_id
+                                best_score = score
+                                self.logger.debug(
+                                    f"New best match: '{window_name}' → '{x11_title}' ({window_id}) score={score:.1f}"
+                                )
+
+                    except Exception as e:
+                        self.logger.debug(f"Error evaluating window {window_id}: {e}")
+                        continue
+
+            if best_match and best_score > 0:
+                self.logger.debug(f"Best match found: {best_match} with score {best_score:.1f}")
+                return best_match
 
             return None
 
         except Exception as e:
             self.logger.debug(f"Error finding X11 window for {app_name}: {e}")
             return None
+
+    def _is_valid_window_geometry(self, geometry: Dict[str, Any], app_name: str = "") -> bool:
+        """Check if window geometry is valid - delegate to shared utility"""
+        return is_valid_window_geometry(geometry, app_name)
+
+    def _get_window_quality_score(
+        self, window_id: str, geometry: Dict[str, Any], x11_title: str, app_name: str
+    ) -> float:
+        """Calculate a quality score for window matching - delegate to shared utility"""
+        return get_window_quality_score(window_id, geometry, x11_title, app_name)
+
+    def _is_libreoffice_app(self, app_name: str) -> bool:
+        """Check if this is a LibreOffice application - delegate to shared utility"""
+        return is_libreoffice_app(app_name)
+
+    def _is_libreoffice_filename_match(self, atspi_name: str, x11_title: str) -> bool:
+        """Check if AT-SPI filename matches LibreOffice window title - delegate to shared utility"""
+        return is_libreoffice_filename_match(atspi_name, x11_title)
 
     def _get_app_name_variants(self, app_name: str) -> List[str]:
         """Get possible X11 application name variants"""
@@ -416,76 +747,55 @@ class AppStateExtractor:
         return unique_variants
 
     def _find_libreoffice_norestore_window(self, app_name: str, window_name: str) -> Optional[str]:
-        """Find X11 window for LibreOffice --norestore launches where window titles don't match"""
+        """Find X11 window for LibreOffice --norestore launches using adaptive scoring"""
         # Only apply to LibreOffice applications
-        if not any(
-            libreoffice in app_name.lower()
-            for libreoffice in ["libreoffice", "soffice", "calc", "writer", "impress"]
-        ):
+        if not self._is_libreoffice_app(app_name):
             return None
 
         try:
             # Get LibreOffice windows
             variants = self._get_app_name_variants(app_name)
+            best_match = None
+            best_score = 0.0
+
             for variant in variants:
                 window_ids = self.controller.find_windows_for_app(variant)
 
                 if not window_ids:
                     continue
 
-                # Look for windows with generic LibreOffice titles
+                # Score all LibreOffice windows
                 for window_id in window_ids:
-                    x11_title = self.controller.get_window_name(window_id)
-
-                    # Check if this window is mapped (visible) and has geometry
                     try:
+                        x11_title = self.controller.get_window_name(window_id)
                         geometry = self.controller.get_window_geometry(window_id)
-                        if geometry and geometry.get("mapped", True):
-                            # Match generic LibreOffice titles (version-based or VCL-based)
+
+                        if not geometry:
+                            continue
+
+                        # Calculate quality score
+                        score = self._get_window_quality_score(window_id, geometry, x11_title, app_name)
+
+                        if score > best_score:
+                            # LibreOffice-specific matching criteria
                             if (
                                 "LibreOffice" in x11_title and "VCL" not in x11_title
                             ) or "VCL ImplGetDefaultWindow" in x11_title:
-                                self.logger.info(
-                                    f"LibreOffice --norestore match: '{window_name}' → '{x11_title}' ({window_id})"
+                                best_match = window_id
+                                best_score = score
+                                self.logger.debug(
+                                    f"New LibreOffice match: '{window_name}' → '{x11_title}' ({window_id}) score={score:.1f}"
                                 )
-                                return window_id
+
                     except Exception as e:
-                        self.logger.debug(f"Error checking geometry for window {window_id}: {e}")
+                        self.logger.debug(f"Error evaluating LibreOffice window {window_id}: {e}")
                         continue
 
-                # If multiple windows, prefer the main LibreOffice window over VCL windows
-                if len(window_ids) > 1:
-                    for window_id in window_ids:
-                        x11_title = self.controller.get_window_name(window_id)
-                        try:
-                            geometry = self.controller.get_window_geometry(window_id)
-                            if (
-                                geometry
-                                and geometry.get("mapped", True)
-                                and "LibreOffice" in x11_title
-                                and "VCL" not in x11_title
-                            ):
-                                self.logger.info(
-                                    f"LibreOffice --norestore fallback: using main window '{x11_title}' ({window_id})"
-                                )
-                                return window_id
-                        except Exception as e:
-                            self.logger.debug(f"Error checking geometry for window {window_id}: {e}")
-                            continue
-
-                # Last resort: use the first mapped window
-                for window_id in window_ids:
-                    try:
-                        geometry = self.controller.get_window_geometry(window_id)
-                        if geometry and geometry.get("mapped", True):
-                            x11_title = self.controller.get_window_name(window_id)
-                            self.logger.info(
-                                f"LibreOffice --norestore fallback: using first mapped window '{x11_title}' ({window_id})"
-                            )
-                            return window_id
-                    except Exception as e:
-                        self.logger.debug(f"Error checking geometry for window {window_id}: {e}")
-                        continue
+            if best_match and best_score > 0:
+                self.logger.info(
+                    f"LibreOffice --norestore best match: {best_match} with score {best_score:.1f}"
+                )
+                return best_match
 
             return None
 
@@ -508,14 +818,19 @@ class AppStateExtractor:
                 if not window_ids:
                     continue
 
-                # Strategy 1: Look for any valid Chrome window (regardless of size)
+                # Strategy 1: Look for any Chrome window with valid geometry
                 for window_id in window_ids:
                     try:
                         geometry = self.controller.get_window_geometry(window_id)
                         x11_title = self.controller.get_window_name(window_id)
 
-                        # Only check if geometry exists and window is mapped (not hidden)
-                        if geometry and geometry.get("mapped", True):
+                        # Only use windows with valid geometry
+                        if (
+                            geometry
+                            and geometry.get("width", 0) >= 100
+                            and geometry.get("height", 0) >= 100
+                            and geometry.get("mapped", True)
+                        ):
                             self.logger.info(
                                 f"Chrome window fallback match: '{window_name}' → '{x11_title}' ({window_id})"
                             )
@@ -525,7 +840,7 @@ class AppStateExtractor:
                         self.logger.debug(f"Error checking Chrome window {window_id}: {e}")
                         continue
 
-                # Strategy 2: If no mapped windows found, use any available window
+                # Strategy 2: If no windows with valid geometry found, use any available window
                 if window_ids:
                     try:
                         first_window = window_ids[0]
@@ -590,17 +905,8 @@ class AppStateExtractor:
         return root
 
     def _should_skip_app(self, app_name: str) -> bool:
-        """Skip system/background apps"""
-        # Skip known system/background processes
-        skip_patterns = [
-            "vmware-user",
-            "gsd-",
-            "ibus-",
-            "evolution-alarm",
-            "xdg-desktop-portal",
-            "org.gnome.Software",
-        ]
-        return any(pattern in app_name for pattern in skip_patterns)
+        """Skip system/background apps - delegate to shared utility"""
+        return should_skip_app(app_name)
 
 
 class HierarchicalParser:
@@ -909,27 +1215,8 @@ class HierarchicalParser:
             pass
 
     def _map_app_name_to_type(self, app_name: str) -> str:
-        """Map application name to app type"""
-        app_name_lower = app_name.lower()
-
-        if "code" in app_name_lower or "vscode" in app_name_lower:
-            return "code"
-        elif "chrome" in app_name_lower or "chromium" in app_name_lower or "google-chrome" in app_name_lower:
-            return "chrome"
-        elif "calc" in app_name_lower or "spreadsheet" in app_name_lower:
-            return "libreoffice_calc"
-        elif "writer" in app_name_lower or "document" in app_name_lower:
-            return "libreoffice_writer"
-        elif "impress" in app_name_lower or "presentation" in app_name_lower:
-            return "libreoffice_impress"
-        elif "soffice" in app_name_lower or "libreoffice" in app_name_lower:
-            return "libreoffice"
-        elif "vlc" in app_name_lower or "media" in app_name_lower:
-            return "vlc"
-        elif "gnome-shell" in app_name_lower or "gjs" in app_name_lower or "desktop" in app_name_lower:
-            return "desktop"
-        else:
-            return "unknown"
+        """Map application name to app type - delegate to shared utility"""
+        return map_app_name_to_type(app_name)
 
 
 class ElementValidator:
@@ -1456,30 +1743,9 @@ class ElementTracker:
         return updated_action
 
     def _map_app_name_to_type(self, app_name: str) -> str:
-        """Map application name to app type"""
-        app_name_lower = app_name.lower()
-
-        if "code" in app_name_lower or "vscode" in app_name_lower:
-            return "code"
-        elif "chrome" in app_name_lower or "chromium" in app_name_lower or "google-chrome" in app_name_lower:
-            return "chrome"
-        elif "calc" in app_name_lower or "spreadsheet" in app_name_lower:
-            return "libreoffice_calc"
-        elif "writer" in app_name_lower or "document" in app_name_lower:
-            return "libreoffice_writer"
-        elif "impress" in app_name_lower or "presentation" in app_name_lower:
-            return "libreoffice_impress"
-        elif "soffice" in app_name_lower or "libreoffice" in app_name_lower:
-            return "libreoffice"
-        elif "vlc" in app_name_lower or "media" in app_name_lower:
-            return "vlc"
-        elif "gnome-shell" in app_name_lower or "gjs" in app_name_lower or "desktop" in app_name_lower:
-            return "desktop"
-        else:
-            return "unknown"
+        """Map application name to app type - delegate to shared utility"""
+        return map_app_name_to_type(app_name)
 
     def _get_timestamp(self) -> str:
-        """Get current timestamp"""
-        import datetime
-
-        return datetime.datetime.now().strftime("%Y%m%d@%H%M%S")
+        """Get current timestamp - delegate to shared utility"""
+        return get_timestamp()

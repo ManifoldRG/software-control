@@ -13,6 +13,7 @@ from playwright.sync_api import Page, sync_playwright
 
 from OSWorld.desktop_env.controllers.python import PythonController
 from OSWorld.desktop_env.controllers.setup import SetupController
+from perturbation_engine.pipeline.app_state_utils import get_timestamp, map_app_name_to_type
 from perturbation_engine.pipeline.data_models import WindowState
 from perturbation_engine.tools.app_state_manager import AppStateExtractor
 
@@ -84,6 +85,12 @@ class PerturbationSetupController(SetupController):
         # Debug logging for port configuration
         self.logger.info(f"PerturbationSetupController initialized with chromium_port: {self.chromium_port}")
 
+        # Playwright connection for Chrome setup operations
+        self._playwright = None
+        self._browser = None
+        self._context = None
+        self._page = None
+
     def _launch_setup(self, command: Union[str, List[str]], shell: bool = False):
         """
         Override OSWorld's _launch_setup to handle shell commands properly.
@@ -128,6 +135,426 @@ class PerturbationSetupController(SetupController):
 
         # Now call the original Chrome tab opening logic
         super()._chrome_open_tabs_setup(urls_to_open)
+
+    def _open_setup(self, path: str):
+        """
+        Override _open_setup to handle LibreOffice files with proper flags to avoid recovery mode.
+        For LibreOffice files, use specific commands with --norestore flag.
+        For other files, delegate to parent implementation.
+        """
+        if not path:
+            raise Exception(f"Setup Open - Invalid path ({path}).")
+
+        # Check if this is a LibreOffice file
+        libreoffice_extensions = {".xlsx", ".xls", ".ods", ".docx", ".doc", ".odt", ".pptx", ".ppt", ".odp"}
+        file_extension = os.path.splitext(path.lower())[1]
+
+        if file_extension in libreoffice_extensions:
+            # Use LibreOffice-specific command with --norestore flag
+            self.logger.info(f"Using LibreOffice-specific opening for {path} (extension: {file_extension})")
+            self._open_libreoffice_file(path, file_extension)
+        else:
+            # Delegate to parent implementation for non-LibreOffice files
+            super()._open_setup(path)
+
+    def setup(self, config: List[Dict[str, Any]], use_proxy: bool = False) -> bool:
+        """
+        Setup method that delegates to parent SetupController without any modifications.
+        This preserves OSWorld's original setup flow completely.
+        """
+        # Delegate directly to parent SetupController.setup() without any modifications
+        result = super().setup(config, use_proxy)
+
+        # Add Chrome autocomplete/history clearing after setup ONLY if Chrome is involved
+        if result and self._is_chrome_involved_in_task():
+            try:
+                self._clear_chrome_autocomplete_history()
+            except Exception as e:
+                self.logger.warning(f"Failed to clear Chrome autocomplete history: {e}")
+
+        return result
+
+    def _is_chrome_involved_in_task(self) -> bool:
+        """Check if Chrome is involved in the current task based on related_apps"""
+        try:
+            # Get the current task config from the environment
+            # The task config is passed to env.reset() and contains related_apps
+            if hasattr(self, "_current_task_config") and self._current_task_config:
+                related_apps = self._current_task_config.get("related_apps", [])
+                return "chrome" in related_apps
+
+            # Fallback: check if Chrome is mentioned in the config
+            if hasattr(self, "config") and self.config:
+                for item in self.config:
+                    if item.get("type") == "chrome_open_tabs":
+                        return True
+                    if item.get("type") == "launch":
+                        command = item.get("parameters", {}).get("command", [])
+                        if isinstance(command, list):
+                            command_str = " ".join(command).lower()
+                        else:
+                            command_str = str(command).lower()
+                        if "chrome" in command_str or "chromium" in command_str:
+                            return True
+
+            return False
+        except Exception as e:
+            self.logger.debug(f"Error checking if Chrome is involved: {e}")
+            return False
+
+    def _clear_chrome_autocomplete_history(self):
+        """Clear Chrome autocomplete and search history to prevent interference"""
+        try:
+            self.logger.info("Clearing Chrome autocomplete and search history...")
+
+            # Clear autocomplete data using JavaScript
+            js_code = """
+            // Clear autocomplete data
+            if (document.activeElement && document.activeElement.tagName === 'INPUT') {
+                document.activeElement.blur();
+            }
+
+            // Clear any stored form data
+            if (window.localStorage) {
+                try {
+                    window.localStorage.clear();
+                } catch(e) {}
+            }
+
+            if (window.sessionStorage) {
+                try {
+                    window.sessionStorage.clear();
+                } catch(e) {}
+            }
+
+            console.log('Chrome autocomplete data cleared');
+            """
+
+            # Execute JavaScript to clear autocomplete
+            page = self._get_page()
+            if page:
+                page.evaluate(js_code)
+                self.logger.info("Chrome autocomplete cleared successfully")
+            else:
+                self.logger.warning("Could not get Chrome page to clear autocomplete")
+
+        except Exception as e:
+            self.logger.warning(f"Failed to clear Chrome autocomplete: {e}")
+
+    def _get_page(self) -> Optional[Page]:
+        """Get Playwright page with simplified connection management"""
+        if self._page is not None:
+            return self._page
+
+        # Use the configured chromium_port (9222) which is forwarded to Chrome's internal port 1337
+        remote_debugging_url = f"http://{self.vm_ip}:{self.chromium_port}"
+        self.logger.info(f"Connecting to Chrome at {remote_debugging_url}")
+
+        # Connection logic with better logging and timing
+        for attempt in range(5):
+            try:
+                self.logger.info(f"Connection attempt {attempt + 1}/5: Starting Playwright...")
+                self._playwright = sync_playwright().start()
+
+                self.logger.info(
+                    f"Connection attempt {attempt + 1}/5: Connecting to Chrome at {remote_debugging_url}..."
+                )
+                # Connect to existing Chrome instance
+                self._browser = self._playwright.chromium.connect_over_cdp(remote_debugging_url)
+
+                # Get the first context and page
+                if self._browser.contexts:
+                    self._context = self._browser.contexts[0]
+                    if self._context.pages:
+                        self._page = self._context.pages[0]
+                    else:
+                        self._page = self._context.new_page()
+                else:
+                    self._context = self._browser.new_context()
+                    self._page = self._context.new_page()
+
+                self.logger.info(
+                    f"✅ Successfully connected to Chrome at {remote_debugging_url} on attempt {attempt + 1}"
+                )
+                return self._page
+
+            except Exception as e:
+                if attempt < 4:
+                    self.logger.warning(f"❌ Connection attempt {attempt + 1}/5 failed: {e}")
+                    self.logger.info(f"🔄 Retrying in 3 seconds... (attempt {attempt + 2}/5)")
+                    # Clean up partial connection
+                    self._cleanup_playwright_connection()
+                    time.sleep(3)
+                else:
+                    self.logger.error(f"❌ Failed to connect to Chrome after 5 attempts. Last error: {e}")
+                    self._cleanup_playwright_connection()
+                    break
+
+        # If connection failed, try launching Chrome
+        self.logger.info("🚀 All connection attempts failed, attempting to launch Chrome...")
+        return self._launch_chrome_and_connect()
+
+    def _check_chrome_readiness(self, remote_debugging_url: str) -> bool:
+        """
+        Check if Chrome is ready to accept connections by testing the debugging endpoint.
+        """
+        try:
+            import requests
+
+            response = requests.get(f"{remote_debugging_url}/json", timeout=2)
+            return response.status_code == 200
+        except Exception:
+            return False
+
+    def _cleanup_playwright_connection(self):
+        """Clean up Playwright connection resources"""
+        try:
+            if self._playwright:
+                self._playwright.stop()
+        except Exception:
+            pass
+        finally:
+            self._playwright = None
+            self._browser = None
+            self._context = None
+            self._page = None
+
+    def _kill_existing_chrome(self):
+        """Kill existing Chrome processes to ensure clean launch"""
+        try:
+            import platform
+
+            # Determine Chrome executable names
+            chrome_names = ["google-chrome", "chrome", "chromium"]
+            if platform.system() == "Windows":
+                chrome_names = ["chrome.exe", "chromium.exe"]
+
+            # Kill Chrome processes
+            for chrome_name in chrome_names:
+                python_code = f"""
+import subprocess
+import signal
+import os
+
+try:
+    # Find Chrome processes
+    result = subprocess.run(['pgrep', '-f', '{chrome_name}'],
+                           capture_output=True, text=True, timeout=5)
+
+    if result.returncode == 0 and result.stdout.strip():
+        pids = result.stdout.strip().split('\\n')
+        for pid in pids:
+            if pid.strip():
+                try:
+                    os.kill(int(pid), signal.SIGTERM)
+                    print(f"Killed Chrome process {{pid}}")
+                except (ValueError, ProcessLookupError, PermissionError) as e:
+                    print(f"Could not kill process {{pid}}: {{e}}")
+
+        # Wait a bit for processes to terminate
+        import time
+        time.sleep(2)
+
+        # Force kill if still running
+        result = subprocess.run(['pgrep', '-f', '{chrome_name}'],
+                               capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and result.stdout.strip():
+            pids = result.stdout.strip().split('\\n')
+            for pid in pids:
+                if pid.strip():
+                    try:
+                        os.kill(int(pid), signal.SIGKILL)
+                        print(f"Force killed Chrome process {{pid}}")
+                    except (ValueError, ProcessLookupError, PermissionError) as e:
+                        print(f"Could not force kill process {{pid}}: {{e}}")
+    else:
+        print("No Chrome processes found")
+
+except Exception as e:
+    print(f"Error killing Chrome processes: {{e}}")
+"""
+                result = self.execute_python_command(python_code)
+                if result and result.get("status") == "success":
+                    self.logger.info(f"Chrome cleanup completed: {result.get('output', '')}")
+                else:
+                    self.logger.warning(f"Chrome cleanup failed: {result}")
+
+        except Exception as e:
+            self.logger.error(f"Error in Chrome cleanup: {e}")
+
+    def _launch_chrome_and_connect(self) -> Optional[Page]:
+        """Launch Chrome with simplified connection logic"""
+        try:
+            import json
+            import platform
+
+            import requests
+
+            # Determine Chrome executable based on architecture
+            app = "chromium" if "arm" in platform.machine() else "google-chrome"
+            command = [
+                app,
+                "--remote-debugging-port=1337",  # Chrome runs on 1337, socat forwards 9222 to this
+                "--no-first-run",
+                "--disable-web-security",
+                "--user-data-dir=/tmp/chrome-debug",
+                "--disable-restore-session-state",  # Prevent restore pages popup
+                "--disable-session-crashed-bubble",  # Prevent crash recovery popup
+                "--disable-infobars",  # Disable info bars and popups
+            ]
+
+            self.logger.info(f"Launching Chrome with command: {' '.join(command)}")
+
+            # Launch Chrome via VM server
+            payload = json.dumps({"command": command, "shell": False})
+            headers = {"Content-Type": "application/json"}
+            backend_url = f"http://{self.vm_ip}:{self.server_port}"
+
+            response = requests.post(f"{backend_url}/setup/launch", headers=headers, data=payload, timeout=30)
+            if response.status_code != 200:
+                self.logger.error(f"Failed to launch Chrome: {response.status_code} - {response.text}")
+                return None
+
+            # Wait for Chrome to start
+            self.logger.info("⏳ Waiting 5 seconds for Chrome to fully start...")
+            time.sleep(5)
+
+            # Try to connect with simplified logic
+            remote_debugging_url = f"http://{self.vm_ip}:{self.chromium_port}"
+            self.logger.info(f"🔗 Attempting to connect to launched Chrome at {remote_debugging_url}...")
+            self._playwright = sync_playwright().start()
+
+            # Single connection attempt with better error handling
+            try:
+                self._browser = self._playwright.chromium.connect_over_cdp(remote_debugging_url)
+                self.logger.info("✅ Successfully connected to launched Chrome")
+            except Exception as e:
+                self.logger.error(f"❌ Failed to connect to launched Chrome: {e}")
+                self.logger.info("💡 This might be due to Chrome still starting up or port forwarding issues")
+                self._cleanup_playwright_connection()
+                return None
+
+            # Get the first context and page
+            if self._browser.contexts:
+                self._context = self._browser.contexts[0]
+                if self._context.pages:
+                    self._page = self._context.pages[0]
+                else:
+                    self._page = self._context.new_page()
+            else:
+                self._context = self._browser.new_context()
+                self._page = self._context.new_page()
+
+            self.logger.info(f"Successfully launched and connected to Chrome at {remote_debugging_url}")
+            return self._page
+
+        except Exception as e:
+            self.logger.error(f"Failed to launch Chrome and connect: {e}")
+            self._cleanup_playwright_connection()
+            return None
+
+    def _open_libreoffice_file(self, path: str, file_extension: str):
+        """
+        Open LibreOffice files with proper flags to avoid recovery mode.
+
+        Args:
+            path: Path to the LibreOffice file
+            file_extension: File extension (e.g., '.xlsx', '.docx')
+        """
+        try:
+            # Map file extensions to LibreOffice applications
+            app_mapping = {
+                ".xlsx": "calc",
+                ".xls": "calc",
+                ".ods": "calc",
+                ".docx": "writer",
+                ".doc": "writer",
+                ".odt": "writer",
+                ".pptx": "impress",
+                ".ppt": "impress",
+                ".odp": "impress",
+            }
+
+            app_name = app_mapping.get(file_extension, "calc")
+
+            # Build LibreOffice command with --norestore flag
+            command = [
+                "libreoffice",
+                "--norestore",  # Prevent recovery mode
+                "--nodefault",  # Don't open default document
+                f"--{app_name}",  # Specify the application type
+                path,
+            ]
+
+            self.logger.info(f"Opening LibreOffice file with command: {' '.join(command)}")
+
+            # Use the launch setup method to execute the command
+            self._launch_setup(command)
+
+            # Wait a bit for LibreOffice to start
+            time.sleep(3)
+
+            self.logger.info(f"LibreOffice {app_name} opened successfully for {path}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to open LibreOffice file {path}: {e}")
+            # Fallback to parent implementation if LibreOffice-specific opening fails
+            self.logger.info("Falling back to default file opening method")
+            super()._open_setup(path)
+
+    def _parse_libreoffice_output(self, output: str, app_type: str) -> Dict[str, Any]:
+        """Parse LibreOffice UNO output into structured data"""
+        data = {}
+
+        try:
+            lines = output.strip().split("\n")
+            for line in lines:
+                if ":" in line:
+                    key, value = line.split(":", 1)
+                    key = key.strip()
+                    value = value.strip()
+
+                    if key == "SHEETS":
+                        # Parse sheet names from list format
+                        if value.startswith("[") and value.endswith("]"):
+                            sheets_str = value[1:-1]  # Remove brackets
+                            data["sheets"] = [s.strip().strip("'\"") for s in sheets_str.split(",")]
+                        else:
+                            data["sheets"] = [value]
+                    elif key == "ACTIVE_SHEET":
+                        data["active_sheet"] = value
+                    elif key == "CURRENT_CELL":
+                        if "," in value:
+                            col, row = value.split(",")
+                            data["current_cell"] = {"column": int(col), "row": int(row)}
+                    elif key == "CELL_VALUE":
+                        data["cell_value"] = value
+                    elif key == "CELL_TYPE":
+                        data["cell_type"] = value
+                    elif key == "DOCUMENT_TITLE":
+                        data["document_title"] = value
+                    elif key == "DOCUMENT_URL":
+                        data["document_url"] = value
+                    elif key == "HAS_LOCATION":
+                        data["has_location"] = value.lower() == "true"
+                    elif key == "DOCUMENT_MODIFIED":
+                        data["document_modified"] = value.lower() == "true"
+                    elif key == "CURRENT_TEXT":
+                        data["current_text"] = value
+                    elif key == "TEXT_LENGTH":
+                        data["text_length"] = int(value) if value.isdigit() else 0
+                    elif key == "PAGE_COUNT":
+                        data["page_count"] = int(value) if value.isdigit() else 0
+                    elif key == "DOCUMENT_TYPE":
+                        data["document_type"] = value
+                    else:
+                        data[key.lower()] = value
+
+            return data
+
+        except Exception as e:
+            self.logger.error(f"Error parsing LibreOffice output: {e}")
+            return {}
 
 
 class PerturbationPythonController(PythonController):
@@ -1385,218 +1812,6 @@ except Exception as e:
             self.logger.error(f"Error executing system integration: {e}")
             return False
 
-    def _get_page(self) -> Optional[Page]:
-        """Get Playwright page with simplified connection management"""
-        if self._page is not None:
-            return self._page
-
-        # Use the configured chromium_port (9222) which is forwarded to Chrome's internal port 1337
-        remote_debugging_url = f"http://{self.vm_ip}:{self.chromium_port}"
-        self.logger.info(f"Connecting to Chrome at {remote_debugging_url}")
-
-        # Connection logic with better logging and timing
-        for attempt in range(5):
-            try:
-                self.logger.info(f"Connection attempt {attempt + 1}/5: Starting Playwright...")
-                self._playwright = sync_playwright().start()
-
-                self.logger.info(
-                    f"Connection attempt {attempt + 1}/5: Connecting to Chrome at {remote_debugging_url}..."
-                )
-                # Connect to existing Chrome instance
-                self._browser = self._playwright.chromium.connect_over_cdp(remote_debugging_url)
-
-                # Get the first context and page
-                if self._browser.contexts:
-                    self._context = self._browser.contexts[0]
-                    if self._context.pages:
-                        self._page = self._context.pages[0]
-                    else:
-                        self._page = self._context.new_page()
-                else:
-                    self._context = self._browser.new_context()
-                    self._page = self._context.new_page()
-
-                self.logger.info(
-                    f"✅ Successfully connected to Chrome at {remote_debugging_url} on attempt {attempt + 1}"
-                )
-                return self._page
-
-            except Exception as e:
-                if attempt < 4:
-                    self.logger.warning(f"❌ Connection attempt {attempt + 1}/5 failed: {e}")
-                    self.logger.info(f"🔄 Retrying in 3 seconds... (attempt {attempt + 2}/5)")
-                    # Clean up partial connection
-                    self._cleanup_playwright_connection()
-                    time.sleep(3)
-                else:
-                    self.logger.error(f"❌ Failed to connect to Chrome after 5 attempts. Last error: {e}")
-                    self._cleanup_playwright_connection()
-                    break
-
-        # If connection failed, try launching Chrome
-        self.logger.info("🚀 All connection attempts failed, attempting to launch Chrome...")
-        return self._launch_chrome_and_connect()
-
-    def _check_chrome_readiness(self, remote_debugging_url: str) -> bool:
-        """
-        Check if Chrome is ready to accept connections by testing the debugging endpoint.
-        """
-        try:
-            import requests
-
-            response = requests.get(f"{remote_debugging_url}/json", timeout=2)
-            return response.status_code == 200
-        except Exception:
-            return False
-
-    def _cleanup_playwright_connection(self):
-        """Clean up Playwright connection resources"""
-        try:
-            if self._playwright:
-                self._playwright.stop()
-        except Exception:
-            pass
-        finally:
-            self._playwright = None
-            self._browser = None
-            self._context = None
-            self._page = None
-
-    def _kill_existing_chrome(self):
-        """Kill existing Chrome processes to ensure clean launch"""
-        try:
-            import platform
-
-            # Determine Chrome executable names
-            chrome_names = ["google-chrome", "chrome", "chromium"]
-            if platform.system() == "Windows":
-                chrome_names = ["chrome.exe", "chromium.exe"]
-
-            # Kill Chrome processes
-            for chrome_name in chrome_names:
-                python_code = f"""
-import subprocess
-import signal
-import os
-
-try:
-    # Find Chrome processes
-    result = subprocess.run(['pgrep', '-f', '{chrome_name}'],
-                           capture_output=True, text=True, timeout=5)
-
-    if result.returncode == 0 and result.stdout.strip():
-        pids = result.stdout.strip().split('\\n')
-        for pid in pids:
-            if pid.strip():
-                try:
-                    os.kill(int(pid), signal.SIGTERM)
-                    print(f"Killed Chrome process {{pid}}")
-                except (ValueError, ProcessLookupError, PermissionError) as e:
-                    print(f"Could not kill process {{pid}}: {{e}}")
-
-        # Wait a bit for processes to terminate
-        import time
-        time.sleep(2)
-
-        # Force kill if still running
-        result = subprocess.run(['pgrep', '-f', '{chrome_name}'],
-                               capture_output=True, text=True, timeout=5)
-        if result.returncode == 0 and result.stdout.strip():
-            pids = result.stdout.strip().split('\\n')
-            for pid in pids:
-                if pid.strip():
-                    try:
-                        os.kill(int(pid), signal.SIGKILL)
-                        print(f"Force killed Chrome process {{pid}}")
-                    except (ValueError, ProcessLookupError, PermissionError) as e:
-                        print(f"Could not force kill process {{pid}}: {{e}}")
-    else:
-        print("No Chrome processes found")
-
-except Exception as e:
-    print(f"Error killing Chrome processes: {{e}}")
-"""
-                result = self.execute_python_command(python_code)
-                if result and result.get("status") == "success":
-                    self.logger.info(f"Chrome cleanup completed: {result.get('output', '')}")
-                else:
-                    self.logger.warning(f"Chrome cleanup failed: {result}")
-
-        except Exception as e:
-            self.logger.error(f"Error in Chrome cleanup: {e}")
-
-    def _launch_chrome_and_connect(self) -> Optional[Page]:
-        """Launch Chrome with simplified connection logic"""
-        try:
-            import json
-            import platform
-
-            import requests
-
-            # Determine Chrome executable based on architecture
-            app = "chromium" if "arm" in platform.machine() else "google-chrome"
-            command = [
-                app,
-                "--remote-debugging-port=1337",  # Chrome runs on 1337, socat forwards 9222 to this
-                "--no-first-run",
-                "--disable-web-security",
-                "--user-data-dir=/tmp/chrome-debug",
-                "--disable-restore-session-state",  # Prevent restore pages popup
-                "--disable-session-crashed-bubble",  # Prevent crash recovery popup
-                "--disable-infobars",  # Disable info bars and popups
-            ]
-
-            self.logger.info(f"Launching Chrome with command: {' '.join(command)}")
-
-            # Launch Chrome via VM server
-            payload = json.dumps({"command": command, "shell": False})
-            headers = {"Content-Type": "application/json"}
-            backend_url = f"http://{self.vm_ip}:{self.server_port}"
-
-            response = requests.post(f"{backend_url}/setup/launch", headers=headers, data=payload, timeout=30)
-            if response.status_code != 200:
-                self.logger.error(f"Failed to launch Chrome: {response.status_code} - {response.text}")
-                return None
-
-            # Wait for Chrome to start
-            self.logger.info("⏳ Waiting 5 seconds for Chrome to fully start...")
-            time.sleep(5)
-
-            # Try to connect with simplified logic
-            remote_debugging_url = f"http://{self.vm_ip}:{self.chromium_port}"
-            self.logger.info(f"🔗 Attempting to connect to launched Chrome at {remote_debugging_url}...")
-            self._playwright = sync_playwright().start()
-
-            # Single connection attempt with better error handling
-            try:
-                self._browser = self._playwright.chromium.connect_over_cdp(remote_debugging_url)
-                self.logger.info("✅ Successfully connected to launched Chrome")
-            except Exception as e:
-                self.logger.error(f"❌ Failed to connect to launched Chrome: {e}")
-                self.logger.info("💡 This might be due to Chrome still starting up or port forwarding issues")
-                self._cleanup_playwright_connection()
-                return None
-
-            # Get the first context and page
-            if self._browser.contexts:
-                self._context = self._browser.contexts[0]
-                if self._context.pages:
-                    self._page = self._context.pages[0]
-                else:
-                    self._page = self._context.new_page()
-            else:
-                self._context = self._browser.new_context()
-                self._page = self._context.new_page()
-
-            self.logger.info(f"Successfully launched and connected to Chrome at {remote_debugging_url}")
-            return self._page
-
-        except Exception as e:
-            self.logger.error(f"Failed to launch Chrome and connect: {e}")
-            self._cleanup_playwright_connection()
-            return None
-
     def close_playwright(self):
         """Close Playwright connections"""
         try:
@@ -1681,74 +1896,6 @@ except Exception as e:
             self.logger.debug(f"Could not get mouse position: {e}")
             return (None, None)
 
-    def setup(self, config: List[Dict[str, Any]], use_proxy: bool = False) -> bool:
-        """
-        Setup method that delegates to parent SetupController without any modifications.
-        This preserves OSWorld's original setup flow completely.
-        """
-        # Delegate directly to parent SetupController.setup() without any modifications
-        result = super().setup(config, use_proxy)
-
-        # Add Chrome autocomplete/history clearing after setup
-        if result:
-            self._clear_chrome_autocomplete_history()
-
-        return result
-
-    def _clear_chrome_autocomplete_history(self):
-        """Clear Chrome autocomplete and search history to prevent interference"""
-        try:
-            self.logger.info("Clearing Chrome autocomplete and search history...")
-
-            # Clear autocomplete data using JavaScript
-            js_code = """
-            // Clear autocomplete data
-            if (document.activeElement && document.activeElement.tagName === 'INPUT') {
-                document.activeElement.blur();
-            }
-
-            // Clear any stored form data
-            if (window.localStorage) {
-                try {
-                    window.localStorage.clear();
-                } catch(e) {}
-            }
-
-            if (window.sessionStorage) {
-                try {
-                    window.sessionStorage.clear();
-                } catch(e) {}
-            }
-
-            console.log('Chrome autocomplete data cleared');
-            """
-
-            # Execute JavaScript to clear autocomplete
-            page = self._get_page()
-            if page:
-                page.evaluate(js_code)
-                self.logger.info("Chrome autocomplete cleared successfully")
-            else:
-                self.logger.warning("Could not get Chrome page to clear autocomplete")
-
-        except Exception as e:
-            self.logger.warning(f"Failed to clear Chrome autocomplete: {e}")
-
-    def _launch_setup(self, command: Union[str, List[str]], shell: bool = False):
-        """
-        Override OSWorld's _launch_setup to handle shell commands properly.
-
-        This fixes the issue where commands like "VLC_VERBOSE=-1 vlc" get split
-        incorrectly, breaking environment variable syntax.
-        """
-        # If command is a string and contains environment variables, force shell=True
-        if isinstance(command, str) and "=" in command and not command.startswith("--"):
-            self.logger.info(f"Detected environment variable in command, forcing shell=True: {command}")
-            shell = True
-
-        # Call parent method with potentially modified shell parameter
-        super()._launch_setup(command, shell)
-
     def get_window_states(self) -> List[WindowState]:
         """Get enhanced window states using the improved extractor"""
         try:
@@ -1772,27 +1919,8 @@ except Exception as e:
             return []
 
     def _map_app_name_to_type(self, app_name: str) -> str:
-        """Map application name to app type"""
-        app_name_lower = app_name.lower()
-
-        if "code" in app_name_lower or "vscode" in app_name_lower:
-            return "code"
-        elif "chrome" in app_name_lower or "chromium" in app_name_lower or "google-chrome" in app_name_lower:
-            return "chrome"
-        elif "calc" in app_name_lower or "spreadsheet" in app_name_lower:
-            return "libreoffice_calc"
-        elif "writer" in app_name_lower or "document" in app_name_lower:
-            return "libreoffice_writer"
-        elif "impress" in app_name_lower or "presentation" in app_name_lower:
-            return "libreoffice_impress"
-        elif "soffice" in app_name_lower or "libreoffice" in app_name_lower:
-            return "libreoffice"
-        elif "vlc" in app_name_lower or "media" in app_name_lower:
-            return "vlc"
-        elif "gnome-shell" in app_name_lower:
-            return "desktop"
-        else:
-            return "unknown"
+        """Map application name to app type - delegate to shared utility"""
+        return map_app_name_to_type(app_name)
 
     def _get_app_properties(self, app_type: str) -> Dict[str, Any]:
         """Get application-specific properties"""
@@ -1834,10 +1962,8 @@ except Exception as e:
             return {}
 
     def _get_timestamp(self) -> str:
-        """Get current timestamp"""
-        import datetime
-
-        return datetime.datetime.now().strftime("%Y%m%d@%H%M%S")
+        """Get current timestamp - delegate to shared utility"""
+        return get_timestamp()
 
     def get_window_z_order(self) -> List[str]:
         """Get actual window stacking order from window manager"""
@@ -2135,11 +2261,11 @@ except Exception as e:
         return window_ids
 
     def get_chrome_dom_data(self) -> Dict[str, Any]:
-        """Get Chrome DOM data using CDP"""
+        """Get Chrome/Electron DOM data using CDP (works for Chrome, VS Code, etc.)"""
         try:
             page = self._get_page()
             if not page:
-                self.logger.warning("No Chrome page available for DOM extraction")
+                self.logger.warning("No Chrome/Electron page available for DOM extraction")
                 return {}
 
             # Extract comprehensive DOM data
@@ -2148,6 +2274,7 @@ except Exception as e:
                     const data = {
                         url: window.location.href,
                         title: document.title,
+                        is_vscode: document.querySelector('.monaco-workbench') !== null,
                         buttons: [],
                         links: [],
                         inputs: [],
@@ -2161,11 +2288,11 @@ except Exception as e:
                     };
 
                     // Extract all interactive elements
-                    document.querySelectorAll('button, input[type="button"], input[type="submit"], input[type="reset"]').forEach((btn, i) => {
+                    document.querySelectorAll('button, input[type="button"], input[type="submit"], input[type="reset"], .monaco-button, .action-item').forEach((btn, i) => {
                         const rect = btn.getBoundingClientRect();
                         data.buttons.push({
                             id: btn.id || `button_${i}`,
-                            text: btn.textContent?.trim() || btn.value || '',
+                            text: btn.textContent?.trim() || btn.value || btn.getAttribute('aria-label') || '',
                             class: btn.className,
                             type: btn.type || 'button',
                             aria_label: btn.getAttribute('aria-label'),
@@ -2203,7 +2330,7 @@ except Exception as e:
                     });
 
                     // Extract input fields
-                    document.querySelectorAll('input, textarea, select').forEach((input, i) => {
+                    document.querySelectorAll('input, textarea, select, .monaco-input').forEach((input, i) => {
                         const rect = input.getBoundingClientRect();
                         data.inputs.push({
                             id: input.id || `input_${i}`,
@@ -2225,17 +2352,66 @@ except Exception as e:
                         });
                     });
 
+                    // Extract VS Code-specific elements if detected
+                    if (data.is_vscode) {
+                        data.editor_elements = [];
+                        data.tabs = [];
+
+                        // Extract editor elements
+                        document.querySelectorAll('.monaco-editor, .editor-container, .code-editor').forEach((editor, i) => {
+                            const rect = editor.getBoundingClientRect();
+                            data.editor_elements.push({
+                                id: editor.id || `editor_${i}`,
+                                class: editor.className,
+                                visible: rect.width > 0 && rect.height > 0,
+                                position: {
+                                    x: Math.round(rect.left),
+                                    y: Math.round(rect.top),
+                                    width: Math.round(rect.width),
+                                    height: Math.round(rect.height),
+                                    center_x: Math.round(rect.left + rect.width / 2),
+                                    center_y: Math.round(rect.top + rect.height / 2)
+                                }
+                            });
+                        });
+
+                        // Extract tabs
+                        document.querySelectorAll('.tab, .editor-tab, .monaco-tab').forEach((tab, i) => {
+                            const rect = tab.getBoundingClientRect();
+                            data.tabs.push({
+                                id: tab.id || `tab_${i}`,
+                                text: tab.textContent?.trim() || '',
+                                class: tab.className,
+                                visible: rect.width > 0 && rect.height > 0,
+                                position: {
+                                    x: Math.round(rect.left),
+                                    y: Math.round(rect.top),
+                                    width: Math.round(rect.width),
+                                    height: Math.round(rect.height),
+                                    center_x: Math.round(rect.left + rect.width / 2),
+                                    center_y: Math.round(rect.top + rect.height / 2)
+                                }
+                            });
+                        });
+                    }
+
                     return data;
                 }
             """)
 
+            app_type = "VS Code" if dom_data.get("is_vscode", False) else "Chrome"
             self.logger.info(
-                f"Extracted Chrome DOM data: {len(dom_data.get('buttons', []))} buttons, {len(dom_data.get('links', []))} links, {len(dom_data.get('inputs', []))} inputs"
+                f"Extracted {app_type} DOM data: {len(dom_data.get('buttons', []))} buttons, {len(dom_data.get('links', []))} links, {len(dom_data.get('inputs', []))} inputs"
             )
+            if dom_data.get("is_vscode", False):
+                self.logger.info(
+                    f"VS Code specific: {len(dom_data.get('editor_elements', []))} editors, {len(dom_data.get('tabs', []))} tabs"
+                )
+
             return dom_data
 
         except Exception as e:
-            self.logger.error(f"Error extracting Chrome DOM data: {e}")
+            self.logger.error(f"Error extracting Chrome/Electron DOM data: {e}")
             return {}
 
     def get_libreoffice_state(self, app_type: str = "calc") -> Dict[str, Any]:
@@ -2329,128 +2505,4 @@ else:
 
         except Exception as e:
             self.logger.error(f"Error getting LibreOffice {app_type} state: {e}")
-            return {}
-
-    def _open_setup(self, path: str):
-        """
-        Override _open_setup to handle LibreOffice files with proper flags to avoid recovery mode.
-        For LibreOffice files, use specific commands with --norestore flag.
-        For other files, delegate to parent implementation.
-        """
-        if not path:
-            raise Exception(f"Setup Open - Invalid path ({path}).")
-
-        # Check if this is a LibreOffice file
-        libreoffice_extensions = {".xlsx", ".xls", ".ods", ".docx", ".doc", ".odt", ".pptx", ".ppt", ".odp"}
-        file_extension = os.path.splitext(path.lower())[1]
-
-        if file_extension in libreoffice_extensions:
-            # Use LibreOffice-specific command with --norestore flag
-            self.logger.info(f"Using LibreOffice-specific opening for {path} (extension: {file_extension})")
-            self._open_libreoffice_file(path, file_extension)
-        else:
-            # Delegate to parent implementation for non-LibreOffice files
-            super()._open_setup(path)
-
-    def _open_libreoffice_file(self, path: str, file_extension: str):
-        """
-        Open LibreOffice files with proper flags to avoid recovery mode.
-
-        Args:
-            path: Path to the LibreOffice file
-            file_extension: File extension (e.g., '.xlsx', '.docx')
-        """
-        try:
-            # Map file extensions to LibreOffice applications
-            app_mapping = {
-                ".xlsx": "calc",
-                ".xls": "calc",
-                ".ods": "calc",
-                ".docx": "writer",
-                ".doc": "writer",
-                ".odt": "writer",
-                ".pptx": "impress",
-                ".ppt": "impress",
-                ".odp": "impress",
-            }
-
-            app_name = app_mapping.get(file_extension, "calc")
-
-            # Build LibreOffice command with --norestore flag
-            command = [
-                "libreoffice",
-                "--norestore",  # Prevent recovery mode
-                "--nodefault",  # Don't open default document
-                f"--{app_name}",  # Specify the application type
-                path,
-            ]
-
-            self.logger.info(f"Opening LibreOffice file with command: {' '.join(command)}")
-
-            # Use the launch setup method to execute the command
-            self._launch_setup(command)
-
-            # Wait a bit for LibreOffice to start
-            time.sleep(3)
-
-            self.logger.info(f"LibreOffice {app_name} opened successfully for {path}")
-
-        except Exception as e:
-            self.logger.error(f"Failed to open LibreOffice file {path}: {e}")
-            # Fallback to parent implementation if LibreOffice-specific opening fails
-            self.logger.info("Falling back to default file opening method")
-            super()._open_setup(path)
-
-    def _parse_libreoffice_output(self, output: str, app_type: str) -> Dict[str, Any]:
-        """Parse LibreOffice UNO output into structured data"""
-        data = {}
-
-        try:
-            lines = output.strip().split("\n")
-            for line in lines:
-                if ":" in line:
-                    key, value = line.split(":", 1)
-                    key = key.strip()
-                    value = value.strip()
-
-                    if key == "SHEETS":
-                        # Parse sheet names from list format
-                        if value.startswith("[") and value.endswith("]"):
-                            sheets_str = value[1:-1]  # Remove brackets
-                            data["sheets"] = [s.strip().strip("'\"") for s in sheets_str.split(",")]
-                        else:
-                            data["sheets"] = [value]
-                    elif key == "ACTIVE_SHEET":
-                        data["active_sheet"] = value
-                    elif key == "CURRENT_CELL":
-                        if "," in value:
-                            col, row = value.split(",")
-                            data["current_cell"] = {"column": int(col), "row": int(row)}
-                    elif key == "CELL_VALUE":
-                        data["cell_value"] = value
-                    elif key == "CELL_TYPE":
-                        data["cell_type"] = value
-                    elif key == "DOCUMENT_TITLE":
-                        data["document_title"] = value
-                    elif key == "DOCUMENT_URL":
-                        data["document_url"] = value
-                    elif key == "HAS_LOCATION":
-                        data["has_location"] = value.lower() == "true"
-                    elif key == "DOCUMENT_MODIFIED":
-                        data["document_modified"] = value.lower() == "true"
-                    elif key == "CURRENT_TEXT":
-                        data["current_text"] = value
-                    elif key == "TEXT_LENGTH":
-                        data["text_length"] = int(value) if value.isdigit() else 0
-                    elif key == "PAGE_COUNT":
-                        data["page_count"] = int(value) if value.isdigit() else 0
-                    elif key == "DOCUMENT_TYPE":
-                        data["document_type"] = value
-                    else:
-                        data[key.lower()] = value
-
-            return data
-
-        except Exception as e:
-            self.logger.error(f"Error parsing LibreOffice output: {e}")
             return {}

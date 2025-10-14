@@ -12,6 +12,7 @@ from perturbation_engine.control.perturbation_controller import (
     PerturbationController,
     PerturbationSetupController,
 )
+from perturbation_engine.pipeline.app_state_utils import get_timestamp
 
 
 class PerturbationDesktopEnv(DesktopEnv):
@@ -147,7 +148,5 @@ class PerturbationDesktopEnv(DesktopEnv):
             }
 
     def _get_timestamp(self) -> str:
-        """Get current timestamp"""
-        import datetime
-
-        return datetime.datetime.now().strftime("%Y%m%d@%H%M%S")
+        """Get current timestamp - delegate to shared utility"""
+        return get_timestamp()

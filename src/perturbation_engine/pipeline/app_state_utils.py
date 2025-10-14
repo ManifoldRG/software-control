@@ -1,10 +1,15 @@
 """
-App State Utilities: Helper functions for app state normalization and processing
+App State Utilities: Helper functions for app state normalization, processing, and validation
 """
 
-from typing import Any, List
+import datetime
+from typing import Any, Dict, List, Optional
 
 from perturbation_engine.pipeline.data_models import UIElement, WindowState
+
+# ============================================================================
+# Data Normalization Functions
+# ============================================================================
 
 
 def normalize_window_states(window_states: List[Any]) -> List[WindowState]:
@@ -91,6 +96,236 @@ def get_element_property(element: Any, property_name: str, default: Any = None) 
         return element.get(property_name, default)
     else:
         return default
+
+
+# ============================================================================
+# Common Utility Functions
+# ============================================================================
+
+
+def get_timestamp() -> str:
+    """Get current timestamp in standardized format"""
+    return datetime.datetime.now().strftime("%Y%m%d@%H%M%S")
+
+
+def map_app_name_to_type(app_name: str) -> str:
+    """Map application name to standardized app type"""
+    app_name_lower = app_name.lower()
+
+    if "code" in app_name_lower or "vscode" in app_name_lower:
+        return "code"
+    elif "chrome" in app_name_lower or "chromium" in app_name_lower or "google-chrome" in app_name_lower:
+        return "chrome"
+    elif "calc" in app_name_lower or "spreadsheet" in app_name_lower:
+        return "libreoffice_calc"
+    elif "writer" in app_name_lower or "document" in app_name_lower:
+        return "libreoffice_writer"
+    elif "impress" in app_name_lower or "presentation" in app_name_lower:
+        return "libreoffice_impress"
+    elif "soffice" in app_name_lower or "libreoffice" in app_name_lower:
+        return "libreoffice"
+    elif "vlc" in app_name_lower or "media" in app_name_lower:
+        return "vlc"
+    elif "gnome-shell" in app_name_lower:
+        return "desktop"
+    elif (
+        "terminal" in app_name_lower
+        or "bash" in app_name_lower
+        or "shell" in app_name_lower
+        or "gnome-terminal" in app_name_lower
+    ):
+        return "terminal"
+    elif "nautilus" in app_name_lower or "file manager" in app_name_lower or "files" in app_name_lower:
+        return "nautilus"
+    elif "gimp" in app_name_lower:
+        return "gimp"
+    else:
+        return "unknown"
+
+
+def infer_app_name_from_title(window_title: str) -> Optional[str]:
+    """Infer application name from window title (excluding Electron apps like VS Code)"""
+    title_lower = window_title.lower()
+
+    # Skip VS Code - it should be handled via CDP, not X11
+    if any(pattern in title_lower for pattern in ["visual studio code", "code -", "vscode"]):
+        return None
+
+    # Chrome patterns
+    if any(pattern in title_lower for pattern in ["chrome", "chromium", "google chrome"]):
+        return "chrome"
+
+    # LibreOffice patterns
+    if any(pattern in title_lower for pattern in ["libreoffice calc", "calc", ".xlsx", ".ods"]):
+        return "libreoffice-calc"
+    elif any(pattern in title_lower for pattern in ["libreoffice writer", "writer", ".docx", ".odt"]):
+        return "libreoffice-writer"
+    elif any(pattern in title_lower for pattern in ["libreoffice impress", "impress", ".pptx", ".odp"]):
+        return "libreoffice-impress"
+    elif "libreoffice" in title_lower or "soffice" in title_lower:
+        return "libreoffice"
+
+    # VLC patterns
+    if "vlc" in title_lower:
+        return "vlc"
+
+    # Terminal patterns
+    if any(pattern in title_lower for pattern in ["terminal", "bash", "shell", "gnome-terminal"]):
+        return "terminal"
+
+    # File manager patterns
+    if any(pattern in title_lower for pattern in ["nautilus", "file manager", "files"]):
+        return "nautilus"
+
+    # GIMP patterns
+    if "gimp" in title_lower:
+        return "gimp"
+
+    # If no specific pattern matches, try to extract from common patterns
+    # Look for "App Name -" pattern
+    if " - " in window_title:
+        app_part = window_title.split(" - ")[0].strip()
+        if app_part and len(app_part) < 50:  # Reasonable app name length
+            return app_part.lower().replace(" ", "-")
+
+    return None
+
+
+# ============================================================================
+# Window Validation Functions
+# ============================================================================
+
+
+def is_valid_window_geometry(geometry: Dict[str, Any], app_name: str = "") -> bool:
+    """Check if window geometry is valid using adaptive criteria"""
+    if not geometry:
+        return False
+
+    width = geometry.get("width", 0)
+    height = geometry.get("height", 0)
+    mapped = geometry.get("mapped", True)
+
+    # Basic checks
+    if width <= 0 or height <= 0:
+        return False
+
+    # Check if window is mapped (visible)
+    if not mapped:
+        return False
+
+    # Adaptive size validation based on application type
+    if is_libreoffice_app(app_name):
+        # LibreOffice windows can be quite small (toolbars, dialogs)
+        # But should still be reasonably sized
+        return width >= 50 and height >= 30
+    elif "chrome" in app_name.lower() or "chromium" in app_name.lower():
+        # Chrome windows should be reasonably sized
+        return width >= 200 and height >= 100
+    elif "vlc" in app_name.lower():
+        # VLC can have small control windows
+        return width >= 30 and height >= 30
+    elif "code" in app_name.lower() or "vscode" in app_name.lower():
+        # VS Code should be reasonably sized
+        return width >= 300 and height >= 200
+    else:
+        # Default: reasonable minimum size for most applications
+        return width >= 50 and height >= 50
+
+
+def get_window_quality_score(
+    window_id: str, geometry: Dict[str, Any], x11_title: str, app_name: str
+) -> float:
+    """Calculate a quality score for window matching (higher = better)"""
+    score = 0.0
+
+    # Base score for having valid geometry
+    if is_valid_window_geometry(geometry, app_name):
+        score += 10.0
+    else:
+        return 0.0  # Invalid geometry = no score
+
+    # Size bonus (larger windows are usually main windows)
+    width = geometry.get("width", 0)
+    height = geometry.get("height", 0)
+    area = width * height
+
+    if area > 1000000:  # > 1M pixels (roughly 1000x1000)
+        score += 5.0
+    elif area > 500000:  # > 500K pixels
+        score += 3.0
+    elif area > 100000:  # > 100K pixels
+        score += 1.0
+
+    # Title relevance bonus
+    if app_name.lower() in x11_title.lower():
+        score += 2.0
+
+    # Avoid VCL/placeholder windows
+    if "VCL" in x11_title and "ImplGetDefaultWindow" not in x11_title:
+        score -= 3.0
+
+    # Bonus for main application windows
+    if is_libreoffice_app(app_name):
+        if "LibreOffice" in x11_title and "VCL" not in x11_title:
+            score += 3.0
+    elif "chrome" in app_name.lower():
+        if any(keyword in x11_title.lower() for keyword in ["chrome", "browser", "google"]):
+            score += 2.0
+
+    return score
+
+
+def is_libreoffice_app(app_name: str) -> bool:
+    """Check if app_name represents a LibreOffice application"""
+    return any(
+        pattern in app_name.lower() for pattern in ["libreoffice", "calc", "writer", "impress", "soffice"]
+    )
+
+
+def is_libreoffice_filename_match(atspi_name: str, x11_title: str) -> bool:
+    """Check if AT-SPI name matches LibreOffice filename in X11 title"""
+    # Extract filename from X11 title (e.g., "Invoices.xlsx - LibreOffice Calc")
+    if " - " in x11_title:
+        filename_part = x11_title.split(" - ")[0].strip()
+        # Check if AT-SPI name contains this filename
+        return filename_part.lower() in atspi_name.lower()
+    return False
+
+
+def should_skip_app(app_name: str) -> bool:
+    """Skip system/background apps"""
+    # Skip known system/background processes
+    skip_patterns = [
+        "vmware-user",
+        "gsd-",
+        "ibus-",
+        "evolution-alarm",
+        "xdg-desktop-portal",
+        "org.gnome.Software",
+        "gnome-shell",  # Desktop environment
+        "gjs",  # GNOME JavaScript
+        "gnome-session",  # Session manager
+        "dbus",  # D-Bus daemon
+        "systemd",  # System daemon
+        "pulseaudio",  # Audio daemon
+        "NetworkManager",  # Network manager
+        "polkit",  # Policy kit
+        "udisks",  # Disk manager
+        "upower",  # Power manager
+        "accounts-daemon",  # Accounts daemon
+        "zeitgeist",  # Activity logger
+        "tracker",  # File indexer
+        "evolution",  # Email client (if not explicitly needed)
+        "thunderbird",  # Email client (if not explicitly needed)
+        "firefox",  # Browser (if not explicitly needed)
+        "nautilus",  # File manager (if not explicitly needed)
+    ]
+    return any(pattern in app_name for pattern in skip_patterns)
+
+
+# ============================================================================
+# Helper Functions for Data Conversion
+# ============================================================================
 
 
 def _dict_to_window_state(data: dict) -> WindowState:

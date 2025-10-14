@@ -14,6 +14,7 @@ import time
 from typing import Any, Dict
 
 from perturbation_engine.configure_logging import set_run_context
+from perturbation_engine.pipeline.app_state_utils import get_timestamp, map_app_name_to_type
 from perturbation_engine.pipeline.data_models import (
     ExecutionContext,
     GeneratedTrajectory,
@@ -1051,30 +1052,9 @@ class TrajectoryGenerator:
             self.logger.error(f"Error saving comprehensive perturbation debug data: {e}")
 
     def _map_app_name_to_type(self, app_name: str) -> str:
-        """Map application name to app type"""
-        app_name_lower = app_name.lower()
-
-        if "code" in app_name_lower or "vscode" in app_name_lower:
-            return "code"
-        elif "chrome" in app_name_lower or "chromium" in app_name_lower or "google-chrome" in app_name_lower:
-            return "chrome"
-        elif "calc" in app_name_lower or "spreadsheet" in app_name_lower:
-            return "libreoffice_calc"
-        elif "writer" in app_name_lower or "document" in app_name_lower:
-            return "libreoffice_writer"
-        elif "impress" in app_name_lower or "presentation" in app_name_lower:
-            return "libreoffice_impress"
-        elif "soffice" in app_name_lower or "libreoffice" in app_name_lower:
-            return "libreoffice"
-        elif "vlc" in app_name_lower or "media" in app_name_lower:
-            return "vlc"
-        elif "gnome-shell" in app_name_lower:
-            return "desktop"
-        else:
-            return "unknown"
+        """Map application name to app type - delegate to shared utility"""
+        return map_app_name_to_type(app_name)
 
     def _get_timestamp(self) -> str:
-        """Get current timestamp"""
-        import datetime
-
-        return datetime.datetime.now().strftime("%Y%m%d@%H%M%S")
+        """Get current timestamp - delegate to shared utility"""
+        return get_timestamp()
