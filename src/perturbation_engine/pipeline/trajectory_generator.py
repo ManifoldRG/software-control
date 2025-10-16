@@ -229,7 +229,7 @@ class TrajectoryGenerator:
             step_by_step_log = []
 
             # Main execution loop
-            while not done and step_idx < max_steps:
+            while not done and step_idx < trajectory_replayer.get_total_steps():
                 cot_response, action = trajectory_replayer.step()
 
                 # Check if trajectory is complete
@@ -846,6 +846,7 @@ class TrajectoryGenerator:
             perturbation_decision = temp_debug_data["perturbation_decision"]
             self.logger.info(
                 f"TEMP DEBUG: Loaded perturbation decision from phases folder for step {step_idx}"
+                f"TEMP DEBUG: Loaded perturbation decision from phases folder for step {step_idx}"
             )
         else:
             perturbation_decision = self.perturbation_generator.decide_perturbation(
@@ -870,68 +871,66 @@ class TrajectoryGenerator:
             # Check for duplicate commands (diversity)
             generated_command = perturbation_decision.get("generated_command", "")
 
-            if self._is_command_duplicate(generated_command):
-                self.logger.warning(f"Skipping duplicate perturbation at step {step_idx}")
-                step_log_entry["perturbation_failure_reason"] = "Duplicate command"
-                step_log_entry["perturbation_commands"].append(
-                    {
-                        "success": False,
-                        "operation_type": "rejected_duplicate",
-                    }
+            # if self._is_command_duplicate(generated_command):
+            #     self.logger.warning(f"Skipping duplicate perturbation at step {step_idx}")
+            #     step_log_entry["perturbation_failure_reason"] = "Duplicate command"
+            #     step_log_entry["perturbation_commands"].append(
+            #         {
+            #             "success": False,
+            #             "operation_type": "rejected_duplicate",
+            #         }
+            #     )
+            # else:
+            #     perturbation_attempts += 1
+
+            try:
+                # Apply perturbation
+                perturbation_result = self._apply_perturbation(env.controller, perturbation_decision)
+
+                # Save Phase 3 data with enhanced logging
+                self.phase_data_manager.save_perturbation_result(step_idx, perturbation_result)
+
+                # Get window states after perturbation for comprehensive debugging
+                window_states_after = env.controller.get_window_states()
+
+                # Save comprehensive perturbation debugging data to debug folder
+                self._save_comprehensive_perturbation_debug_data(
+                    step_idx,
+                    perturbation_decision,
+                    perturbation_result,
+                    window_states,
+                    window_states_after,
+                    target_element,
                 )
-            else:
-                perturbation_attempts += 1
 
-                try:
-                    # Apply perturbation
-                    perturbation_result = self._apply_perturbation(env.controller, perturbation_decision)
+                # Create perturbation command for step log (minimal data)
+                perturbation_command = self._create_perturbation_command(
+                    perturbation_decision, perturbation_result
+                )
+                step_log_entry["perturbation_commands"].append(perturbation_command)
 
-                    # Save Phase 3 data with enhanced logging
-                    self.phase_data_manager.save_perturbation_result(step_idx, perturbation_result)
+                if perturbation_result.get("success", False):
+                    perturbation_successes += 1
+                    perturbation_applied = True
+                    step_log_entry["perturbation_success"] = True
 
-                    # Get window states after perturbation for comprehensive debugging
-                    window_states_after = env.controller.get_window_states()
+                    env.mark_perturbation_applied()
+                    self._record_applied_command(generated_command)
 
-                    # Save comprehensive perturbation debugging data to debug folder
-                    self._save_comprehensive_perturbation_debug_data(
-                        step_idx,
-                        perturbation_decision,
-                        perturbation_result,
-                        window_states,
-                        window_states_after,
-                        target_element,
-                    )
+                    self.logger.info(f"Perturbation applied: {perturbation_decision.get('reasoning', '')}")
 
-                    # Create perturbation command for step log (minimal data)
-                    perturbation_command = self._create_perturbation_command(
-                        perturbation_decision, perturbation_result
-                    )
-                    step_log_entry["perturbation_commands"].append(perturbation_command)
-
-                    if perturbation_result.get("success", False):
-                        perturbation_successes += 1
-                        perturbation_applied = True
-                        step_log_entry["perturbation_success"] = True
-
-                        env.mark_perturbation_applied()
-                        self._record_applied_command(generated_command)
-
-                        self.logger.info(
-                            f"Perturbation applied: {perturbation_decision.get('reasoning', '')}"
-                        )
-
-                    else:
-                        perturbation_failures += 1
-                        step_log_entry["perturbation_success"] = False
-                        step_log_entry["perturbation_failure_reason"] = perturbation_result.get(
-                            "error_message", "Unknown"
-                        )
-
-                except Exception as e:
+                else:
                     perturbation_failures += 1
                     step_log_entry["perturbation_success"] = False
-                    step_log_entry["perturbation_failure_reason"] = str(e)
-                    self.logger.error(f"Perturbation error: {e}")
+                    step_log_entry["perturbation_failure_reason"] = perturbation_result.get(
+                        "error_message", "Unknown"
+                    )
+
+            except Exception as e:
+                perturbation_failures += 1
+                step_log_entry["perturbation_success"] = False
+                step_log_entry["perturbation_failure_reason"] = str(e)
+                self.logger.error(f"Perturbation error: {e}")
 
         # ========== Phase 4: Update Action Coordinates ==========
         if target_element and perturbation_applied:

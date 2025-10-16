@@ -26,13 +26,12 @@ Environment Variables Required:
     - OPENROUTER_API_KEY for OpenRouter models
 """
 
-import json
 import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from google import genai
-from google.genai import types
+from pydantic import BaseModel
 
 from perturbation_engine.pipeline.app_state_utils import (
     normalize_ui_elements,
@@ -51,6 +50,115 @@ from perturbation_engine.pipeline.data_models import (
     WindowState,
 )
 from perturbation_engine.pipeline.operation_examples import OperationExamples
+
+
+# Pydantic models for structured output
+class PerturbationOpportunity(BaseModel):
+    element_type: str
+    perturbation_category: str
+    perturbation_type: str
+    target_scope: str
+    timing: str
+    intensity: str
+    educational_value: str
+    risk_level: str
+    maintains_accessibility: bool
+
+
+class TaskCharacteristics(BaseModel):
+    estimated_steps: str
+    primary_apps: List[str]
+    critical_elements: List[str]
+    workflow_type: str
+
+
+class TaskAnalysis(BaseModel):
+    complexity: str
+    domain: str
+    learning_objectives: List[str]
+    task_characteristics: TaskCharacteristics
+    perturbation_opportunities: List[PerturbationOpportunity]
+    reasoning: str
+
+
+class ScenarioSpecForLLM(BaseModel):
+    """Pydantic model for LLM structured output - converts to dataclass ScenarioSpec"""
+
+    target_app: str
+    perturbation_trigger: str
+    available_perturbation_actions: str
+    learning_objectives: str
+    target_components: List[str]
+    perturbation_types: List[str]
+    perturbation_category: str
+    perturbation_intensity: str = "medium"
+    maintains_functionality: bool = True
+    maintains_accessibility: bool = True
+    realistic_scenario: str = ""
+    initial_state_perturbation: bool = False
+    runtime_perturbation: bool = True
+    risk_mitigation: str = ""
+    educational_rationale: str = ""
+
+    def to_scenario_spec(self, task_id: str, scenario_index: int) -> ScenarioSpec:
+        """Convert to the main dataclass ScenarioSpec with proper ID generation"""
+        from perturbation_engine.pipeline.data_models import (
+            PerturbationCategory,
+            PerturbationIntensity,
+            PerturbationType,
+        )
+
+        # Generate meaningful scenario ID: task_id + scenario_number + target_app
+        scenario_id = f"{task_id}_scenario_{scenario_index + 1}_{self.target_app}"
+
+        return ScenarioSpec(
+            scenario_id=scenario_id,
+            target_app=self.target_app,
+            perturbation_trigger=self.perturbation_trigger,
+            available_perturbation_actions=self.available_perturbation_actions,
+            learning_objectives=self.learning_objectives,
+            target_components=self.target_components,
+            perturbation_types=[PerturbationType.from_string(pt) for pt in self.perturbation_types],
+            perturbation_category=PerturbationCategory.from_string(self.perturbation_category),
+            perturbation_intensity=PerturbationIntensity.from_string(self.perturbation_intensity),
+            maintains_functionality=self.maintains_functionality,
+            maintains_accessibility=self.maintains_accessibility,
+            realistic_scenario=self.realistic_scenario,
+            initial_state_perturbation=self.initial_state_perturbation,
+            runtime_perturbation=self.runtime_perturbation,
+            risk_mitigation=self.risk_mitigation,
+            educational_rationale=self.educational_rationale,
+        )
+
+
+class ElementCandidate(BaseModel):
+    name: str
+    element_type: str
+    app_name: str
+    confidence: float
+    reasoning: str
+
+
+class PerturbationParameters(BaseModel):
+    target_app: str
+    intensity: str
+    coherent_with_history: bool
+    maintains_functionality: bool
+    preserves_target_accessibility: bool
+
+
+class PerturbationDecision(BaseModel):
+    should_apply: bool
+    reasoning: str
+    perturbation_type: str
+    api_call: str
+    generated_command: str
+    parameters: PerturbationParameters
+    confidence: float
+    alternative_commands: List[str]
+    visual_impact: str
+    coherence_rationale: str
+
 
 PROMPT_CONSTANTS = {
     "task_analysis_role": "You are an expert in software automation and curriculum design. Analyze this task to understand its characteristics, complexity, domain, and perturbation opportunities.",
@@ -750,6 +858,15 @@ class OperationCatalog:
                 "execute_chrome_visual_manipulation('inject_custom_css(\"dark_theme\")', {'target_app': 'chrome'})",
                 "execute_chrome_visual_manipulation('modify_page_colors(\"hue_rotate\")', {'target_app': 'chrome'})",
             ],
+            "vscode_operations": [
+                # VS Code visual manipulation
+                "execute_css_injection('.monaco-editor { background-color: #1a1a1a !important; color: #ffffff !important; }', {'target_app': 'vscode'})",
+                "execute_css_injection('.monaco-editor .view-line { font-family: \"Courier New\", monospace !important; font-size: 16px !important; }', {'target_app': 'vscode'})",
+                "execute_css_injection('.monaco-workbench { background-color: #2d2d2d !important; }', {'target_app': 'vscode'})",
+                "execute_dom_modification('document.querySelectorAll(\".monaco-editor\").forEach(editor => editor.style.filter = \"hue-rotate(180deg)\")', {'target_app': 'vscode'})",
+                "execute_theme_randomization({'target_app': 'vscode'})",
+                "execute_layout_perturbation({'target_app': 'vscode'})",
+            ],
             "libreoffice_operations": [
                 # LibreOffice visual formatting
                 "execute_libreoffice_visual_formatting('randomize_cell_colors(\"A1:C10\")', {'target_app': 'libreoffice_calc'})",
@@ -761,6 +878,7 @@ class OperationCatalog:
                 "execute_system_theme_coherence({'target_app': 'vlc'})",
                 "execute_system_theme_coherence({'target_app': 'chrome'})",
                 "execute_system_theme_coherence({'target_app': 'libreoffice_calc'})",
+                "execute_system_theme_coherence({'target_app': 'vscode'})",
             ],
         }
 
@@ -788,28 +906,6 @@ class OperationCatalog:
                 "execute_network_perturbation({'delay': 2.0})",
             ],
         }
-
-    # def get_operations_for_app(self, app_name: str) -> Dict[str, List[str]]:
-    #     """Get operations for a specific app, combining UI element variations with app-specific operations"""
-    #     # Get UI element-level variations (priority for invariant feature learning)
-    #     ui_variations = self.catalog["ui_element_variations"]
-    #     semantic_variations = self.catalog["semantic_content_variations"]
-    #     theme_variations = self.catalog["visual_theme_variations"]
-
-    #     # Get app-specific operations
-    #     app_operations = self.catalog["app_specific_operations"]
-    #     system_operations = self.catalog["system_integration"]
-
-    #     # Combine all variations for comprehensive perturbation
-    #     all_operations = {
-    #         "ui_element_variations": ui_variations,
-    #         "semantic_content_variations": semantic_variations,
-    #         "visual_theme_variations": theme_variations,
-    #         "app_specific_operations": app_operations,
-    #         "system_integration": system_operations,
-    #     }
-
-    #     return all_operations
 
     def _load_writer_operations(self) -> Dict[str, List[str]]:
         """Load LibreOffice Writer operations using actual UNO patterns"""
@@ -860,13 +956,13 @@ class OperationCatalog:
         app_ops = {}
 
         if app_name_lower in ["vlc"]:
-            app_ops.update(app_specific["vlc_operations"])
+            app_ops["vlc_operations"] = app_specific["vlc_operations"]
         elif app_name_lower in ["chrome", "google_chrome"]:
-            app_ops.update(app_specific["chrome_operations"])
+            app_ops["chrome_operations"] = app_specific["chrome_operations"]
         elif app_name_lower in ["code", "vscode"]:
-            app_ops.update(app_specific["vscode_operations"])
+            app_ops["vscode_operations"] = app_specific["vscode_operations"]
         elif app_name_lower in ["libreoffice_calc", "libreoffice_writer", "libreoffice_impress"]:
-            app_ops.update(app_specific["libreoffice_operations"])
+            app_ops["libreoffice_operations"] = app_specific["libreoffice_operations"]
 
         # Combine all variations
         combined_ops = {
@@ -1025,13 +1121,13 @@ class BaseLLM:
     - OPENROUTER_API_KEY for OpenRouter models
     """
 
-    def __init__(self, model_name: str = "gemini-2.5-flash-lite", model_provider: str = "gemini"):
+    def __init__(self, model_name: str = "gemini-2.5-flash", model_provider: str = "gemini"):
         self.model_provider = model_provider
         self.model_name = model_name
 
         # TODO: Change provider and model
         # self.model_provider = "openai"
-        # self.model_name = "gpt-4o-mini"
+        # self.model_name = "gpt-4.1-nano"
 
         # self.model_provider = "anthropic"
         # self.model_name = "claude-haiku-3.5"
@@ -1084,7 +1180,7 @@ class BaseLLM:
         else:
             self.logger.warning(f"Unknown model type: {self.model_name} - using mock responses")
 
-    def call_llm(self, prompt: str) -> str:
+    def call_llm(self, prompt: str, response_schema: BaseModel = None) -> str:
         """Call LLM with prompt using the correct API format for each provider"""
         if not self.client:
             return '{"error": "Mock response - API not available"}'
@@ -1096,29 +1192,34 @@ class BaseLLM:
                 retries += 1
 
                 if self.model_provider == "gemini":
+                    if response_schema:
+                        config = {
+                            "response_mime_type": "application/json",
+                            "response_schema": response_schema,
+                        }
+                    else:
+                        config = {}
+
                     response = self.client.models.generate_content(
                         model=self.model_name,
                         contents=prompt,
-                        config=types.GenerateContentConfig(
-                            thinking_config=types.ThinkingConfig(thinking_budget=0)
-                        ),
+                        config=config,
                     )
                     if response and hasattr(response, "text") and response.text:
-                        return response.text
+                        if response_schema and hasattr(response, "parsed"):
+                            # Use the parsed Pydantic objects directly
+                            return response.parsed
+                        else:
+                            return response.text
                     else:
                         raise ValueError("No response text from Gemini API")
 
                 elif self.model_provider == "openai":
-                    completion = self.client.chat.completions.create(
+                    response = self.client.responses.create(
                         model=self.model_name,
-                        messages=[{"role": "user", "content": prompt}],
-                        temperature=0.1,  # Low temperature for consistent results
-                        max_tokens=4000,  # Reasonable limit for JSON responses
+                        input=prompt,
                     )
-                    if completion.choices and len(completion.choices) > 0:
-                        return completion.choices[0].message.content
-                    else:
-                        raise ValueError("No response content from OpenAI API")
+                    return response.output_text
 
                 elif self.model_provider == "anthropic":
                     message = self.client.messages.create(
@@ -1149,96 +1250,6 @@ class BaseLLM:
                 self.logger.error(f"Error calling LLM: {e}, retrying {retries}/{max_retries}...")
 
         return f"{'error: LLM call failed after {max_retries} attempts'}"
-
-    def extract_json(self, response: str) -> List[Dict[str, Any]]:
-        """Extract JSON with multiple fallback strategies"""
-        try:
-            # Strategy 1: Standard JSON block extraction
-            json_str = self._extract_json_block(response)
-            if json_str:
-                # Fix common JSON escape issues before parsing
-                json_str = self._fix_json_escapes(json_str)
-                parsed = json.loads(json_str)
-                return [parsed] if isinstance(parsed, dict) else parsed
-
-            # Strategy 2: Try to find JSON-like structures
-            json_str = self._extract_json_patterns(response)
-            if json_str:
-                # Fix common JSON escape issues before parsing
-                json_str = self._fix_json_escapes(json_str)
-                parsed = json.loads(json_str)
-                return [parsed] if isinstance(parsed, dict) else parsed
-
-            # Strategy 3: Generate minimal valid response
-            self.logger.warning("JSON extraction failed, using fallback response")
-            return [self._generate_fallback_response()]
-
-        except Exception as e:
-            self.logger.error(f"JSON extraction failed: {e}, response: {response}")
-            return [self._generate_fallback_response()]
-
-    def _extract_json_block(self, response: str) -> Optional[str]:
-        """Extract JSON from code blocks"""
-        try:
-            if "```json" in response:
-                json_start = response.find("```json") + 7
-                json_end = response.find("```", json_start)
-                if json_end > json_start:
-                    return response[json_start:json_end].strip()
-            elif "```" in response:
-                json_start = response.find("```") + 3
-                json_end = response.find("```", json_start)
-                if json_end > json_start:
-                    return response[json_start:json_end].strip()
-            else:
-                # Try to find JSON in the response
-                response_stripped = response.strip()
-                if response_stripped.startswith("{") or response_stripped.startswith("["):
-                    return response_stripped
-            return None
-        except Exception:
-            return None
-
-    def _fix_json_escapes(self, json_str: str) -> str:
-        """Fix common JSON escape sequence issues from LLM responses"""
-        try:
-            # Fix invalid escape sequences that LLMs sometimes generate
-            # Replace \' with ' (single quotes don't need escaping in JSON strings)
-            json_str = json_str.replace("\\'", "'")
-
-            # Fix double-escaped quotes: \\\" becomes \"
-            json_str = json_str.replace('\\\\"', '\\"')
-
-            # Fix other common escape issues
-            json_str = json_str.replace("\\n", "\n")
-            json_str = json_str.replace("\\t", "\t")
-            json_str = json_str.replace("\\r", "\r")
-
-            return json_str
-        except Exception:
-            return json_str
-
-    def _extract_json_patterns(self, response: str) -> Optional[str]:
-        """Extract JSON using pattern matching"""
-        import re
-
-        # Look for JSON-like structures
-        json_patterns = [
-            r'\{[^{}]*"[^"]*"[^{}]*\}',  # Simple object
-            r"\[[^\[\]]*\{[^}]*\}[^\[\]]*\]",  # Array of objects
-            r"\{.*?\}",  # Any object-like structure
-        ]
-
-        for pattern in json_patterns:
-            matches = re.findall(pattern, response, re.DOTALL)
-            for match in matches:
-                try:
-                    # Validate it's actually JSON
-                    json.loads(match)
-                    return match
-                except Exception:
-                    continue
-        return None
 
     def _generate_fallback_response(self, target_app: str = "system") -> Dict[str, Any]:
         """Generate minimal valid perturbation decision that avoids harmful operations"""
@@ -1687,27 +1698,15 @@ class CurriculumGenerator(BaseLLM):
                     prompt = self._create_diverse_curriculum_prompt_with_constraints(
                         task_context, remaining_count, diversity_constraints
                     )
-                    response = self.call_llm(prompt)
-                    scenarios_data = self.extract_json(response)
-
-                    if scenarios_data:
-                        batch_scenarios = scenarios_data
-                        break
+                    response = self.call_llm(prompt, response_schema=list[ScenarioSpecForLLM])
+                    if isinstance(response, list):
+                        # Convert Pydantic objects to dictionaries for compatibility with existing validation logic
+                        batch_scenarios = [scenario.model_dump() for scenario in response]
                     else:
-                        if attempt < max_retries - 1:
-                            self.logger.warning(
-                                f"Batch {batch_idx + 1} attempt {attempt + 1} failed: No scenarios generated, retrying..."
-                            )
-                            continue
-                        else:
-                            self.logger.error(
-                                f"Batch {batch_idx + 1} failed after 3 attempts: No scenarios generated"
-                            )
-                            # Generate fallback scenarios for this batch
-                            batch_scenarios = self._generate_fallback_scenarios(
-                                remaining_count, task_context, batch_idx
-                            )
-                            break
+                        self.logger.error("Failed to get structured response for scenarios")
+                        batch_scenarios = self._generate_fallback_scenarios(
+                            remaining_count, task_context, batch_idx
+                        )
 
                 except Exception as e:
                     if attempt < max_retries - 1:
@@ -2372,16 +2371,18 @@ Return JSON:
         }}
         """
 
-            response = self.call_llm(prompt)
-            result = self.extract_json(response)
+            response = self.call_llm(prompt, response_schema=TaskAnalysis)
 
-            if isinstance(result, list) and len(result) > 0:
-                result = result[0]
+            if isinstance(response, TaskAnalysis):
+                # Convert Pydantic model to dict for validation
+                result = response.model_dump()
                 validated_result = self._validate_llm_task_analysis(result)
                 if validated_result:
                     return validated_result
                 else:
                     self.logger.exception("LLM task analysis result validation failed")
+            else:
+                self.logger.error("Failed to get structured response from LLM")
 
         except Exception as e:
             self.logger.exception(f"LLM task analysis failed after 3 attempts: {e}")
@@ -3268,26 +3269,87 @@ class PerturbationGenerator(BaseLLM):
                 execution_context.step_idx, execution_context.task_instruction, execution_context.total_steps
             )
 
+            target_app = scenario_spec.target_app
+
             # Get rich procedural memory context
             procedural_context = self.procedural_memory.get_context_for_decision(
-                scenario_spec.target_app, execution_context.step_idx, task_progress
+                target_app, execution_context.step_idx, task_progress
             )
 
             # Format procedural memory context for prompt
             memory_context = self._format_procedural_memory_context(procedural_context)
 
             # Get app-specific strategy
-            app_strategy = self._get_app_specific_strategy(scenario_spec.target_app, execution_context)
+            app_strategy = self._get_app_specific_strategy(target_app, execution_context)
 
             # Get available operations for target app (optimized)
-            app_operations = self.operation_catalog.get_operations_for_app(scenario_spec.target_app.lower())
+            app_operations = self.operation_catalog.get_operations_for_app(target_app.lower())
             formatted_operations = self._format_operations_for_prompt(app_operations)
 
             # Build app-specific context
-            app_context = self._build_app_specific_context(app_strategy, scenario_spec.target_app)
+            app_context = self._build_app_specific_context(app_strategy, target_app)
 
-            target_app = scenario_spec.target_app
-            prompt = f"""
+            # Build app-specific prompt
+            prompt = self._build_app_specific_prompt(
+                target_app,
+                execution_context,
+                scenario_spec,
+                app_context,
+                formatted_operations,
+                memory_context,
+                procedural_context,
+            )
+
+            response = self.call_llm(prompt, response_schema=PerturbationDecision)
+
+            if isinstance(response, PerturbationDecision):
+                result = response.model_dump()
+            else:
+                self.logger.error("Failed to get structured response from LLM")
+                return self._generate_fallback_response(target_app)
+
+            is_valid, errors = self.verifier.verify_perturbation_decision(result)
+            if not is_valid:
+                self.logger.error(f"Validation failed: {', '.join(errors)}")
+                return self._generate_fallback_response(target_app)
+
+            return result
+
+        except Exception as e:
+            self.logger.error(f"Error in _get_llm_decision_with_context: {e}")
+            return self._create_error_fallback_response(target_app, str(e))
+
+    def _create_error_fallback_response(self, target_app: str, error_message: str) -> Dict[str, Any]:
+        """Create a safe fallback response when errors occur"""
+        return {
+            "should_apply": False,
+            "reasoning": f"Error occurred: {error_message}",
+            "perturbation_type": "theme",
+            "api_call": "execute_bash_command",
+            "generated_command": 'echo "Safe fallback - no perturbation applied"',
+            "parameters": {"target_app": target_app, "intensity": "low"},
+            "confidence": 0.0,
+            "alternative_commands": [],
+            "visual_impact": "No visual changes - safe fallback",
+            "coherence_rationale": "Fallback response due to error",
+        }
+
+    def _build_app_specific_prompt(
+        self,
+        target_app: str,
+        execution_context: ExecutionContext,
+        scenario_spec: ScenarioSpec,
+        app_context: str,
+        formatted_operations: str,
+        memory_context: str,
+        procedural_context: Dict[str, Any],
+    ) -> str:
+        """Build app-specific prompt with proper f-string handling"""
+
+        # Get app-specific examples
+        app_examples = self._get_app_specific_examples(target_app)
+
+        prompt = f"""
 {PROMPT_CONSTANTS["perturbation_role"]}
 
 CURRENT EXECUTION CONTEXT:
@@ -3363,33 +3425,7 @@ COMMAND GENERATION RULES:
 7. Focus on UI element-level visual variations for invariant feature learning
 
 SAFE COMMAND EXAMPLES:
-# UI Element-Level Visual Variations (PRIORITY for invariant feature learning)
-- Chrome: execute_css_injection('button {{ background-color: #ff6b6b !important; border-radius: 12px !important; box-shadow: 0 4px 8px rgba(0,0,0,0.3) !important; }}', {{'target_app': 'chrome'}})
-- Chrome: execute_css_injection('input[type="text"], input[type="email"], textarea {{ border: 2px solid #4ecdc4 !important; border-radius: 8px !important; padding: 12px !important; }}', {{'target_app': 'chrome'}})
-- Chrome: execute_css_injection('a {{ color: #e74c3c !important; text-decoration: underline !important; font-weight: bold !important; }}', {{'target_app': 'chrome'}})
-- Chrome: execute_dom_modification('document.querySelectorAll("button").forEach(btn => {{ btn.style.backgroundColor = "#3498db"; btn.style.transform = "scale(1.05)"; }})', {{'target_app': 'chrome'}})
-- Chrome: execute_dom_modification('document.querySelectorAll("img").forEach(img => {{ img.style.filter = "hue-rotate(180deg)"; img.style.borderRadius = "10px"; }})', {{'target_app': 'chrome'}})
-
-# Theme and Layout Variations
-- Chrome: execute_theme_randomization({"target_app": 'chrome'})
-- Chrome: execute_layout_perturbation({"target_app": 'chrome'})
-- Chrome: execute_typography_randomization({"target_app": 'chrome'})
-- Chrome: execute_animation_effects('button {{ transition: all 0.3s ease !important; }} button:hover {{ transform: translateY(-2px) !important; }}', {{'target_app': 'chrome'}})
-- Chrome: execute_accessibility_perturbation({"target_app": 'chrome'})
-
-# System-Level Variations
-- System: execute_bash_command('gsettings set org.gnome.desktop.interface gtk-theme "Adwaita-dark"')
-- System: execute_bash_command('gsettings set org.gnome.desktop.interface font-name "Liberation Sans 14"')
-- System: execute_bash_command('notify-send "Visual Change" "UI element styling applied"')
-
-# LibreOffice Variations
-- LibreOffice: execute_uno_command('CalcTools.set_theme("dark")', {"target_app": 'libreoffice_calc'})
-- LibreOffice: execute_uno_command('CalcTools.format_range("A1:C10", "background_color", "#f8f9fa")', {"target_app": 'libreoffice_calc'})
-- LibreOffice: execute_uno_command('WriterTools.set_font("Arial", 14)', {"target_app": 'libreoffice_writer'})
-
-# VLC Variations
-- VLC: execute_vlc_visual_effects('apply_video_filter("blur")', {"target_app": 'vlc'})
-- VLC: execute_vlc_visual_effects('change_aspect_ratio("16_9")', {"target_app": 'vlc'})
+{app_examples}
 
 QUALITY REQUIREMENTS:
 - generated_command must be a complete, executable command
@@ -3418,50 +3454,47 @@ Return JSON:
     "coherence_rationale": "explanation_of_how_this_builds_on_previous_perturbations"
 }}
 """
+        return prompt
 
-            response = self.call_llm(prompt)
-            result = self.extract_json(response)
+    def _get_app_specific_examples(self, target_app: str) -> str:
+        """Get app-specific command examples with proper f-string handling"""
+        app_lower = target_app.lower()
 
-            if isinstance(result, list) and len(result) > 0:
-                result = result[0]
+        if app_lower in ["chrome", "google-chrome", "chromium"]:
+            return """# Chrome Visual Variations (PRIORITY for invariant feature learning)
+- Chrome: execute_css_injection('button {{ background-color: #ff6b6b !important; border-radius: 12px !important; box-shadow: 0 4px 8px rgba(0,0,0,0.3) !important; }}', {{"target_app": "chrome"}})
+- Chrome: execute_css_injection('input[type="text"], input[type="email"], textarea {{ border: 2px solid #4ecdc4 !important; border-radius: 8px !important; padding: 12px !important; }}', {{"target_app": "chrome"}})
+- Chrome: execute_css_injection('a {{ color: #e74c3c !important; text-decoration: underline !important; font-weight: bold !important; }}', {{"target_app": "chrome"}})
+- Chrome: execute_dom_modification('document.querySelectorAll("button").forEach(btn => {{ btn.style.backgroundColor = "#3498db"; btn.style.transform = "scale(1.05)"; }})', {{"target_app": "chrome"}})
+- Chrome: execute_dom_modification('document.querySelectorAll("img").forEach(img => {{ img.style.filter = "hue-rotate(180deg)"; img.style.borderRadius = "10px"; }})', {{"target_app": "chrome"}})
+- Chrome: execute_theme_randomization({{"target_app": "chrome"}})
+- Chrome: execute_layout_perturbation({{"target_app": "chrome"}})
+- Chrome: execute_typography_randomization({{"target_app": "chrome"}})"""
 
-            if not isinstance(result, dict):
-                self.logger.error("Invalid response format from LLM")
-                return {
-                    "should_apply": False,
-                    "reasoning": "Failed to parse LLM response",
-                    "perturbation_type": "theme",
-                    "generated_command": "",
-                    "parameters": {"target_app": scenario_spec.target_app},
-                    "confidence": 0.0,
-                    "alternative_commands": [],
-                }
+        elif app_lower in ["libreoffice_calc", "libreoffice_writer", "libreoffice_impress"]:
+            return """# LibreOffice Visual Variations
+- LibreOffice: execute_uno_command('CalcTools.set_theme("dark")', {{"target_app": "libreoffice_calc"}})
+- LibreOffice: execute_uno_command('CalcTools.format_range("A1:C10", "background_color", "#f8f9fa")', {{"target_app": "libreoffice_calc"}})
+- LibreOffice: execute_uno_command('WriterTools.set_font("Arial", 14)', {{"target_app": "libreoffice_writer"}})
+- LibreOffice: execute_libreoffice_visual_formatting('change_toolbar_colors', {{"target_app": "libreoffice_calc"}})"""
 
-            is_valid, errors = self.verifier.verify_perturbation_decision(result)
-            if not is_valid:
-                self.logger.error(f"Validation failed: {', '.join(errors)}")
-                return self._generate_fallback_response(scenario_spec.target_app)
+        elif app_lower == "vlc":
+            return """# VLC Visual Variations
+- VLC: execute_vlc_visual_effects('apply_video_filter("blur")', {{"target_app": "vlc"}})
+- VLC: execute_vlc_visual_effects('change_aspect_ratio("16_9")', {{"target_app": "vlc"}})
+- VLC: execute_vlc_visual_effects('modify_interface_theme', {{"target_app": "vlc"}})"""
 
-            return result
+        elif app_lower in ["code", "vscode"]:
+            return """# VS Code Visual Variations
+- VS Code: execute_vscode_theme_change('dark_plus', {{"target_app": "vscode"}})
+- VS Code: execute_vscode_color_customization('editor.background', '#1e1e1e', {{"target_app": "vscode"}})"""
 
-        except Exception as e:
-            self.logger.error(f"Error in _get_llm_decision_with_context: {e}")
-            return self._create_error_fallback_response(scenario_spec.target_app, str(e))
-
-    def _create_error_fallback_response(self, target_app: str, error_message: str) -> Dict[str, Any]:
-        """Create a safe fallback response when errors occur"""
-        return {
-            "should_apply": False,
-            "reasoning": f"Error occurred: {error_message}",
-            "perturbation_type": "theme",
-            "api_call": "execute_bash_command",
-            "generated_command": 'echo "Safe fallback - no perturbation applied"',
-            "parameters": {"target_app": target_app, "intensity": "low"},
-            "confidence": 0.0,
-            "alternative_commands": [],
-            "visual_impact": "No visual changes - safe fallback",
-            "coherence_rationale": "Fallback response due to error",
-        }
+        else:
+            return """# System-Level Variations
+- System: execute_bash_command('gsettings set org.gnome.desktop.interface gtk-theme "Adwaita-dark"')
+- System: execute_bash_command('gsettings set org.gnome.desktop.interface font-name "Liberation Sans 14"')
+- System: execute_bash_command('notify-send "Visual Change" "UI element styling applied"')
+- System: execute_system_theme_coherence({{"target_app": "{target_app}"}})"""
 
 
 class ElementIdentificationLLM(BaseLLM):
@@ -3538,33 +3571,13 @@ class ElementIdentificationLLM(BaseLLM):
         ]
         """
 
-        response = self.call_llm(prompt)
-        result = self.extract_json(response)
+        response = self.call_llm(prompt, response_schema=list[ElementCandidate])
 
-        if not isinstance(result, list):
+        if not isinstance(response, list):
             return []
 
-        # Validate and filter results
-        valid_candidates = []
-        for candidate in result:
-            if not isinstance(candidate, dict):
-                continue
-
-            # Validate required fields
-            required_fields = ["name", "element_type", "app_name"]
-            if not all(field in candidate for field in required_fields):
-                continue
-
-            if candidate.get("name") is None:
-                continue
-
-            valid_candidates.append(candidate)
-
-        return valid_candidates
-
-    # def _format_window_states_for_llm(self, window_states: List[WindowState]) -> str:
-    #     """Format window states with complete hierarchical element tree for LLM consumption"""
-    #     return self._format_app_states_for_decision(window_states)
+        # Convert Pydantic objects to dictionaries for compatibility
+        return [candidate.model_dump() for candidate in response]
 
 
 class QualityLLM(BaseLLM):

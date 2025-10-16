@@ -122,8 +122,8 @@ class PerturbationDesktopEnv(DesktopEnv):
         return self.controller.get_window_states(setup_controller=self.setup_controller)
 
     def get_chrome_dom_data(self):
-        """Get Chrome DOM data - delegate to setup controller"""
-        return self.setup_controller.get_chrome_dom_data()
+        """Get DOM data from Chrome or VS Code via CDP - delegate to setup controller"""
+        return self.setup_controller.get_unified_dom_data()
 
     def get_libreoffice_state(self, app_type: str = "calc"):
         """Get LibreOffice state - delegate to setup controller"""

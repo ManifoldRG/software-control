@@ -128,7 +128,7 @@ class AppStateExtractor:
                     if vscode_fallback_windows and self.setup_controller:
                         self.logger.info("VS Code detected via X11 fallback, attempting CDP enhancement...")
                         try:
-                            dom_data = self.setup_controller.get_chrome_dom_data()
+                            dom_data = self.setup_controller.get_unified_dom_data()
                             if dom_data and dom_data.get("is_vscode", False):
                                 for window_state in vscode_fallback_windows:
                                     if not window_state.root_element:
@@ -160,8 +160,8 @@ class AppStateExtractor:
             if vscode_windows and self.setup_controller:
                 self.logger.info("VS Code detected via AT-SPI2, attempting CDP enhancement...")
                 try:
-                    # Try CDP extraction directly - let get_chrome_dom_data handle readiness checks
-                    dom_data = self.setup_controller.get_chrome_dom_data()
+                    # Try CDP extraction directly - let get_unified_dom_data handle readiness checks
+                    dom_data = self.setup_controller.get_unified_dom_data()
                     if dom_data and dom_data.get("is_vscode", False):
                         # Enhance VS Code window with CDP data
                         for window_state in vscode_windows:
@@ -228,9 +228,9 @@ class AppStateExtractor:
 
         self.logger.info("CDP extraction: Checking for Electron apps...")
 
-        # Try Chrome/Electron CDP extraction (works for both Chrome and VS Code)
+        # Try unified CDP extraction (works for both Chrome and VS Code)
         try:
-            dom_data = self.setup_controller.get_chrome_dom_data()
+            dom_data = self.setup_controller.get_unified_dom_data()
             if dom_data and (dom_data.get("url") or dom_data.get("is_vscode", False)):
                 app_name = "code" if dom_data.get("is_vscode", False) else "chrome"
                 app_title = "VS Code" if dom_data.get("is_vscode", False) else "Chrome"

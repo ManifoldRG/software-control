@@ -82,6 +82,12 @@ class PerturbationBaseController:
         self._context = None
         self._page = None
 
+        # VS Code CDP connection (uses same port as Chrome since they're typically not running simultaneously)
+        self._vscode_playwright = None
+        self._vscode_browser = None
+        self._vscode_context = None
+        self._vscode_page = None
+
     def _get_page(self) -> Optional[Page]:
         """Get Playwright page with simplified connection management"""
         if self._page is not None:
@@ -147,6 +153,19 @@ class PerturbationBaseController:
             self._browser = None
             self._context = None
             self._page = None
+
+    def _cleanup_vscode_connection(self):
+        """Clean up VS Code CDP connection resources"""
+        try:
+            if self._vscode_playwright:
+                self._vscode_playwright.stop()
+        except Exception:
+            pass
+        finally:
+            self._vscode_playwright = None
+            self._vscode_browser = None
+            self._vscode_context = None
+            self._vscode_page = None
 
     def _launch_chrome_and_connect(self) -> Optional[Page]:
         """Launch Chrome with simplified connection logic"""
@@ -218,6 +237,77 @@ class PerturbationBaseController:
             self.logger.error(f"Failed to launch Chrome and connect: {e}")
             self._cleanup_playwright_connection()
             return None
+
+    def _get_vscode_page(self) -> Optional[Page]:
+        """Get VS Code page with connection management"""
+        if self._vscode_page is not None:
+            return self._vscode_page
+
+        # Use the same port as Chrome since VS Code and Chrome typically don't run simultaneously
+        remote_debugging_url = f"http://{self.vm_ip}:{self.chromium_port}"
+        self.logger.info(f"Connecting to VS Code at {remote_debugging_url}")
+
+        # Connection logic with better logging and timing
+        for attempt in range(5):
+            try:
+                self.logger.info(f"VS Code connection attempt {attempt + 1}/5: Starting Playwright...")
+                self._vscode_playwright = sync_playwright().start()
+
+                self.logger.info(
+                    f"VS Code connection attempt {attempt + 1}/5: Connecting to VS Code at {remote_debugging_url}..."
+                )
+                # Connect to existing VS Code instance
+                self._vscode_browser = self._vscode_playwright.chromium.connect_over_cdp(remote_debugging_url)
+
+                # Get the first context and page
+                if self._vscode_browser.contexts:
+                    self._vscode_context = self._vscode_browser.contexts[0]
+                    if self._vscode_context.pages:
+                        self._vscode_page = self._vscode_context.pages[0]
+                    else:
+                        self._vscode_page = self._vscode_context.new_page()
+                else:
+                    self._vscode_context = self._vscode_browser.new_context()
+                    self._vscode_page = self._vscode_context.new_page()
+
+                self.logger.info(
+                    f"✅ Successfully connected to VS Code at {remote_debugging_url} on attempt {attempt + 1}"
+                )
+                return self._vscode_page
+
+            except Exception as e:
+                if attempt < 4:
+                    self.logger.warning(f"❌ VS Code connection attempt {attempt + 1}/5 failed: {e}")
+                    self.logger.info(f"🔄 Retrying in 3 seconds... (attempt {attempt + 2}/5)")
+                    # Clean up partial connection
+                    self._cleanup_vscode_connection()
+                    time.sleep(3)
+                else:
+                    self.logger.error(f"❌ Failed to connect to VS Code after 5 attempts. Last error: {e}")
+                    self._cleanup_vscode_connection()
+                    break
+
+        self.logger.warning("VS Code CDP connection failed - VS Code may not be running or accessible")
+        return None
+
+    def _detect_active_cdp_app(self) -> str:
+        """Detect which app is currently using CDP port"""
+        try:
+            import requests
+
+            response = requests.get(f"http://{self.vm_ip}:{self.chromium_port}/json", timeout=2)
+            if response.status_code == 200:
+                tabs = response.json()
+                for tab in tabs:
+                    title = tab.get("title", "").lower()
+                    url = tab.get("url", "").lower()
+                    if "code" in title or "visual studio" in title or "vscode" in title:
+                        return "vscode"
+                    elif "chrome" in title or "google" in title or "http" in url:
+                        return "chrome"
+        except Exception:
+            pass
+        return "unknown"
 
     def execute_js_on_page(self, js_code: str) -> bool:
         """Execute JavaScript code on the current page"""
@@ -454,6 +544,128 @@ class PerturbationSetupController(SetupController, PerturbationBaseController):
             # Fallback to parent implementation if LibreOffice-specific opening fails
             self.logger.info("Falling back to default file opening method")
             super()._open_setup(path)
+
+    def get_chrome_dom_data(self) -> Optional[Dict[str, Any]]:
+        """Extract DOM data from Chrome using CDP"""
+        try:
+            page = self._get_page()
+            if not page:
+                return None
+
+            # Extract Chrome-specific DOM elements
+            dom_data = page.evaluate("""
+                () => {
+                    return {
+                        url: window.location.href,
+                        title: document.title,
+                        is_vscode: false,
+                        elements: Array.from(document.querySelectorAll('*')).map(el => ({
+                            id: el.id,
+                            class: el.className,
+                            tag: el.tagName.toLowerCase(),
+                            text: el.textContent?.substring(0, 200) || '',
+                            aria_label: el.getAttribute('aria-label') || '',
+                            aria_role: el.getAttribute('role') || '',
+                            title: el.title || '',
+                            visible: el.offsetParent !== null,
+                            position: {
+                                x: el.offsetLeft,
+                                y: el.offsetTop,
+                                width: el.offsetWidth,
+                                height: el.offsetHeight,
+                                center_x: el.offsetLeft + el.offsetWidth / 2,
+                                center_y: el.offsetTop + el.offsetHeight / 2
+                            },
+                            computed_style: {
+                                backgroundColor: window.getComputedStyle(el).backgroundColor,
+                                color: window.getComputedStyle(el).color,
+                                fontSize: window.getComputedStyle(el).fontSize,
+                                fontWeight: window.getComputedStyle(el).fontWeight
+                            }
+                        })).filter(el => el.visible && (el.text.trim() || el.aria_label || el.id))
+                    };
+                }
+            """)
+            return dom_data
+        except Exception as e:
+            self.logger.error(f"Error extracting Chrome DOM data: {e}")
+            return None
+
+    def get_vscode_dom_data(self) -> Optional[Dict[str, Any]]:
+        """Extract DOM data from VS Code using CDP"""
+        try:
+            page = self._get_vscode_page()
+            if not page:
+                return None
+
+            # Extract VS Code-specific DOM elements
+            dom_data = page.evaluate("""
+                () => {
+                    return {
+                        url: window.location.href,
+                        title: document.title,
+                        is_vscode: true,
+                        elements: Array.from(document.querySelectorAll('*')).map(el => ({
+                            id: el.id,
+                            class: el.className,
+                            tag: el.tagName.toLowerCase(),
+                            text: el.textContent?.substring(0, 200) || '',
+                            aria_label: el.getAttribute('aria-label') || '',
+                            aria_role: el.getAttribute('role') || '',
+                            title: el.title || '',
+                            visible: el.offsetParent !== null,
+                            position: {
+                                x: el.offsetLeft,
+                                y: el.offsetTop,
+                                width: el.offsetWidth,
+                                height: el.offsetHeight,
+                                center_x: el.offsetLeft + el.offsetWidth / 2,
+                                center_y: el.offsetTop + el.offsetHeight / 2
+                            },
+                            computed_style: {
+                                backgroundColor: window.getComputedStyle(el).backgroundColor,
+                                color: window.getComputedStyle(el).color,
+                                fontSize: window.getComputedStyle(el).fontSize,
+                                fontWeight: window.getComputedStyle(el).fontWeight
+                            }
+                        })).filter(el => el.visible && (el.text.trim() || el.aria_label || el.id))
+                    };
+                }
+            """)
+            return dom_data
+        except Exception as e:
+            self.logger.error(f"Error extracting VS Code DOM data: {e}")
+            return None
+
+    def get_unified_dom_data(self) -> Optional[Dict[str, Any]]:
+        """Get DOM data from whichever app is currently active on CDP port"""
+        try:
+            # Detect which app is active
+            active_app = self._detect_active_cdp_app()
+
+            if active_app == "vscode":
+                self.logger.info("Detected VS Code, extracting VS Code DOM data")
+                return self.get_vscode_dom_data()
+            elif active_app == "chrome":
+                self.logger.info("Detected Chrome, extracting Chrome DOM data")
+                return self.get_chrome_dom_data()
+            else:
+                # Try both and return whichever works
+                self.logger.info("Unknown app, trying VS Code first, then Chrome")
+                vscode_data = self.get_vscode_dom_data()
+                if vscode_data:
+                    return vscode_data
+
+                chrome_data = self.get_chrome_dom_data()
+                if chrome_data:
+                    return chrome_data
+
+                self.logger.warning("No CDP app detected or accessible")
+                return None
+
+        except Exception as e:
+            self.logger.error(f"Error getting unified DOM data: {e}")
+            return None
 
     def _parse_libreoffice_output(self, output: str, app_type: str) -> Dict[str, Any]:
         """Parse LibreOffice UNO output into structured data"""
