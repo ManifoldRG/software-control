@@ -56,26 +56,17 @@ class ManipulationResult:
     error_message: Optional[str] = None
 
 
-class PerturbationSetupController(SetupController):
-    """Setup controller with perturbation enhancements"""
+class PerturbationBaseController:
+    """Base controller with shared Playwright and initialization logic"""
 
-    def __init__(
-        self, vm_ip: str, server_port: int, chromium_port: int = 9222, client_password: str = "", **kwargs
-    ):
+    def __init__(self, vm_ip: str, server_port: int, chromium_port: int = 9222, client_password: str = ""):
         # Ensure logging is configured for subprocess (only if not already configured)
         if not logging.getLogger().handlers:
             from perturbation_engine.configure_logging import configure_logging
 
             configure_logging()
 
-        # Separate kwargs for SetupController
-        setup_kwargs = {
-            k: v for k, v in kwargs.items() if k in ["vlc_port", "cache_dir", "screen_width", "screen_height"]
-        }
-
-        SetupController.__init__(
-            self, vm_ip, server_port, chromium_port, client_password=client_password, **setup_kwargs
-        )
+        # Common attributes
         self.vm_ip = vm_ip
         self.server_port = server_port
         self.chromium_port = chromium_port
@@ -83,13 +74,187 @@ class PerturbationSetupController(SetupController):
         self.logger = logging.getLogger(__name__)
 
         # Debug logging for port configuration
-        self.logger.info(f"PerturbationSetupController initialized with chromium_port: {self.chromium_port}")
+        self.logger.info(f"{self.__class__.__name__} initialized with chromium_port: {self.chromium_port}")
 
-        # Playwright connection for Chrome setup operations
+        # Playwright connection for browser operations
         self._playwright = None
         self._browser = None
         self._context = None
         self._page = None
+
+    def _get_page(self) -> Optional[Page]:
+        """Get Playwright page with simplified connection management"""
+        if self._page is not None:
+            return self._page
+
+        # Use the configured chromium_port (9222) which is forwarded to Chrome's internal port 1337
+        remote_debugging_url = f"http://{self.vm_ip}:{self.chromium_port}"
+        self.logger.info(f"Connecting to Chrome at {remote_debugging_url}")
+
+        # Connection logic with better logging and timing
+        for attempt in range(5):
+            try:
+                self.logger.info(f"Connection attempt {attempt + 1}/5: Starting Playwright...")
+                self._playwright = sync_playwright().start()
+
+                self.logger.info(
+                    f"Connection attempt {attempt + 1}/5: Connecting to Chrome at {remote_debugging_url}..."
+                )
+                # Connect to existing Chrome instance
+                self._browser = self._playwright.chromium.connect_over_cdp(remote_debugging_url)
+
+                # Get the first context and page
+                if self._browser.contexts:
+                    self._context = self._browser.contexts[0]
+                    if self._context.pages:
+                        self._page = self._context.pages[0]
+                    else:
+                        self._page = self._context.new_page()
+                else:
+                    self._context = self._browser.new_context()
+                    self._page = self._context.new_page()
+
+                self.logger.info(
+                    f"✅ Successfully connected to Chrome at {remote_debugging_url} on attempt {attempt + 1}"
+                )
+                return self._page
+
+            except Exception as e:
+                if attempt < 4:
+                    self.logger.warning(f"❌ Connection attempt {attempt + 1}/5 failed: {e}")
+                    self.logger.info(f"🔄 Retrying in 3 seconds... (attempt {attempt + 2}/5)")
+                    # Clean up partial connection
+                    self._cleanup_playwright_connection()
+                    time.sleep(3)
+                else:
+                    self.logger.error(f"❌ Failed to connect to Chrome after 5 attempts. Last error: {e}")
+                    self._cleanup_playwright_connection()
+                    break
+
+        # If connection failed, try launching Chrome
+        self.logger.info("🚀 All connection attempts failed, attempting to launch Chrome...")
+        return self._launch_chrome_and_connect()
+
+    def _cleanup_playwright_connection(self):
+        """Clean up Playwright connection resources"""
+        try:
+            if self._playwright:
+                self._playwright.stop()
+        except Exception:
+            pass
+        finally:
+            self._playwright = None
+            self._browser = None
+            self._context = None
+            self._page = None
+
+    def _launch_chrome_and_connect(self) -> Optional[Page]:
+        """Launch Chrome with simplified connection logic"""
+        try:
+            import json
+            import platform
+
+            import requests
+
+            # Determine Chrome executable based on architecture
+            app = "chromium" if "arm" in platform.machine() else "google-chrome"
+            command = [
+                app,
+                "--remote-debugging-port=1337",  # Chrome runs on 1337, socat forwards 9222 to this
+                "--no-first-run",
+                "--disable-web-security",
+                "--user-data-dir=/tmp/chrome-debug",
+                "--disable-restore-session-state",  # Prevent restore pages popup
+                "--disable-session-crashed-bubble",  # Prevent crash recovery popup
+                "--disable-infobars",  # Disable info bars and popups
+            ]
+
+            self.logger.info(f"Launching Chrome with command: {' '.join(command)}")
+
+            # Launch Chrome via VM server
+            payload = json.dumps({"command": command, "shell": False})
+            headers = {"Content-Type": "application/json"}
+            backend_url = f"http://{self.vm_ip}:{self.server_port}"
+
+            response = requests.post(f"{backend_url}/setup/launch", headers=headers, data=payload, timeout=30)
+            if response.status_code != 200:
+                self.logger.error(f"Failed to launch Chrome: {response.status_code} - {response.text}")
+                return None
+
+            # Wait for Chrome to start
+            self.logger.info("⏳ Waiting 5 seconds for Chrome to fully start...")
+            time.sleep(5)
+
+            # Try to connect with simplified logic
+            remote_debugging_url = f"http://{self.vm_ip}:{self.chromium_port}"
+            self.logger.info(f"🔗 Attempting to connect to launched Chrome at {remote_debugging_url}...")
+            self._playwright = sync_playwright().start()
+
+            # Single connection attempt with better error handling
+            try:
+                self._browser = self._playwright.chromium.connect_over_cdp(remote_debugging_url)
+                self.logger.info("✅ Successfully connected to launched Chrome")
+            except Exception as e:
+                self.logger.error(f"❌ Failed to connect to launched Chrome: {e}")
+                self.logger.info("💡 This might be due to Chrome still starting up or port forwarding issues")
+                self._cleanup_playwright_connection()
+                return None
+
+            # Get the first context and page
+            if self._browser.contexts:
+                self._context = self._browser.contexts[0]
+                if self._context.pages:
+                    self._page = self._context.pages[0]
+                else:
+                    self._page = self._context.new_page()
+            else:
+                self._context = self._browser.new_context()
+                self._page = self._context.new_page()
+
+            self.logger.info(f"Successfully launched and connected to Chrome at {remote_debugging_url}")
+            return self._page
+
+        except Exception as e:
+            self.logger.error(f"Failed to launch Chrome and connect: {e}")
+            self._cleanup_playwright_connection()
+            return None
+
+    def execute_js_on_page(self, js_code: str) -> bool:
+        """Execute JavaScript code on the current page"""
+        try:
+            page = self._get_page()
+            if not page:
+                return False
+
+            # Clean up the JavaScript code
+            if "```" in js_code:
+                js_code = js_code.split("```")[1].removeprefix("javascript").strip()
+
+            page.evaluate(js_code)
+            self.logger.info(f"Executed JavaScript: {js_code[:100]}...")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Error executing JavaScript: {e}")
+            return False
+
+
+class PerturbationSetupController(SetupController, PerturbationBaseController):
+    """Setup controller with perturbation enhancements"""
+
+    def __init__(
+        self, vm_ip: str, server_port: int, chromium_port: int = 9222, client_password: str = "", **kwargs
+    ):
+        # Separate kwargs for SetupController
+        setup_kwargs = {
+            k: v for k, v in kwargs.items() if k in ["vlc_port", "cache_dir", "screen_width", "screen_height"]
+        }
+
+        # Initialize parent classes
+        SetupController.__init__(
+            self, vm_ip, server_port, chromium_port, client_password=client_password, **setup_kwargs
+        )
+        PerturbationBaseController.__init__(self, vm_ip, server_port, chromium_port, client_password)
 
     def _launch_setup(self, command: Union[str, List[str]], shell: bool = False):
         """
@@ -241,218 +406,6 @@ class PerturbationSetupController(SetupController):
         except Exception as e:
             self.logger.warning(f"Failed to clear Chrome autocomplete: {e}")
 
-    def _get_page(self) -> Optional[Page]:
-        """Get Playwright page with simplified connection management"""
-        if self._page is not None:
-            return self._page
-
-        # Use the configured chromium_port (9222) which is forwarded to Chrome's internal port 1337
-        remote_debugging_url = f"http://{self.vm_ip}:{self.chromium_port}"
-        self.logger.info(f"Connecting to Chrome at {remote_debugging_url}")
-
-        # Connection logic with better logging and timing
-        for attempt in range(5):
-            try:
-                self.logger.info(f"Connection attempt {attempt + 1}/5: Starting Playwright...")
-                self._playwright = sync_playwright().start()
-
-                self.logger.info(
-                    f"Connection attempt {attempt + 1}/5: Connecting to Chrome at {remote_debugging_url}..."
-                )
-                # Connect to existing Chrome instance
-                self._browser = self._playwright.chromium.connect_over_cdp(remote_debugging_url)
-
-                # Get the first context and page
-                if self._browser.contexts:
-                    self._context = self._browser.contexts[0]
-                    if self._context.pages:
-                        self._page = self._context.pages[0]
-                    else:
-                        self._page = self._context.new_page()
-                else:
-                    self._context = self._browser.new_context()
-                    self._page = self._context.new_page()
-
-                self.logger.info(
-                    f"✅ Successfully connected to Chrome at {remote_debugging_url} on attempt {attempt + 1}"
-                )
-                return self._page
-
-            except Exception as e:
-                if attempt < 4:
-                    self.logger.warning(f"❌ Connection attempt {attempt + 1}/5 failed: {e}")
-                    self.logger.info(f"🔄 Retrying in 3 seconds... (attempt {attempt + 2}/5)")
-                    # Clean up partial connection
-                    self._cleanup_playwright_connection()
-                    time.sleep(3)
-                else:
-                    self.logger.error(f"❌ Failed to connect to Chrome after 5 attempts. Last error: {e}")
-                    self._cleanup_playwright_connection()
-                    break
-
-        # If connection failed, try launching Chrome
-        self.logger.info("🚀 All connection attempts failed, attempting to launch Chrome...")
-        return self._launch_chrome_and_connect()
-
-    def _check_chrome_readiness(self, remote_debugging_url: str) -> bool:
-        """
-        Check if Chrome is ready to accept connections by testing the debugging endpoint.
-        """
-        try:
-            import requests
-
-            response = requests.get(f"{remote_debugging_url}/json", timeout=2)
-            return response.status_code == 200
-        except Exception:
-            return False
-
-    def _cleanup_playwright_connection(self):
-        """Clean up Playwright connection resources"""
-        try:
-            if self._playwright:
-                self._playwright.stop()
-        except Exception:
-            pass
-        finally:
-            self._playwright = None
-            self._browser = None
-            self._context = None
-            self._page = None
-
-    def _kill_existing_chrome(self):
-        """Kill existing Chrome processes to ensure clean launch"""
-        try:
-            import platform
-
-            # Determine Chrome executable names
-            chrome_names = ["google-chrome", "chrome", "chromium"]
-            if platform.system() == "Windows":
-                chrome_names = ["chrome.exe", "chromium.exe"]
-
-            # Kill Chrome processes
-            for chrome_name in chrome_names:
-                python_code = f"""
-import subprocess
-import signal
-import os
-
-try:
-    # Find Chrome processes
-    result = subprocess.run(['pgrep', '-f', '{chrome_name}'],
-                           capture_output=True, text=True, timeout=5)
-
-    if result.returncode == 0 and result.stdout.strip():
-        pids = result.stdout.strip().split('\\n')
-        for pid in pids:
-            if pid.strip():
-                try:
-                    os.kill(int(pid), signal.SIGTERM)
-                    print(f"Killed Chrome process {{pid}}")
-                except (ValueError, ProcessLookupError, PermissionError) as e:
-                    print(f"Could not kill process {{pid}}: {{e}}")
-
-        # Wait a bit for processes to terminate
-        import time
-        time.sleep(2)
-
-        # Force kill if still running
-        result = subprocess.run(['pgrep', '-f', '{chrome_name}'],
-                               capture_output=True, text=True, timeout=5)
-        if result.returncode == 0 and result.stdout.strip():
-            pids = result.stdout.strip().split('\\n')
-            for pid in pids:
-                if pid.strip():
-                    try:
-                        os.kill(int(pid), signal.SIGKILL)
-                        print(f"Force killed Chrome process {{pid}}")
-                    except (ValueError, ProcessLookupError, PermissionError) as e:
-                        print(f"Could not force kill process {{pid}}: {{e}}")
-    else:
-        print("No Chrome processes found")
-
-except Exception as e:
-    print(f"Error killing Chrome processes: {{e}}")
-"""
-                result = self.execute_python_command(python_code)
-                if result and result.get("status") == "success":
-                    self.logger.info(f"Chrome cleanup completed: {result.get('output', '')}")
-                else:
-                    self.logger.warning(f"Chrome cleanup failed: {result}")
-
-        except Exception as e:
-            self.logger.error(f"Error in Chrome cleanup: {e}")
-
-    def _launch_chrome_and_connect(self) -> Optional[Page]:
-        """Launch Chrome with simplified connection logic"""
-        try:
-            import json
-            import platform
-
-            import requests
-
-            # Determine Chrome executable based on architecture
-            app = "chromium" if "arm" in platform.machine() else "google-chrome"
-            command = [
-                app,
-                "--remote-debugging-port=1337",  # Chrome runs on 1337, socat forwards 9222 to this
-                "--no-first-run",
-                "--disable-web-security",
-                "--user-data-dir=/tmp/chrome-debug",
-                "--disable-restore-session-state",  # Prevent restore pages popup
-                "--disable-session-crashed-bubble",  # Prevent crash recovery popup
-                "--disable-infobars",  # Disable info bars and popups
-            ]
-
-            self.logger.info(f"Launching Chrome with command: {' '.join(command)}")
-
-            # Launch Chrome via VM server
-            payload = json.dumps({"command": command, "shell": False})
-            headers = {"Content-Type": "application/json"}
-            backend_url = f"http://{self.vm_ip}:{self.server_port}"
-
-            response = requests.post(f"{backend_url}/setup/launch", headers=headers, data=payload, timeout=30)
-            if response.status_code != 200:
-                self.logger.error(f"Failed to launch Chrome: {response.status_code} - {response.text}")
-                return None
-
-            # Wait for Chrome to start
-            self.logger.info("⏳ Waiting 5 seconds for Chrome to fully start...")
-            time.sleep(5)
-
-            # Try to connect with simplified logic
-            remote_debugging_url = f"http://{self.vm_ip}:{self.chromium_port}"
-            self.logger.info(f"🔗 Attempting to connect to launched Chrome at {remote_debugging_url}...")
-            self._playwright = sync_playwright().start()
-
-            # Single connection attempt with better error handling
-            try:
-                self._browser = self._playwright.chromium.connect_over_cdp(remote_debugging_url)
-                self.logger.info("✅ Successfully connected to launched Chrome")
-            except Exception as e:
-                self.logger.error(f"❌ Failed to connect to launched Chrome: {e}")
-                self.logger.info("💡 This might be due to Chrome still starting up or port forwarding issues")
-                self._cleanup_playwright_connection()
-                return None
-
-            # Get the first context and page
-            if self._browser.contexts:
-                self._context = self._browser.contexts[0]
-                if self._context.pages:
-                    self._page = self._context.pages[0]
-                else:
-                    self._page = self._context.new_page()
-            else:
-                self._context = self._browser.new_context()
-                self._page = self._context.new_page()
-
-            self.logger.info(f"Successfully launched and connected to Chrome at {remote_debugging_url}")
-            return self._page
-
-        except Exception as e:
-            self.logger.error(f"Failed to launch Chrome and connect: {e}")
-            self._cleanup_playwright_connection()
-            return None
-
     def _open_libreoffice_file(self, path: str, file_extension: str):
         """
         Open LibreOffice files with proper flags to avoid recovery mode.
@@ -557,56 +510,37 @@ except Exception as e:
             return {}
 
 
-class PerturbationPythonController(PythonController):
+class PerturbationPythonController(PythonController, PerturbationBaseController):
     """Python controller with perturbation enhancements"""
 
     def __init__(
         self, vm_ip: str, server_port: int, chromium_port: int = 9222, client_password: str = "", **kwargs
     ):
-        # Ensure logging is configured for subprocess (only if not already configured)
-        if not logging.getLogger().handlers:
-            from perturbation_engine.configure_logging import configure_logging
-
-            configure_logging()
-
         # Separate kwargs for PythonController
         python_kwargs = {k: v for k, v in kwargs.items() if k in ["pkgs_prefix"]}
 
+        # Initialize parent classes
         PythonController.__init__(self, vm_ip, server_port, **python_kwargs)
-        self.vm_ip = vm_ip
-        self.server_port = server_port
-        self.chromium_port = chromium_port
-        self.client_password = client_password
-        self.logger = logging.getLogger(__name__)
-
-        # Debug logging for port configuration
-        self.logger.info(f"PerturbationPythonController initialized with chromium_port: {self.chromium_port}")
-
-        # Playwright connection
-        self._playwright = None
-        self._browser = None
-        self._context = None
-        self._page = None
+        PerturbationBaseController.__init__(self, vm_ip, server_port, chromium_port, client_password)
 
         self._extractor = AppStateExtractor(controller=self)
         self._setup_accessibility()
 
+    # class PerturbationController(PerturbationPythonController, PerturbationSetupController):
+    #     """Execute perturbation code with clean interface - combines both controllers"""
 
-class PerturbationController(PerturbationPythonController, PerturbationSetupController):
-    """Execute perturbation code with clean interface - combines both controllers"""
+    #     def __init__(
+    #         self, vm_ip: str, server_port: int, chromium_port: int = 9222, client_password: str = "", **kwargs
+    #     ):
+    #         # Initialize both parent controllers
+    #         PerturbationPythonController.__init__(
+    #             self, vm_ip, server_port, chromium_port, client_password, **kwargs
+    #         )
+    #         PerturbationSetupController.__init__(
+    #             self, vm_ip, server_port, chromium_port, client_password, **kwargs
+    #         )
 
-    def __init__(
-        self, vm_ip: str, server_port: int, chromium_port: int = 9222, client_password: str = "", **kwargs
-    ):
-        # Initialize both parent controllers
-        PerturbationPythonController.__init__(
-            self, vm_ip, server_port, chromium_port, client_password, **kwargs
-        )
-        PerturbationSetupController.__init__(
-            self, vm_ip, server_port, chromium_port, client_password, **kwargs
-        )
-
-        self.logger.info(f"PerturbationController initialized with chromium_port: {self.chromium_port}")
+    #         self.logger.info(f"PerturbationController initialized with chromium_port: {self.chromium_port}")
 
     def _setup_accessibility(self) -> bool:
         self._setup_x11_tools()
@@ -941,7 +875,14 @@ else:
                 return False, "Unclosed quotes in bash command"
 
         elif api_call == "execute_python_command":
-            # Basic Python validation
+            # Enhanced Python validation
+            # First check for unterminated string literals
+            if command.count('"') % 2 != 0:
+                return False, "Unterminated string literal (double quotes)"
+            if command.count("'") % 2 != 0:
+                return False, "Unterminated string literal (single quotes)"
+
+            # Then try compilation
             try:
                 compile(command, "<string>", "exec")
             except SyntaxError as e:
@@ -1111,25 +1052,6 @@ else:
             target_app.lower(), ['gsettings set org.gnome.desktop.interface gtk-theme "Adwaita-dark"']
         )
 
-    def execute_js_on_page(self, js_code: str) -> bool:
-        """Execute JavaScript code on the current page"""
-        try:
-            page = self._get_page()
-            if not page:
-                return False
-
-            # Clean up the JavaScript code
-            if "```" in js_code:
-                js_code = js_code.split("```")[1].removeprefix("javascript").strip()
-
-            page.evaluate(js_code)
-            self.logger.info(f"Executed JavaScript: {js_code[:100]}...")
-            return True
-
-        except Exception as e:
-            self.logger.error(f"Error executing JavaScript: {e}")
-            return False
-
     def execute_bash_command(self, command: str) -> bool:
         """
         Execute bash command with improved error handling.
@@ -1225,20 +1147,15 @@ except Exception as e:
         Returns: (parsed_api_call, parsed_code, parsed_parameters)
         """
         import json
-        import re
 
         if not generated_code:
             return api_call, "", parameters
 
-        # Pattern to match function calls with parameters
-        # Matches: function_name('arg1', {'param': 'value'}) or function_name('arg1')
-        function_pattern = r"(\w+)\(['\"](.*?)['\"](?:,\s*(\{.*?\}))?\)"
-        match = re.search(function_pattern, generated_code, re.DOTALL)
+        # Use a more robust parsing approach that handles nested quotes properly
+        parsed_result = self._parse_function_call_robust(generated_code)
 
-        if match:
-            function_name = match.group(1)
-            code_content = match.group(2)
-            params_str = match.group(3)
+        if parsed_result:
+            function_name, code_content, params_str = parsed_result
 
             # Parse parameters if present
             parsed_params = parameters.copy()
@@ -1263,7 +1180,142 @@ except Exception as e:
 
         # If no function wrapper found, treat as direct command
         self.logger.debug(f"No function wrapper found, using direct command: {generated_code[:100]}...")
+
+        # Log potential issues with malformed commands
+        if api_call == "execute_python_command":
+            if generated_code.count('"') % 2 != 0 or generated_code.count("'") % 2 != 0:
+                self.logger.warning(f"Potential malformed Python command detected: {generated_code[:100]}...")
+
         return api_call, generated_code, parameters
+
+    def _parse_function_call_robust(self, generated_code: str) -> Optional[Tuple[str, str, Optional[str]]]:
+        """
+        Robustly parse function calls with proper quote handling.
+
+        Returns: (function_name, code_content, params_str) or None if parsing fails
+        """
+        import re
+
+        # Find the function name and opening parenthesis
+        func_match = re.match(r"(\w+)\(", generated_code)
+        if not func_match:
+            return None
+
+        function_name = func_match.group(1)
+        start_pos = func_match.end() - 1  # Position of opening parenthesis
+
+        # Find the matching closing parenthesis by counting parentheses
+        # and ignoring content inside quotes
+        paren_count = 0
+        i = start_pos
+        in_quotes = False
+        quote_char = None
+
+        while i < len(generated_code):
+            char = generated_code[i]
+
+            if not in_quotes:
+                if char in ['"', "'"]:
+                    quote_char = char
+                    in_quotes = True
+                elif char == "(":
+                    paren_count += 1
+                elif char == ")":
+                    if paren_count == 1:
+                        # This is the matching closing parenthesis
+                        break
+                    paren_count -= 1
+            else:
+                # Inside quotes - only look for the matching quote, ignore everything else
+                if char == quote_char and (i == 0 or generated_code[i - 1] != "\\"):
+                    in_quotes = False
+                    quote_char = None
+
+            i += 1
+
+        if i >= len(generated_code):
+            # No closing parenthesis found
+            return None
+
+        # Extract the content between parentheses
+        content = generated_code[start_pos + 1 : i]
+
+        # Parse the content to separate arguments
+        args = self._parse_function_arguments(content)
+
+        if not args:
+            return None
+
+        code_content = args[0]
+        params_str = args[1] if len(args) > 1 else None
+
+        return function_name, code_content, params_str
+
+    def _parse_function_arguments(self, content: str) -> List[str]:
+        """
+        Parse function arguments from the content between parentheses.
+        Handles nested quotes and commas properly.
+        """
+        args = []
+        current_arg = ""
+        in_quotes = False
+        quote_char = None
+        paren_count = 0
+        brace_count = 0
+
+        i = 0
+        while i < len(content):
+            char = content[i]
+
+            if not in_quotes:
+                if char in ['"', "'"]:
+                    quote_char = char
+                    in_quotes = True
+                    current_arg += char
+                elif char == "(":
+                    paren_count += 1
+                    current_arg += char
+                elif char == ")":
+                    paren_count -= 1
+                    current_arg += char
+                elif char == "{":
+                    brace_count += 1
+                    current_arg += char
+                elif char == "}":
+                    brace_count -= 1
+                    current_arg += char
+                elif char == "," and paren_count == 0 and brace_count == 0:
+                    # Found argument separator
+                    args.append(current_arg.strip())
+                    current_arg = ""
+                else:
+                    current_arg += char
+            else:
+                # Inside quotes - only look for the matching quote
+                if char == quote_char and (i == 0 or content[i - 1] != "\\"):
+                    in_quotes = False
+                    quote_char = None
+                current_arg += char
+
+            i += 1
+
+        # Add the last argument
+        if current_arg.strip():
+            args.append(current_arg.strip())
+
+        # Strip outer quotes from arguments
+        stripped_args = []
+        for arg in args:
+            stripped_arg = arg.strip()
+            # Remove outer quotes if present
+            if len(stripped_arg) >= 2:
+                if (stripped_arg[0] == "'" and stripped_arg[-1] == "'") or (
+                    stripped_arg[0] == '"' and stripped_arg[-1] == '"'
+                ):
+                    stripped_arg = stripped_arg[1:-1]
+            stripped_args.append(stripped_arg)
+
+        return stripped_args
 
     def _is_simple_command(self, command: str) -> bool:
         """
@@ -1568,262 +1620,6 @@ except Exception as e:
         except Exception as e:
             self.logger.error(f"Error executing system perturbation: {e}")
             return False
-
-    def execute_css_injection(self, css_code: str, parameters: Dict[str, Any]) -> bool:
-        """Execute CSS injection for visual manipulation"""
-        try:
-            page = self._get_page()
-            if not page:
-                return False
-
-            target_selector = parameters.get("target_selector", "body")
-            js_code = f"""
-            const style = document.createElement('style');
-            style.textContent = `{css_code}`;
-            document.querySelector('{target_selector}').appendChild(style);
-            """
-
-            page.evaluate(js_code)
-            return True
-        except Exception as e:
-            self.logger.error(f"Error executing CSS injection: {e}")
-            return False
-
-    def execute_dom_modification(self, dom_code: str, parameters: Dict[str, Any]) -> bool:
-        """Execute DOM modification for element manipulation"""
-        try:
-            page = self._get_page()
-            if not page:
-                return False
-
-            page.evaluate(dom_code)
-            return True
-        except Exception as e:
-            self.logger.error(f"Error executing DOM modification: {e}")
-            return False
-
-    def execute_theme_randomization(self, parameters: Dict[str, Any]) -> bool:
-        """Execute theme randomization"""
-        try:
-            _color_palette = parameters.get("color_palette", "random")
-            theme_variant = parameters.get("theme_variant", "dark")
-            accent_colors = parameters.get("accent_colors", ["#ff6b6b", "#4ecdc4", "#45b7d1"])
-
-            css_code = f"""
-            :root {{
-                --primary-color: {accent_colors[0]};
-                --secondary-color: {accent_colors[1]};
-                --accent-color: {accent_colors[2]};
-                --background-color: {"#1a1a1a" if theme_variant == "dark" else "#ffffff"};
-                --text-color: {"#ffffff" if theme_variant == "dark" else "#000000"};
-            }}
-            """
-
-            return self.execute_css_injection(css_code, parameters)
-        except Exception as e:
-            self.logger.error(f"Error executing theme randomization: {e}")
-            return False
-
-    def execute_layout_perturbation(self, parameters: Dict[str, Any]) -> bool:
-        """Execute layout perturbation"""
-        try:
-            element_selector = parameters.get("element_selector", ".main-content")
-            position_changes = parameters.get("position_changes", {})
-
-            css_code = f"""
-            {element_selector} {{
-                transform: translate({position_changes.get("x", 0)}px, {position_changes.get("y", 0)}px);
-                width: {position_changes.get("width", "auto")};
-                height: {position_changes.get("height", "auto")};
-            }}
-            """
-
-            return self.execute_css_injection(css_code, parameters)
-        except Exception as e:
-            self.logger.error(f"Error executing layout perturbation: {e}")
-            return False
-
-    def execute_typography_randomization(self, parameters: Dict[str, Any]) -> bool:
-        """Execute typography randomization"""
-        try:
-            font_family = parameters.get("font_family", "Arial, sans-serif")
-            font_size = parameters.get("font_size", "14px")
-            font_weight = parameters.get("font_weight", "normal")
-
-            css_code = f"""
-            body {{
-                font-family: {font_family};
-                font-size: {font_size};
-                font-weight: {font_weight};
-            }}
-            """
-
-            return self.execute_css_injection(css_code, parameters)
-        except Exception as e:
-            self.logger.error(f"Error executing typography randomization: {e}")
-            return False
-
-    def execute_animation_effects(self, animation_code: str, parameters: Dict[str, Any]) -> bool:
-        """Execute animation effects"""
-        try:
-            page = self._get_page()
-            if not page:
-                return False
-
-            page.evaluate(animation_code)
-            return True
-        except Exception as e:
-            self.logger.error(f"Error executing animation effects: {e}")
-            return False
-
-    def execute_accessibility_perturbation(self, parameters: Dict[str, Any]) -> bool:
-        """Execute accessibility perturbation"""
-        try:
-            aria_labels = parameters.get("aria_labels", {})
-            contrast_ratio = parameters.get("contrast_ratio", "normal")
-
-            js_code = f"""
-            Object.entries({aria_labels}).forEach(([selector, label]) => {{
-                const element = document.querySelector(selector);
-                if (element) {{
-                    element.setAttribute('aria-label', label);
-                }}
-            }});
-            """
-
-            page = self._get_page()
-            if page:
-                page.evaluate(js_code)
-
-            if contrast_ratio != "normal":
-                css_code = f"body {{ filter: contrast({contrast_ratio}); }}"
-                self.execute_css_injection(css_code, parameters)
-
-            return True
-        except Exception as e:
-            self.logger.error(f"Error executing accessibility perturbation: {e}")
-            return False
-
-    def execute_python_execution(self, python_code: str, parameters: Dict[str, Any]) -> bool:
-        """Execute Python code with enhanced capabilities"""
-        try:
-            result = self.execute_python_command(python_code)
-            return result.get("status") == "success"
-        except Exception as e:
-            self.logger.error(f"Error executing Python code: {e}")
-            return False
-
-    def execute_javascript_injection(self, js_code: str, parameters: Dict[str, Any]) -> bool:
-        """Execute JavaScript injection with enhanced capabilities"""
-        try:
-            page = self._get_page()
-            if not page:
-                return False
-
-            page.evaluate(js_code)
-            return True
-        except Exception as e:
-            self.logger.error(f"Error executing JavaScript injection: {e}")
-            return False
-
-    def execute_bash_automation(self, bash_code: str, parameters: Dict[str, Any]) -> bool:
-        """Execute bash automation with enhanced capabilities"""
-        try:
-            return self.execute_bash_command(bash_code)
-        except Exception as e:
-            self.logger.error(f"Error executing bash automation: {e}")
-            return False
-
-    def execute_playwright_automation(self, playwright_code: str, parameters: Dict[str, Any]) -> bool:
-        """Execute Playwright automation"""
-        try:
-            page = self._get_page()
-            if not page:
-                return False
-
-            page.evaluate(playwright_code)
-            return True
-        except Exception as e:
-            self.logger.error(f"Error executing Playwright automation: {e}")
-            return False
-
-    def execute_file_system_manipulation(self, parameters: Dict[str, Any]) -> bool:
-        """Execute file system manipulation"""
-        try:
-            operation = parameters.get("operation", "create_file")
-            file_path = parameters.get("file_path", "/tmp/perturbation_file")
-            content = parameters.get("content", "Perturbation content")
-
-            if operation == "create_file":
-                python_code = f"""
-                with open('{file_path}', 'w') as f:
-                    f.write('{content}')
-                """
-                return self.execute_python_command(python_code).get("status") == "success"
-            elif operation == "modify_file":
-                python_code = f"""
-                with open('{file_path}', 'a') as f:
-                    f.write('\\n{content}')
-                """
-                return self.execute_python_command(python_code).get("status") == "success"
-            else:
-                raise ValueError(f"Unknown file system operation: {operation}")
-        except Exception as e:
-            self.logger.error(f"Error executing file system manipulation: {e}")
-            return False
-
-    def execute_network_perturbation(self, parameters: Dict[str, Any]) -> bool:
-        """Execute network perturbation"""
-        try:
-            perturbation_type = parameters.get("perturbation_type", "delay")
-            delay_ms = parameters.get("delay_ms", 1000)
-
-            if perturbation_type == "delay":
-                js_code = f"""
-                const originalFetch = window.fetch;
-                window.fetch = function(...args) {{
-                    return new Promise(resolve => {{
-                        setTimeout(() => {{
-                            resolve(originalFetch.apply(this, args));
-                        }}, {delay_ms});
-                    }});
-                }};
-                """
-                return self.execute_javascript_injection(js_code, parameters)
-            else:
-                raise ValueError(f"Unknown network perturbation type: {perturbation_type}")
-        except Exception as e:
-            self.logger.error(f"Error executing network perturbation: {e}")
-            return False
-
-    def execute_system_integration(self, parameters: Dict[str, Any]) -> bool:
-        """Execute system integration operations"""
-        try:
-            operation = parameters.get("operation", "modify_settings")
-            setting_key = parameters.get("setting_key", "org.gnome.desktop.interface.gtk-theme")
-            setting_value = parameters.get("setting_value", "Adwaita-dark")
-
-            if operation == "modify_settings":
-                command = f"gsettings set {setting_key} '{setting_value}'"
-                return self.execute_bash_command(command)
-            else:
-                raise ValueError(f"Unknown system integration operation: {operation}")
-        except Exception as e:
-            self.logger.error(f"Error executing system integration: {e}")
-            return False
-
-    def close_playwright(self):
-        """Close Playwright connections"""
-        try:
-            if self._playwright:
-                self._playwright.stop()
-                self._playwright = None
-                self._browser = None
-                self._context = None
-                self._page = None
-                self.logger.info("Playwright connections closed")
-        except Exception as e:
-            self.logger.error(f"Error closing Playwright: {e}")
 
     def ensure_accessibility_enabled(self) -> bool:
         """
@@ -2260,249 +2056,317 @@ except Exception as e:
         window_ids = [line.strip() for line in output.split("\n") if line.strip()]
         return window_ids
 
-    def get_chrome_dom_data(self) -> Dict[str, Any]:
-        """Get Chrome/Electron DOM data using CDP (works for Chrome, VS Code, etc.)"""
+    # Visual manipulation operations
+    def execute_css_injection(self, css_code: str, parameters: Dict[str, Any]) -> bool:
+        """Execute CSS injection on the current page"""
         try:
             page = self._get_page()
             if not page:
-                self.logger.warning("No Chrome/Electron page available for DOM extraction")
-                return {}
+                self.logger.error("No page available for CSS injection")
+                return False
 
-            # Extract comprehensive DOM data
-            dom_data = page.evaluate("""
-                () => {
-                    const data = {
-                        url: window.location.href,
-                        title: document.title,
-                        is_vscode: document.querySelector('.monaco-workbench') !== null,
-                        buttons: [],
-                        links: [],
-                        inputs: [],
-                        forms: [],
-                        tables: [],
-                        images: [],
-                        meta: {
-                            viewport: document.querySelector('meta[name="viewport"]')?.content || '',
-                            description: document.querySelector('meta[name="description"]')?.content || ''
-                        }
-                    };
+            # Clean up the CSS code
+            if "```" in css_code:
+                css_code = css_code.split("```")[1].removeprefix("css").strip()
 
-                    // Extract all interactive elements
-                    document.querySelectorAll('button, input[type="button"], input[type="submit"], input[type="reset"], .monaco-button, .action-item').forEach((btn, i) => {
-                        const rect = btn.getBoundingClientRect();
-                        data.buttons.push({
-                            id: btn.id || `button_${i}`,
-                            text: btn.textContent?.trim() || btn.value || btn.getAttribute('aria-label') || '',
-                            class: btn.className,
-                            type: btn.type || 'button',
-                            aria_label: btn.getAttribute('aria-label'),
-                            disabled: btn.disabled,
-                            visible: rect.width > 0 && rect.height > 0,
-                            position: {
-                                x: Math.round(rect.left),
-                                y: Math.round(rect.top),
-                                width: Math.round(rect.width),
-                                height: Math.round(rect.height),
-                                center_x: Math.round(rect.left + rect.width / 2),
-                                center_y: Math.round(rect.top + rect.height / 2)
-                            }
-                        });
-                    });
+            # Inject CSS using Playwright
+            js_code = f"""
+            const style = document.createElement('style');
+            style.textContent = `{css_code}`;
+            document.head.appendChild(style);
+            console.log('CSS injected successfully');
+            """
 
-                    // Extract links
-                    document.querySelectorAll('a[href]').forEach((link, i) => {
-                        const rect = link.getBoundingClientRect();
-                        data.links.push({
-                            id: link.id || `link_${i}`,
-                            text: link.textContent?.trim() || '',
-                            href: link.href,
-                            target: link.target || '_self',
-                            visible: rect.width > 0 && rect.height > 0,
-                            position: {
-                                x: Math.round(rect.left),
-                                y: Math.round(rect.top),
-                                width: Math.round(rect.width),
-                                height: Math.round(rect.height),
-                                center_x: Math.round(rect.left + rect.width / 2),
-                                center_y: Math.round(rect.top + rect.height / 2)
-                            }
-                        });
-                    });
-
-                    // Extract input fields
-                    document.querySelectorAll('input, textarea, select, .monaco-input').forEach((input, i) => {
-                        const rect = input.getBoundingClientRect();
-                        data.inputs.push({
-                            id: input.id || `input_${i}`,
-                            type: input.type || input.tagName.toLowerCase(),
-                            name: input.name || '',
-                            placeholder: input.placeholder || '',
-                            value: input.value || '',
-                            required: input.required || false,
-                            disabled: input.disabled || false,
-                            visible: rect.width > 0 && rect.height > 0,
-                            position: {
-                                x: Math.round(rect.left),
-                                y: Math.round(rect.top),
-                                width: Math.round(rect.width),
-                                height: Math.round(rect.height),
-                                center_x: Math.round(rect.left + rect.width / 2),
-                                center_y: Math.round(rect.top + rect.height / 2)
-                            }
-                        });
-                    });
-
-                    // Extract VS Code-specific elements if detected
-                    if (data.is_vscode) {
-                        data.editor_elements = [];
-                        data.tabs = [];
-
-                        // Extract editor elements
-                        document.querySelectorAll('.monaco-editor, .editor-container, .code-editor').forEach((editor, i) => {
-                            const rect = editor.getBoundingClientRect();
-                            data.editor_elements.push({
-                                id: editor.id || `editor_${i}`,
-                                class: editor.className,
-                                visible: rect.width > 0 && rect.height > 0,
-                                position: {
-                                    x: Math.round(rect.left),
-                                    y: Math.round(rect.top),
-                                    width: Math.round(rect.width),
-                                    height: Math.round(rect.height),
-                                    center_x: Math.round(rect.left + rect.width / 2),
-                                    center_y: Math.round(rect.top + rect.height / 2)
-                                }
-                            });
-                        });
-
-                        // Extract tabs
-                        document.querySelectorAll('.tab, .editor-tab, .monaco-tab').forEach((tab, i) => {
-                            const rect = tab.getBoundingClientRect();
-                            data.tabs.push({
-                                id: tab.id || `tab_${i}`,
-                                text: tab.textContent?.trim() || '',
-                                class: tab.className,
-                                visible: rect.width > 0 && rect.height > 0,
-                                position: {
-                                    x: Math.round(rect.left),
-                                    y: Math.round(rect.top),
-                                    width: Math.round(rect.width),
-                                    height: Math.round(rect.height),
-                                    center_x: Math.round(rect.left + rect.width / 2),
-                                    center_y: Math.round(rect.top + rect.height / 2)
-                                }
-                            });
-                        });
-                    }
-
-                    return data;
-                }
-            """)
-
-            app_type = "VS Code" if dom_data.get("is_vscode", False) else "Chrome"
-            self.logger.info(
-                f"Extracted {app_type} DOM data: {len(dom_data.get('buttons', []))} buttons, {len(dom_data.get('links', []))} links, {len(dom_data.get('inputs', []))} inputs"
-            )
-            if dom_data.get("is_vscode", False):
-                self.logger.info(
-                    f"VS Code specific: {len(dom_data.get('editor_elements', []))} editors, {len(dom_data.get('tabs', []))} tabs"
-                )
-
-            return dom_data
+            page.evaluate(js_code)
+            self.logger.info(f"CSS injection executed: {css_code[:100]}...")
+            return True
 
         except Exception as e:
-            self.logger.error(f"Error extracting Chrome/Electron DOM data: {e}")
-            return {}
+            self.logger.error(f"Error executing CSS injection: {e}")
+            return False
 
-    def get_libreoffice_state(self, app_type: str = "calc") -> Dict[str, Any]:
-        """Get LibreOffice state using UNO API"""
+    def execute_dom_modification(self, dom_code: str, parameters: Dict[str, Any]) -> bool:
+        """Execute DOM modification on the current page"""
         try:
-            if app_type == "calc":
-                uno_code = """
-# Get comprehensive Calc document state
-doc = desktop.getCurrentComponent()
-if doc and doc.supportsService("com.sun.star.sheet.SpreadsheetDocument"):
-    sheets = doc.getSheets()
-    active_sheet = doc.getCurrentController().getActiveSheet()
-    current_cell = doc.getCurrentController().getActiveCell()
-    cell_address = current_cell.getCellAddress()
+            page = self._get_page()
+            if not page:
+                self.logger.error("No page available for DOM modification")
+                return False
 
-    # Get sheet information
-    sheet_names = []
-    for i in range(sheets.getCount()):
-        sheet_names.append(sheets.getByIndex(i).getName())
+            # Clean up the DOM code
+            if "```" in dom_code:
+                dom_code = dom_code.split("```")[1].removeprefix("javascript").strip()
 
-    # Get current cell information
-    cell_value = current_cell.getFormula()
-    cell_type = current_cell.getType()
-
-    # Get document properties
-    doc_props = doc.getDocumentInfo()
-
-    print(f"SHEETS: {sheet_names}")
-    print(f"ACTIVE_SHEET: {active_sheet.getName()}")
-    print(f"CURRENT_CELL: {cell_address.Column},{cell_address.Row}")
-    print(f"CELL_VALUE: {cell_value}")
-    print(f"CELL_TYPE: {cell_type}")
-    print(f"DOCUMENT_TITLE: {doc.getTitle()}")
-    print(f"DOCUMENT_URL: {doc.getURL()}")
-    print(f"HAS_LOCATION: {doc.hasLocation()}")
-    print(f"DOCUMENT_MODIFIED: {doc.isModified()}")
-else:
-    print("NO_CALC_DOCUMENT")
-"""
-            elif app_type == "writer":
-                uno_code = """
-# Get comprehensive Writer document state
-doc = desktop.getCurrentComponent()
-if doc and doc.supportsService("com.sun.star.text.TextDocument"):
-    text = doc.Text
-    cursor = text.createTextCursor()
-
-    # Get document information
-    print(f"DOCUMENT_TITLE: {doc.getTitle()}")
-    print(f"DOCUMENT_URL: {doc.getURL()}")
-    print(f"HAS_LOCATION: {doc.hasLocation()}")
-    print(f"DOCUMENT_MODIFIED: {doc.isModified()}")
-
-    # Get current selection/text
-    if cursor.getString():
-        print(f"CURRENT_TEXT: {cursor.getString()[:200]}")
-        print(f"TEXT_LENGTH: {len(cursor.getString())}")
-    else:
-        print("NO_SELECTION")
-
-    # Get page count
-    print(f"PAGE_COUNT: {doc.getPageCount()}")
-else:
-    print("NO_WRITER_DOCUMENT")
-"""
-            else:
-                uno_code = """
-# Get generic LibreOffice document state
-doc = desktop.getCurrentComponent()
-if doc:
-    print(f"DOCUMENT_TITLE: {doc.getTitle()}")
-    print(f"DOCUMENT_URL: {doc.getURL()}")
-    print(f"HAS_LOCATION: {doc.hasLocation()}")
-    print(f"DOCUMENT_MODIFIED: {doc.isModified()}")
-    print(f"DOCUMENT_TYPE: {doc.getClass().getName()}")
-else:
-    print("NO_DOCUMENT")
-"""
-
-            # Execute UNO code
-            result = self.execute_uno_command(uno_code, {})
-
-            if result and result.get("status") == "success":
-                output = result.get("output", "")
-                parsed_data = self._parse_libreoffice_output(output, app_type)
-                self.logger.info(f"Extracted LibreOffice {app_type} state successfully")
-                return parsed_data
-            else:
-                self.logger.warning(f"Failed to get LibreOffice {app_type} state: {result}")
-                return {}
+            # Execute DOM modification using Playwright
+            page.evaluate(dom_code)
+            self.logger.info(f"DOM modification executed: {dom_code[:100]}...")
+            return True
 
         except Exception as e:
-            self.logger.error(f"Error getting LibreOffice {app_type} state: {e}")
-            return {}
+            self.logger.error(f"Error executing DOM modification: {e}")
+            return False
+
+    def execute_theme_randomization(self, parameters: Dict[str, Any]) -> bool:
+        """Execute theme randomization"""
+        try:
+            target_app = parameters.get("target_app", "chrome")
+
+            if target_app.lower() in ["chrome", "google_chrome"]:
+                # Randomize Chrome theme
+                themes = [
+                    "body { background-color: #1a1a1a !important; color: #ffffff !important; }",
+                    "body { background-color: #2d2d2d !important; color: #00ff00 !important; }",
+                    "body { background-color: #000000 !important; color: #ffff00 !important; }",
+                    "body { background-color: #4a4a4a !important; color: #ff69b4 !important; }",
+                ]
+                import random
+
+                css = random.choice(themes)
+                return self.execute_css_injection(css, parameters)
+            else:
+                # System theme randomization
+                themes = ["Adwaita-dark", "Adwaita", "HighContrast"]
+                import random
+
+                theme = random.choice(themes)
+                command = f"gsettings set org.gnome.desktop.interface gtk-theme '{theme}'"
+                return self.execute_bash_command(command)
+
+        except Exception as e:
+            self.logger.error(f"Error executing theme randomization: {e}")
+            return False
+
+    def execute_layout_perturbation(self, parameters: Dict[str, Any]) -> bool:
+        """Execute layout perturbation"""
+        try:
+            target_app = parameters.get("target_app", "chrome")
+
+            if target_app.lower() in ["chrome", "google_chrome"]:
+                # Layout perturbations for Chrome
+                layouts = [
+                    "body { margin: 20px !important; padding: 15px !important; }",
+                    "body { transform: scale(0.9) !important; }",
+                    "body { transform: scale(1.1) !important; }",
+                    "* { margin: 5px !important; padding: 3px !important; }",
+                ]
+                import random
+
+                css = random.choice(layouts)
+                return self.execute_css_injection(css, parameters)
+            else:
+                # System layout changes
+                commands = [
+                    "gsettings set org.gnome.desktop.interface text-scaling-factor 1.2",
+                    "gsettings set org.gnome.desktop.interface text-scaling-factor 0.8",
+                    "gsettings set org.gnome.desktop.interface text-scaling-factor 1.0",
+                ]
+                import random
+
+                command = random.choice(commands)
+                return self.execute_bash_command(command)
+
+        except Exception as e:
+            self.logger.error(f"Error executing layout perturbation: {e}")
+            return False
+
+    def execute_typography_randomization(self, parameters: Dict[str, Any]) -> bool:
+        """Execute typography randomization"""
+        try:
+            target_app = parameters.get("target_app", "chrome")
+
+            if target_app.lower() in ["chrome", "google_chrome"]:
+                # Typography perturbations for Chrome
+                typography_styles = [
+                    "body { font-family: 'Times New Roman', serif !important; font-size: 18px !important; }",
+                    "body { font-family: 'Courier New', monospace !important; font-size: 14px !important; }",
+                    "body { font-family: 'Arial', sans-serif !important; font-size: 16px !important; font-weight: bold !important; }",
+                    "body { font-family: 'Georgia', serif !important; font-size: 20px !important; line-height: 1.8 !important; }",
+                ]
+                import random
+
+                css = random.choice(typography_styles)
+                return self.execute_css_injection(css, parameters)
+            else:
+                # System typography changes
+                fonts = [
+                    "Liberation Sans 14",
+                    "Liberation Serif 16",
+                    "Liberation Mono 12",
+                    "Ubuntu 15",
+                ]
+                import random
+
+                font = random.choice(fonts)
+                command = f"gsettings set org.gnome.desktop.interface font-name '{font}'"
+                return self.execute_bash_command(command)
+
+        except Exception as e:
+            self.logger.error(f"Error executing typography randomization: {e}")
+            return False
+
+    def execute_animation_effects(self, animation_code: str, parameters: Dict[str, Any]) -> bool:
+        """Execute animation effects"""
+        try:
+            page = self._get_page()
+            if not page:
+                self.logger.error("No page available for animation effects")
+                return False
+
+            # Clean up the animation code
+            if "```" in animation_code:
+                animation_code = animation_code.split("```")[1].removeprefix("css").strip()
+
+            # Execute animation using Playwright
+            js_code = f"""
+            const style = document.createElement('style');
+            style.textContent = `{animation_code}`;
+            document.head.appendChild(style);
+            console.log('Animation effects applied successfully');
+            """
+
+            page.evaluate(js_code)
+            self.logger.info(f"Animation effects executed: {animation_code[:100]}...")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Error executing animation effects: {e}")
+            return False
+
+    def execute_accessibility_perturbation(self, parameters: Dict[str, Any]) -> bool:
+        """Execute accessibility perturbation"""
+        try:
+            target_app = parameters.get("target_app", "chrome")
+
+            if target_app.lower() in ["chrome", "google_chrome"]:
+                # Accessibility perturbations for Chrome
+                accessibility_styles = [
+                    "body { filter: contrast(1.5) !important; }",
+                    "body { filter: brightness(1.2) !important; }",
+                    "* { font-size: 18px !important; }",
+                    "body { background-color: #000000 !important; color: #ffffff !important; }",
+                ]
+                import random
+
+                css = random.choice(accessibility_styles)
+                return self.execute_css_injection(css, parameters)
+            else:
+                # System accessibility changes
+                commands = [
+                    "gsettings set org.gnome.desktop.a11y.applications screen-reader-enabled true",
+                    "gsettings set org.gnome.desktop.interface high-contrast true",
+                    "gsettings set org.gnome.desktop.interface text-scaling-factor 1.3",
+                ]
+                import random
+
+                command = random.choice(commands)
+                return self.execute_bash_command(command)
+
+        except Exception as e:
+            self.logger.error(f"Error executing accessibility perturbation: {e}")
+            return False
+
+    # Additional missing methods referenced in execute_perturbation
+    def execute_python_execution(self, python_code: str, parameters: Dict[str, Any]) -> bool:
+        """Execute Python code execution"""
+        try:
+            result = self.execute_python_command(python_code)
+            return result.get("status") == "success"
+        except Exception as e:
+            self.logger.error(f"Error executing Python execution: {e}")
+            return False
+
+    def execute_javascript_injection(self, js_code: str, parameters: Dict[str, Any]) -> bool:
+        """Execute JavaScript injection"""
+        try:
+            return self.execute_js_on_page(js_code)
+        except Exception as e:
+            self.logger.error(f"Error executing JavaScript injection: {e}")
+            return False
+
+    def execute_bash_automation(self, bash_code: str, parameters: Dict[str, Any]) -> bool:
+        """Execute bash automation"""
+        try:
+            return self.execute_bash_command(bash_code)
+        except Exception as e:
+            self.logger.error(f"Error executing bash automation: {e}")
+            return False
+
+    def execute_playwright_automation(self, playwright_code: str, parameters: Dict[str, Any]) -> bool:
+        """Execute Playwright automation"""
+        try:
+            page = self._get_page()
+            if not page:
+                self.logger.error("No page available for Playwright automation")
+                return False
+
+            # Clean up the Playwright code
+            if "```" in playwright_code:
+                playwright_code = playwright_code.split("```")[1].removeprefix("javascript").strip()
+
+            # Execute Playwright automation
+            page.evaluate(playwright_code)
+            self.logger.info(f"Playwright automation executed: {playwright_code[:100]}...")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Error executing Playwright automation: {e}")
+            return False
+
+    def execute_file_system_manipulation(self, parameters: Dict[str, Any]) -> bool:
+        """Execute file system manipulation"""
+        try:
+            operation = parameters.get("operation", "create_file")
+
+            if operation == "create_file":
+                path = parameters.get("path", "/tmp/test_file.txt")
+                content = parameters.get("content", "Test content")
+                command = f"echo '{content}' > {path}"
+                return self.execute_bash_command(command)
+            elif operation == "create_directory":
+                path = parameters.get("path", "/tmp/test_dir")
+                command = f"mkdir -p {path}"
+                return self.execute_bash_command(command)
+            else:
+                self.logger.warning(f"Unknown file system operation: {operation}")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Error executing file system manipulation: {e}")
+            return False
+
+    def execute_network_perturbation(self, parameters: Dict[str, Any]) -> bool:
+        """Execute network perturbation"""
+        try:
+            # Simulate network delay or other network effects
+            delay = parameters.get("delay", 1.0)
+            import time
+
+            time.sleep(delay)
+            self.logger.info(f"Network perturbation executed with delay: {delay}s")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Error executing network perturbation: {e}")
+            return False
+
+    def execute_system_integration(self, parameters: Dict[str, Any]) -> bool:
+        """Execute system integration operations"""
+        try:
+            operation = parameters.get("operation", "notification")
+
+            if operation == "notification":
+                title = parameters.get("title", "System Notification")
+                message = parameters.get("message", "System integration test")
+                command = f"notify-send '{title}' '{message}'"
+                return self.execute_bash_command(command)
+            elif operation == "wallpaper":
+                wallpaper = parameters.get("wallpaper", "/usr/share/backgrounds/gnome/adwaita-morning.jpg")
+                command = f"gsettings set org.gnome.desktop.background picture-uri 'file://{wallpaper}'"
+                return self.execute_bash_command(command)
+            else:
+                self.logger.warning(f"Unknown system integration operation: {operation}")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Error executing system integration: {e}")
+            return False

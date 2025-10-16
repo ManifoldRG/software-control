@@ -28,6 +28,50 @@ from perturbation_engine.pipeline.trajectory_replayer import TrajectoryReplayer
 from perturbation_engine.tools.app_state_manager import ElementTracker
 from perturbation_engine.utils.memory_utils import force_garbage_collection, log_memory_usage
 
+# TEMP DEBUG: Load intermediate data to bypass LLM calls
+TEMP_DEBUG_MODE = True  # Set to False to disable temp debug mode
+
+
+def _load_temp_debug_data(step_idx: int, trajectory_id: str) -> Dict[str, Any]:
+    """Load intermediate data from phases folder for debugging"""
+    debug_base = "/Users/lockewang/FIG/software-control/debug"
+    phases_dir = os.path.join(
+        debug_base,
+        trajectory_id.split("_scenario_")[0],
+        f"{trajectory_id}_scenario_1_code",
+        "run_20251014_183850",
+        "phases",
+    )
+
+    if not os.path.exists(phases_dir):
+        return {}
+
+    result = {}
+
+    # Load perturbation decision
+    decision_files = [
+        f for f in os.listdir(phases_dir) if f.startswith(f"step_{step_idx:03d}_perturbation_decision")
+    ]
+    if decision_files:
+        decision_path = os.path.join(phases_dir, decision_files[0])
+        try:
+            with open(decision_path, "r") as f:
+                result["perturbation_decision"] = json.load(f)
+        except Exception as e:
+            print(f"Failed to load decision file: {e}")
+
+    # Load target element
+    element_files = [f for f in os.listdir(phases_dir) if f.startswith(f"step_{step_idx:03d}_target_element")]
+    if element_files:
+        element_path = os.path.join(phases_dir, element_files[0])
+        try:
+            with open(element_path, "r") as f:
+                result["target_element"] = json.load(f)
+        except Exception as e:
+            print(f"Failed to load element file: {e}")
+
+    return result
+
 
 class PathManager:
     """Centralized path management for trajectory generation with improved organization"""
@@ -188,6 +232,11 @@ class TrajectoryGenerator:
             while not done and step_idx < max_steps:
                 cot_response, action = trajectory_replayer.step()
 
+                # Check if trajectory is complete
+                if not action:
+                    self.logger.info(f"Trajectory completed at step {step_idx}")
+                    break
+
                 (
                     step_log_entry,
                     perturbation_attempts,
@@ -326,42 +375,250 @@ class TrajectoryGenerator:
 
     def _extract_command_signature(self, generated_code: str) -> str:
         """
-        Extract a signature from generated code to detect duplicates at runtime.
+        Extract a semantic signature from generated perturbation code for diversity checking.
 
-        Uses same logic as curriculum_planner._extract_command_signature for consistency.
+        This creates a signature that captures the semantic intent and target elements
+        while normalizing specific values, making it possible to detect truly duplicate perturbations.
         """
         if not generated_code:
             return ""
 
-        signature = generated_code.lower()
+        # Start with the raw command
+        signature = generated_code.strip()
 
-        # Replace variable values with placeholders to focus on structure
-        signature = re.sub(r"\d+", "N", signature)  # Numbers
-        signature = re.sub(r'"[^"]*"', '"STRING"', signature)  # Strings
-        signature = re.sub(r"'[^']*'", "'STRING'", signature)  # Single quotes
-        signature = re.sub(r"\[[^\]]*\]", "[ARRAY]", signature)  # Arrays
-        signature = re.sub(r"#[0-9A-Fa-f]{6}", "#COLOR", signature)  # Hex colors
-        signature = re.sub(r"rgba?\([^)]*\)", "RGB()", signature)  # RGB colors
-        signature = re.sub(r"\([^)]*\)", "(PARAMS)", signature)  # Function params
+        # Extract semantic components for diversity checking
+        semantic_parts = []
 
-        # Remove whitespace and normalize
-        signature = re.sub(r"\s+", " ", signature).strip()
+        # Extract API call type
+        api_match = re.search(r"execute_(\w+)_command", signature)
+        if api_match:
+            semantic_parts.append(f"api:{api_match.group(1)}")
 
-        return signature
+        # Extract target app/component information
+        target_app_match = re.search(r"'target_app':\s*['\"]([^'\"]*)['\"]", signature)
+        if target_app_match:
+            semantic_parts.append(f"app:{target_app_match.group(1)}")
+
+        # Extract visual modification intent
+        visual_intent = self._extract_visual_intent(signature)
+        if visual_intent:
+            semantic_parts.append(f"visual:{visual_intent}")
+
+        # Extract target element/component
+        element_target = self._extract_element_target(signature)
+        if element_target:
+            semantic_parts.append(f"element:{element_target}")
+
+        # Extract perturbation type from command content
+        perturbation_type = self._extract_perturbation_type(signature)
+        if perturbation_type:
+            semantic_parts.append(f"type:{perturbation_type}")
+
+        # If no semantic parts found, fall back to basic normalization
+        if not semantic_parts:
+            signature = re.sub(r"'([^']*)'", r'"\1"', signature)
+            signature = re.sub(r"\s+", " ", signature).strip()
+            return signature[:100]  # Truncate to avoid overly long signatures
+
+        return "|".join(semantic_parts)
+
+    def _extract_visual_intent(self, command: str) -> str:
+        """Extract the visual modification intent from command"""
+        command_lower = command.lower()
+
+        # Theme-related modifications
+        if any(theme_word in command_lower for theme_word in ["theme", "gtk-theme", "qt-theme"]):
+            return "theme"
+
+        # Color modifications
+        if any(color_word in command_lower for color_word in ["color", "background", "border", "rgba", "#"]):
+            return "color"
+
+        # Font/typography modifications
+        if any(font_word in command_lower for font_word in ["font", "text", "typography", "size"]):
+            return "typography"
+
+        # Layout modifications
+        if any(
+            layout_word in command_lower
+            for layout_word in ["margin", "padding", "spacing", "position", "size"]
+        ):
+            return "layout"
+
+        # CSS/visual styling
+        if any(css_word in command_lower for css_word in ["css", "style", "inject", "modify"]):
+            return "styling"
+
+        # System-level changes
+        if any(sys_word in command_lower for sys_word in ["wallpaper", "desktop", "system", "gsettings"]):
+            return "system"
+
+        return ""
+
+    def _extract_element_target(self, command: str) -> str:
+        """Extract the target element/component from command"""
+        command_lower = command.lower()
+
+        # Common UI element targets
+        element_targets = [
+            "button",
+            "input",
+            "text",
+            "link",
+            "menu",
+            "toolbar",
+            "sidebar",
+            "header",
+            "footer",
+            "navigation",
+            "tab",
+            "dialog",
+            "modal",
+            "form",
+            "table",
+            "list",
+            "grid",
+            "panel",
+            "container",
+        ]
+
+        for element in element_targets:
+            if element in command_lower:
+                return element
+
+        # Check for specific selectors
+        if "body" in command_lower:
+            return "body"
+        elif "html" in command_lower:
+            return "html"
+        elif "document" in command_lower:
+            return "document"
+
+        return ""
+
+    def _extract_perturbation_type(self, command: str) -> str:
+        """Extract the perturbation type from command content"""
+        command_lower = command.lower()
+
+        # Check for specific perturbation patterns
+        if "notify-send" in command_lower:
+            return "notification"
+        elif "gsettings" in command_lower:
+            return "settings"
+        elif "inject" in command_lower:
+            return "injection"
+        elif "modify" in command_lower:
+            return "modification"
+        elif "change" in command_lower:
+            return "change"
+        elif "set" in command_lower:
+            return "set"
+
+        return ""
 
     def _is_command_duplicate(self, generated_code: str) -> bool:
         """
         Check if this perturbation command is too similar to previously applied ones.
 
+        Uses semantic analysis to detect meaningful duplicates rather than just API call types.
         Returns True if duplicate (should reject), False if novel (should apply).
         """
         command_sig = self._extract_command_signature(generated_code)
 
+        if not command_sig:
+            return False
+
+        # Check for exact semantic signature match
         if command_sig in self._applied_command_signatures:
-            self.logger.warning(f"Duplicate perturbation command detected: {command_sig[:100]}...")
+            self.logger.warning(f"Duplicate perturbation command detected: {command_sig}")
+            return True
+
+        # Check for semantic similarity using component analysis
+        if self._is_semantically_similar(command_sig):
+            self.logger.warning(f"Semantically similar perturbation command detected: {command_sig}")
             return True
 
         return False
+
+    def _is_semantically_similar(self, command_sig: str) -> bool:
+        """
+        Check if the command signature is semantically similar to previously applied commands.
+
+        This prevents applying perturbations that are too similar in intent even if not identical.
+        """
+        if not command_sig or not self._applied_command_signatures:
+            return False
+
+        # Parse the command signature components
+        current_components = self._parse_signature_components(command_sig)
+
+        # Check against each previously applied command
+        for applied_sig in self._applied_command_signatures:
+            applied_components = self._parse_signature_components(applied_sig)
+
+            # Calculate similarity score
+            similarity_score = self._calculate_similarity_score(current_components, applied_components)
+
+            # If similarity is too high, consider it a duplicate
+            if similarity_score >= 0.8:  # 80% similarity threshold
+                return True
+
+        return False
+
+    def _parse_signature_components(self, signature: str) -> Dict[str, str]:
+        """Parse signature into component dictionary"""
+        components = {}
+
+        if "|" in signature:
+            parts = signature.split("|")
+            for part in parts:
+                if ":" in part:
+                    key, value = part.split(":", 1)
+                    components[key] = value
+        else:
+            # Fallback for non-semantic signatures
+            components["raw"] = signature
+
+        return components
+
+    def _calculate_similarity_score(self, current: Dict[str, str], applied: Dict[str, str]) -> float:
+        """
+        Calculate similarity score between two command signatures.
+
+        Returns a score between 0.0 (completely different) and 1.0 (identical).
+        """
+        if not current or not applied:
+            return 0.0
+
+        # Weight different components differently
+        weights = {
+            "api": 0.2,  # API type is less important for diversity
+            "app": 0.3,  # Target app is moderately important
+            "visual": 0.4,  # Visual intent is very important for diversity
+            "element": 0.3,  # Target element is moderately important
+            "type": 0.2,  # Perturbation type is less important
+            "raw": 0.1,  # Raw signature is least important
+        }
+
+        total_weight = 0.0
+        weighted_score = 0.0
+
+        # Check each component
+        for component, weight in weights.items():
+            if component in current and component in applied:
+                if current[component] == applied[component]:
+                    weighted_score += weight
+                total_weight += weight
+            elif component in current or component in applied:
+                # One has the component, the other doesn't - partial similarity
+                weighted_score += weight * 0.5
+                total_weight += weight
+
+        # Normalize by total weight
+        if total_weight > 0:
+            return weighted_score / total_weight
+
+        return 0.0
 
     def _record_applied_command(self, generated_code: str):
         """Record a successfully applied perturbation command for diversity tracking."""
@@ -494,17 +751,40 @@ class TrajectoryGenerator:
         self.logger.info(f"Step {step_idx + 1}: {action_str[:100]}")
 
         # ========== Phase 1: Identify Target Element Candidates (BEFORE Perturbation) ==========
-        # Retry 3 times if no target element candidates are found
-        for _ in range(3):
-            target_element_candidates = self.element_tracker.identify_target_element_candidates(
-                action_str, window_states
-            )
-            if len(target_element_candidates) == 0:
-                self.logger.warning("✗ No target element candidates found")
-            else:
-                break
+        # TEMP DEBUG: Load target element from phases folder instead of calling LLM
+        temp_debug_data = _load_temp_debug_data(step_idx, trajectory_id) if TEMP_DEBUG_MODE else {}
+        if TEMP_DEBUG_MODE and temp_debug_data.get("target_element"):
+            # Convert dict back to UIElement-like object for compatibility
+            element_data = temp_debug_data["target_element"]
+            from perturbation_engine.pipeline.data_models import UIElement, VisibilityState
 
-        target_element = target_element_candidates[0]
+            target_element = UIElement(
+                element_id=element_data["element_id"],
+                element_type=element_data["element_type"],
+                name=element_data["name"],
+                position=element_data["position"],
+                parent_id=element_data.get("parent_id"),
+                depth=element_data.get("depth", 0),
+                visibility=VisibilityState.VISIBLE,
+                is_enabled=element_data.get("is_enabled", True),
+                is_focused=element_data.get("is_focused", False),
+                is_expanded=element_data.get("is_expanded", False),
+                properties=element_data.get("properties", {}),
+                children=[],
+            )
+            self.logger.info(f"TEMP DEBUG: Loaded target element from phases folder for step {step_idx}")
+        else:
+            # Retry 3 times if no target element candidates are found
+            for _ in range(3):
+                target_element_candidates = self.element_tracker.identify_target_element_candidates(
+                    action_str, window_states
+                )
+                if len(target_element_candidates) == 0:
+                    self.logger.warning("✗ No target element candidates found")
+                else:
+                    break
+
+            target_element = target_element_candidates[0] if target_element_candidates else None
 
         # Create element visualization for debugging
         try:
@@ -560,9 +840,17 @@ class TrajectoryGenerator:
         # Save Phase 2 data
         self.phase_data_manager.save_execution_context(step_idx, execution_context)
 
-        perturbation_decision = self.perturbation_generator.decide_perturbation(
-            execution_context, scenario_spec
-        )
+        # TEMP DEBUG: Load perturbation decision from phases folder instead of calling LLM
+        temp_debug_data = _load_temp_debug_data(step_idx, trajectory_id) if TEMP_DEBUG_MODE else {}
+        if TEMP_DEBUG_MODE and temp_debug_data.get("perturbation_decision"):
+            perturbation_decision = temp_debug_data["perturbation_decision"]
+            self.logger.info(
+                f"TEMP DEBUG: Loaded perturbation decision from phases folder for step {step_idx}"
+            )
+        else:
+            perturbation_decision = self.perturbation_generator.decide_perturbation(
+                execution_context, scenario_spec
+            )
 
         self.phase_data_manager.save_perturbation_decision(step_idx, perturbation_decision)
 

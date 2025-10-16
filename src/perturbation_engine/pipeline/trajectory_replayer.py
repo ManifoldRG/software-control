@@ -42,17 +42,39 @@ class TrajectoryReplayer:
         """Get next step from trajectory
 
         self.trajectory_data follows this format:
-        [
-            "`CLICK` the text box labeled 'Search'",
-            "`TYPING` 'Manchester, GB'",
-            "`CLICK` the entry that says 'Manchester, GB'",
-            "`CLICK` the 'Monthly' tab"
-        ]
+        For osworld-human-main: ["`CLICK` the text box labeled 'Search'", ...]
+        For osworld-verified: [{"action": "pyautogui.click(89, 76)", ...}, ...]
         """
-        action = self.trajectory_data[self.current_step]
+        if self.current_step >= len(self.trajectory_data):
+            self.logger.warning(
+                f"Trajectory step {self.current_step} out of range (max: {len(self.trajectory_data) - 1})"
+            )
+            return "", ""  # Return empty action when trajectory is complete
+
+        step_data = self.trajectory_data[self.current_step]
         self.current_step += 1
+
+        # Handle different trajectory formats
+        if isinstance(step_data, str):
+            # osworld-human-main format: direct action strings
+            action = step_data
+        elif isinstance(step_data, dict) and "action" in step_data:
+            # osworld-verified format: JSON objects with action field
+            action = step_data["action"]
+        else:
+            self.logger.error(f"Unexpected trajectory data format: {type(step_data)}")
+            return "", ""
+
         return "", action
 
     def get_total_steps(self) -> int:
         """Get total steps in the trajectory"""
         return len(self.trajectory_data)
+
+    def is_complete(self) -> bool:
+        """Check if trajectory is complete"""
+        return self.current_step >= len(self.trajectory_data)
+
+    def get_current_step(self) -> int:
+        """Get current step index"""
+        return self.current_step

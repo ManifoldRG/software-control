@@ -316,6 +316,9 @@ class ProceduralMemory:
         current_theme = visual_state.get("current_theme", "default")
         recent_visual_changes = visual_state.get("visual_changes", [])
 
+        # Enhanced diversity analysis
+        diversity_analysis = self._analyze_perturbation_diversity(recent, target_app)
+
         # Generate contextual hints
         hints = self._generate_contextual_hints(target_app, recent, failures, task_progress)
 
@@ -332,10 +335,163 @@ class ProceduralMemory:
                 "apps_affected": {p["target_app"] for p in self.perturbation_history},
                 "visual_progression": self.trajectory_patterns.get("visual_progression", []),
             },
+            "diversity_analysis": diversity_analysis,
             "contextual_hints": hints,
             "task_progress": task_progress,
             "current_step": current_step,
         }
+
+    def _analyze_perturbation_diversity(
+        self, recent_perturbations: List[Dict], target_app: str
+    ) -> Dict[str, Any]:
+        """Analyze the diversity of recent perturbations to guide future decisions"""
+        if not recent_perturbations:
+            return {
+                "diversity_score": 1.0,
+                "missing_dimensions": [],
+                "overused_dimensions": [],
+                "recommendations": ["No recent perturbations - good opportunity for any type"],
+            }
+
+        # Analyze different diversity dimensions
+        visual_intents = set()
+        element_targets = set()
+        perturbation_types = set()
+        api_calls = set()
+
+        for p in recent_perturbations:
+            command = p.get("command", "")
+            if command:
+                # Extract diversity dimensions from command
+                visual_intent = self._extract_visual_intent_from_command(command)
+                if visual_intent:
+                    visual_intents.add(visual_intent)
+
+                element_target = self._extract_element_target_from_command(command)
+                if element_target:
+                    element_targets.add(element_target)
+
+                perturbation_types.add(p.get("perturbation_type", "unknown"))
+                api_calls.add(self._extract_api_call_from_command(command))
+
+        # Calculate diversity score
+        total_dimensions = 4  # visual_intent, element_target, perturbation_type, api_call
+        used_dimensions = (
+            len(visual_intents) + len(element_targets) + len(perturbation_types) + len(api_calls)
+        )
+        diversity_score = min(1.0, used_dimensions / (total_dimensions * 2))  # Normalize
+
+        # Identify missing dimensions
+        missing_dimensions = []
+        if not visual_intents:
+            missing_dimensions.append("visual_intent")
+        if not element_targets:
+            missing_dimensions.append("element_target")
+        if len(perturbation_types) < 2:
+            missing_dimensions.append("perturbation_type_variety")
+        if len(api_calls) < 2:
+            missing_dimensions.append("api_call_variety")
+
+        # Identify overused dimensions
+        overused_dimensions = []
+        if len(visual_intents) == 1 and len(recent_perturbations) >= 3:
+            overused_dimensions.append(f"visual_intent:{list(visual_intents)[0]}")
+        if len(element_targets) == 1 and len(recent_perturbations) >= 3:
+            overused_dimensions.append(f"element_target:{list(element_targets)[0]}")
+
+        # Generate recommendations
+        recommendations = []
+        if diversity_score < 0.5:
+            recommendations.append("Low diversity detected - try different visual modification types")
+        if "visual_intent" in missing_dimensions:
+            recommendations.append("Consider adding visual modifications (theme, color, typography, layout)")
+        if "element_target" in missing_dimensions:
+            recommendations.append("Consider targeting different UI elements")
+        if "perturbation_type_variety" in missing_dimensions:
+            recommendations.append("Try different perturbation types beyond current ones")
+
+        return {
+            "diversity_score": diversity_score,
+            "missing_dimensions": missing_dimensions,
+            "overused_dimensions": overused_dimensions,
+            "recommendations": recommendations,
+            "used_dimensions": {
+                "visual_intents": list(visual_intents),
+                "element_targets": list(element_targets),
+                "perturbation_types": list(perturbation_types),
+                "api_calls": list(api_calls),
+            },
+        }
+
+    def _extract_visual_intent_from_command(self, command: str) -> str:
+        """Extract visual intent from command (similar to trajectory_generator logic)"""
+        command_lower = command.lower()
+
+        if any(theme_word in command_lower for theme_word in ["theme", "gtk-theme", "qt-theme"]):
+            return "theme"
+        elif any(
+            color_word in command_lower for color_word in ["color", "background", "border", "rgba", "#"]
+        ):
+            return "color"
+        elif any(font_word in command_lower for font_word in ["font", "text", "typography", "size"]):
+            return "typography"
+        elif any(
+            layout_word in command_lower
+            for layout_word in ["margin", "padding", "spacing", "position", "size"]
+        ):
+            return "layout"
+        elif any(css_word in command_lower for css_word in ["css", "style", "inject", "modify"]):
+            return "styling"
+        elif any(sys_word in command_lower for sys_word in ["wallpaper", "desktop", "system", "gsettings"]):
+            return "system"
+
+        return ""
+
+    def _extract_element_target_from_command(self, command: str) -> str:
+        """Extract element target from command (similar to trajectory_generator logic)"""
+        command_lower = command.lower()
+
+        element_targets = [
+            "button",
+            "input",
+            "text",
+            "link",
+            "menu",
+            "toolbar",
+            "sidebar",
+            "header",
+            "footer",
+            "navigation",
+            "tab",
+            "dialog",
+            "modal",
+            "form",
+            "table",
+            "list",
+            "grid",
+            "panel",
+            "container",
+        ]
+
+        for element in element_targets:
+            if element in command_lower:
+                return element
+
+        if "body" in command_lower:
+            return "body"
+        elif "html" in command_lower:
+            return "html"
+        elif "document" in command_lower:
+            return "document"
+
+        return ""
+
+    def _extract_api_call_from_command(self, command: str) -> str:
+        """Extract API call type from command"""
+        import re
+
+        api_match = re.search(r"execute_(\w+)_command", command.lower())
+        return api_match.group(1) if api_match else "unknown"
 
     def _generate_contextual_hints(
         self, target_app: str, recent: List[Dict], failures: List[Dict], task_progress: str
@@ -431,420 +587,296 @@ class ProceduralMemory:
 
 
 class OperationCatalog:
-    """Comprehensive catalog of ALL available operations for perturbation generation"""
+    """Focused catalog of UI element-level visual and semantic content variations"""
 
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        self.catalog = self._build_comprehensive_catalog()
+        self.catalog = self._build_focused_catalog()
 
-    def _build_comprehensive_catalog(self) -> Dict[str, Any]:
-        """Build comprehensive catalog of ALL available operations"""
+    def _build_focused_catalog(self) -> Dict[str, Any]:
+        """Build focused catalog emphasizing UI element-level variations"""
         return {
-            "app_tools": {
-                "vlc": self._load_vlc_operations(),
-                "chrome": self._load_chrome_operations(),
-                "google_chrome": self._load_chrome_operations(),
-                "code": self._load_code_operations(),
-                "libreoffice_calc": self._load_calc_operations(),
-                "libreoffice_writer": self._load_writer_operations(),
-                "libreoffice_impress": self._load_impress_operations(),
-            },
-            "system_operations": self._load_system_operations(),
-            "server_endpoints": self._load_server_endpoints(),
-            "python_controller": self._load_python_controller_operations(),
-            "visual_manipulation": self._load_visual_manipulation_operations(),
-            "freeform_operations": self._load_freeform_operations(),
+            "ui_element_variations": self._load_ui_element_variations(),
+            "semantic_content_variations": self._load_semantic_content_variations(),
+            "visual_theme_variations": self._load_visual_theme_variations(),
+            "app_specific_operations": self._load_app_specific_operations(),
+            "system_integration": self._load_system_integration(),
             "perturbation_categories": [
-                "theme",
-                "layout",
-                "content_variation",
-                "ui_state",
-                "accessibility",
-                "performance",
-                "network",
-                "file_system",
-                "playback",
-                "settings",
-                "playlist",
-                "navigation",
-                "tabs",
-                "bookmarks",
-                "devtools",
-                "file_ops",
-                "editing",
-                "window_management",
-                "visual_randomization",
-                "gui_manipulation",
-                "css_injection",
-                "dom_modification",
+                "ui_element_visual",
+                "ui_element_semantic",
+                "ui_element_layout",
+                "ui_element_interaction",
+                "content_text_variation",
+                "content_data_variation",
+                "theme_color_variation",
+                "theme_font_variation",
+                "theme_layout_variation",
+                "accessibility_variation",
+                "system_theme_variation",
             ],
         }
 
-    def _load_vlc_operations(self) -> Dict[str, List[str]]:
-        """Load VLC-specific operations with concrete visual impact"""
+    def _load_ui_element_variations(self) -> Dict[str, List[str]]:
+        """Load UI element-level visual and semantic variations"""
         return {
-            "playback": ["play", "pause", "stop", "next", "previous", "seek", "set_volume"],
-            "settings": ["set_settings", "get_settings", "set_fullscreen", "set_theme"],
-            "playlist": ["add_to_playlist", "remove_from_playlist", "clear_playlist", "get_playlist"],
-            "ui": ["set_layout", "toggle_controls", "set_window_size", "set_zoom"],
-            "media": ["load_media", "get_media_info", "set_audio_track", "set_subtitle_track"],
-            "visual_effects": [
-                "apply_video_filter_blur",
-                "apply_video_filter_sepia",
-                "apply_video_filter_invert",
-                "change_aspect_ratio_4_3",
-                "change_aspect_ratio_16_9",
-                "change_aspect_ratio_stretch",
-                "modify_video_brightness",
-                "modify_video_contrast",
-                "modify_video_saturation",
+            "button_variations": [
+                # Button color variations using CSS injection
+                "execute_css_injection('button { background-color: #ff6b6b !important; border-radius: 12px !important; box-shadow: 0 4px 8px rgba(0,0,0,0.3) !important; }', {'target_app': 'chrome'})",
+                "execute_css_injection('button { background-color: #4ecdc4 !important; border-radius: 8px !important; border: 2px solid #45b7d1 !important; }', {'target_app': 'chrome'})",
+                "execute_css_injection('button { background-color: #45b7d1 !important; border-radius: 20px !important; transform: scale(1.05) !important; }', {'target_app': 'chrome'})",
+                # Button text variations using DOM modification
+                "execute_dom_modification('document.querySelectorAll(\"button\").forEach(btn => btn.textContent = btn.textContent.toUpperCase())', {'target_app': 'chrome'})",
+                "execute_dom_modification('document.querySelectorAll(\"button\").forEach(btn => btn.textContent = btn.textContent.toLowerCase())', {'target_app': 'chrome'})",
+                # Button border variations
+                "execute_css_injection('button { border-radius: 20px !important; border: 3px solid #e74c3c !important; }', {'target_app': 'chrome'})",
+                "execute_css_injection('button { border-radius: 5px !important; border: 1px solid #95a5a6 !important; }', {'target_app': 'chrome'})",
             ],
-            "interface_customization": [
-                "randomize_control_colors",
-                "change_progress_bar_style",
-                "modify_volume_slider_style",
-                "alter_menu_transparency",
-                "change_window_decoration",
-                "modify_subtitle_styling",
+            "input_variations": [
+                # Input placeholder variations
+                'execute_dom_modification(\'document.querySelectorAll("input[type=\\"text\\"], input[type=\\"email\\"], textarea").forEach(input => input.placeholder = "Enter your text here...")\', {\'target_app\': \'chrome\'})',
+                'execute_dom_modification(\'document.querySelectorAll("input[type=\\"text\\"], input[type=\\"email\\"], textarea").forEach(input => input.placeholder = "Type something...")\', {\'target_app\': \'chrome\'})',
+                # Input border variations
+                "execute_css_injection('input[type=\"text\"], input[type=\"email\"], textarea { border: 2px solid #4ecdc4 !important; border-radius: 8px !important; padding: 12px !important; }', {'target_app': 'chrome'})",
+                "execute_css_injection('input[type=\"text\"], input[type=\"email\"], textarea { border: 3px solid #e74c3c !important; border-radius: 15px !important; background-color: #f8f9fa !important; }', {'target_app': 'chrome'})",
             ],
-            "system_integration": [
-                "change_desktop_theme_for_vlc",
-                "modify_system_fonts",
-                "alter_cursor_theme",
-                "change_wallpaper_background",
-                "modify_window_manager_theme",
+            "link_variations": [
+                # Link color and style variations
+                "execute_css_injection('a { color: #e74c3c !important; text-decoration: underline !important; font-weight: bold !important; }', {'target_app': 'chrome'})",
+                "execute_css_injection('a { color: #3498db !important; text-decoration: none !important; border-bottom: 2px solid #3498db !important; }', {'target_app': 'chrome'})",
+                "execute_css_injection('a { color: #2ecc71 !important; text-decoration: line-through !important; font-style: italic !important; }', {'target_app': 'chrome'})",
+            ],
+            "image_variations": [
+                # Image filter and styling variations
+                "execute_dom_modification('document.querySelectorAll(\"img\").forEach(img => { img.style.filter = \"hue-rotate(180deg)\"; img.style.borderRadius = \"10px\"; })', {'target_app': 'chrome'})",
+                "execute_dom_modification('document.querySelectorAll(\"img\").forEach(img => { img.style.filter = \"sepia(100%)\"; img.style.borderRadius = \"50%\"; })', {'target_app': 'chrome'})",
+                "execute_dom_modification('document.querySelectorAll(\"img\").forEach(img => { img.style.filter = \"blur(2px)\"; img.style.opacity = \"0.8\"; })', {'target_app': 'chrome'})",
+            ],
+            "text_variations": [
+                # Text styling variations
+                "execute_css_injection('p, div, span { font-family: \"Times New Roman\", serif !important; font-size: 18px !important; line-height: 1.6 !important; }', {'target_app': 'chrome'})",
+                "execute_css_injection('h1, h2, h3, h4, h5, h6 { color: #8e44ad !important; text-shadow: 2px 2px 4px rgba(0,0,0,0.3) !important; }', {'target_app': 'chrome'})",
+                "execute_css_injection('p, div, span { font-family: \"Courier New\", monospace !important; font-size: 14px !important; letter-spacing: 1px !important; }', {'target_app': 'chrome'})",
             ],
         }
 
-    def _load_chrome_operations(self) -> Dict[str, List[str]]:
-        """Load Chrome-specific operations with concrete visual impact"""
+    def _load_semantic_content_variations(self) -> Dict[str, List[str]]:
+        """Load semantic content variations for text and data"""
         return {
-            "navigation": ["navigate", "go_back", "go_forward", "refresh", "reload"],
-            "tabs": ["open_tab", "close_tab", "switch_tab", "new_tab", "get_tabs"],
-            "bookmarks": ["bookmark_page", "get_bookmarks", "delete_bookmark", "create_bookmark_folder"],
-            "settings": ["open_settings", "set_theme", "set_language", "set_homepage"],
-            "devtools": ["open_devtools", "inspect_element", "console_log", "network_monitor"],
-            "extensions": ["install_extension", "disable_extension", "get_extensions"],
-            "security": ["clear_cookies", "clear_cache", "set_privacy_settings"],
-            "visual_manipulation": [
-                "inject_custom_css_red_theme",
-                "inject_custom_css_dark_theme",
-                "inject_custom_css_high_contrast",
-                "modify_page_colors_scheme",
-                "change_font_rendering_smooth",
-                "alter_scrollbar_appearance_custom",
-                "modify_focus_indicators_thick",
-                "inject_css_blur_elements",
-                "inject_css_rotate_elements",
+            "text_semantic_variations": [
+                # Text content variations using LibreOffice Writer
+                "execute_uno_command('WriterTools.modify_text_content(\"the\", \"THE\")', {'target_app': 'libreoffice_writer'})",
+                "execute_uno_command('WriterTools.modify_text_content(\"and\", \"AND\")', {'target_app': 'libreoffice_writer'})",
+                "execute_uno_command('WriterTools.modify_text_content(\"is\", \"IS\")', {'target_app': 'libreoffice_writer'})",
+                # Text formatting variations
+                "execute_uno_command('WriterTools.set_font_size(14)', {'target_app': 'libreoffice_writer'})",
+                "execute_uno_command('WriterTools.set_font_size(18)', {'target_app': 'libreoffice_writer'})",
+                "execute_uno_command('WriterTools.set_font_family(\"Arial\")', {'target_app': 'libreoffice_writer'})",
             ],
-            "content_perturbation": [
-                "randomize_images_placeholders",
-                "modify_text_content_obfuscate",
-                "change_link_styling_colors",
-                "alter_form_appearance_custom",
-                "inject_fake_loading_bars",
-                "modify_button_styles_rounded",
-                "change_input_field_colors",
-                "alter_table_border_styles",
-                "modify_heading_font_sizes",
+            "data_semantic_variations": [
+                # Data content variations using LibreOffice Calc
+                "execute_uno_command('CalcTools.modify_cell_content(\"A1\", \"Modified Data\")', {'target_app': 'libreoffice_calc'})",
+                "execute_uno_command('CalcTools.modify_cell_content(\"B1\", \"Updated Value\")', {'target_app': 'libreoffice_calc'})",
+                "execute_uno_command('CalcTools.format_range(\"A1:C10\", \"background_color\", \"#f8f9fa\")', {'target_app': 'libreoffice_calc'})",
+                "execute_uno_command('CalcTools.format_range(\"A1:C10\", \"text_color\", \"#495057\")', {'target_app': 'libreoffice_calc'})",
             ],
-            "system_integration": [
-                "change_desktop_theme_for_chrome",
-                "modify_system_fonts",
-                "alter_cursor_theme",
-                "change_wallpaper_background",
-                "modify_window_manager_theme",
+            "web_content_variations": [
+                # Web content variations using DOM modification
+                "execute_dom_modification('document.querySelectorAll(\"h1, h2, h3\").forEach(heading => heading.textContent = heading.textContent.toUpperCase())', {'target_app': 'chrome'})",
+                "execute_dom_modification('document.querySelectorAll(\"p\").forEach(p => p.textContent = p.textContent.replace(/the/gi, \"THE\"))', {'target_app': 'chrome'})",
+                "execute_dom_modification('document.querySelectorAll(\"span\").forEach(span => span.textContent = span.textContent.replace(/and/gi, \"AND\"))', {'target_app': 'chrome'})",
             ],
         }
 
-    def _load_code_operations(self) -> Dict[str, List[str]]:
-        """Load Code editor operations from tools/apis/code.json"""
+    def _load_visual_theme_variations(self) -> Dict[str, List[str]]:
+        """Load visual theme variations for system-wide and app-specific themes"""
         return {
-            "file_ops": ["open_file", "save_file", "create_file", "delete_file", "rename_file"],
-            "editing": ["insert_text", "delete_text", "find_replace", "format_code", "comment_code"],
-            "navigation": ["go_to_line", "find_symbol", "go_to_definition", "find_references"],
-            "settings": ["set_theme", "set_font_size", "toggle_sidebar", "set_indentation"],
-            "git": ["git_status", "git_commit", "git_push", "git_pull", "git_branch"],
-            "debugging": ["set_breakpoint", "start_debugging", "step_over", "step_into"],
+            "system_theme_variations": [
+                # System theme changes
+                "execute_bash_command('gsettings set org.gnome.desktop.interface gtk-theme \"Adwaita-dark\"')",
+                "execute_bash_command('gsettings set org.gnome.desktop.interface gtk-theme \"Adwaita\"')",
+                "execute_bash_command('gsettings set org.gnome.desktop.interface gtk-theme \"HighContrast\"')",
+                # System font changes
+                "execute_bash_command('gsettings set org.gnome.desktop.interface font-name \"Liberation Sans 14\"')",
+                "execute_bash_command('gsettings set org.gnome.desktop.interface font-name \"Liberation Serif 16\"')",
+                "execute_bash_command('gsettings set org.gnome.desktop.interface font-name \"Liberation Mono 12\"')",
+                # System icon theme changes
+                "execute_bash_command('gsettings set org.gnome.desktop.interface icon-theme \"Papirus-Dark\"')",
+                "execute_bash_command('gsettings set org.gnome.desktop.interface icon-theme \"Papirus\"')",
+                "execute_bash_command('gsettings set org.gnome.desktop.interface icon-theme \"Adwaita\"')",
+            ],
+            "chrome_theme_variations": [
+                # Chrome theme randomization
+                "execute_theme_randomization({'target_app': 'chrome'})",
+                "execute_layout_perturbation({'target_app': 'chrome'})",
+                "execute_typography_randomization({'target_app': 'chrome'})",
+                "execute_accessibility_perturbation({'target_app': 'chrome'})",
+                # Chrome CSS theme variations
+                "execute_css_injection('body { background-color: #1a1a1a !important; color: #ffffff !important; }', {'target_app': 'chrome'})",
+                "execute_css_injection('body { background-color: #2d2d2d !important; color: #00ff00 !important; }', {'target_app': 'chrome'})",
+                "execute_css_injection('body { background-color: #000000 !important; color: #ffff00 !important; }', {'target_app': 'chrome'})",
+            ],
+            "libreoffice_theme_variations": [
+                # LibreOffice theme changes
+                "execute_uno_command('CalcTools.set_theme(\"dark\")', {'target_app': 'libreoffice_calc'})",
+                "execute_uno_command('WriterTools.set_theme(\"dark\")', {'target_app': 'libreoffice_writer'})",
+                "execute_uno_command('ImpressTools.set_theme(\"dark\")', {'target_app': 'libreoffice_impress'})",
+                # LibreOffice formatting variations
+                "execute_uno_command('CalcTools.format_range(\"A1:C10\", \"background_color\", \"#f8f9fa\")', {'target_app': 'libreoffice_calc'})",
+                "execute_uno_command('WriterTools.set_font(\"Arial\", 14)', {'target_app': 'libreoffice_writer'})",
+                "execute_uno_command('ImpressTools.set_slide_background(\"#e9ecef\")', {'target_app': 'libreoffice_impress'})",
+            ],
+            "vlc_theme_variations": [
+                # VLC theme and visual effects
+                "execute_vlc_visual_effects('apply_video_filter(\"blur\")', {'target_app': 'vlc'})",
+                "execute_vlc_visual_effects('apply_video_filter(\"sepia\")', {'target_app': 'vlc'})",
+                "execute_vlc_visual_effects('change_aspect_ratio(\"16_9\")', {'target_app': 'vlc'})",
+                "execute_vlc_visual_effects('modify_video_brightness(\"1.2\")', {'target_app': 'vlc'})",
+            ],
         }
 
-    def _load_calc_operations(self) -> Dict[str, List[str]]:
-        """Load LibreOffice Calc operations from tools/apis/libreoffice_calc.json"""
+    def _load_app_specific_operations(self) -> Dict[str, List[str]]:
+        """Load app-specific operations for targeted perturbations"""
         return {
-            "workbook": ["get_workbook_info", "save", "export_to_csv", "export_to_pdf"],
-            "sheets": ["switch_active_sheet", "rename_sheet", "copy_sheet", "reorder_sheets"],
-            "data": ["get_column_data", "set_column_values", "set_cell_value", "sort_column"],
-            "formatting": ["format_range", "highlight_range", "set_number_format", "merge_cells"],
-            "charts": ["create_chart", "set_chart_legend_position"],
-            "layout": ["freeze_panes", "adjust_column_width", "adjust_row_height", "set_zoom_level"],
-            "analysis": ["create_pivot_table", "set_validation_list", "hide_row_data", "reorder_columns"],
-            "transforms": ["transpose_range"],
+            "vlc_operations": [
+                # VLC visual effects
+                "execute_vlc_visual_effects('apply_video_filter(\"blur\")', {'target_app': 'vlc'})",
+                "execute_vlc_visual_effects('apply_video_filter(\"sepia\")', {'target_app': 'vlc'})",
+                "execute_vlc_visual_effects('change_aspect_ratio(\"16_9\")', {'target_app': 'vlc'})",
+                "execute_vlc_visual_effects('modify_video_brightness(\"1.2\")', {'target_app': 'vlc'})",
+            ],
+            "chrome_operations": [
+                # Chrome visual manipulation
+                "execute_chrome_visual_manipulation('inject_custom_css(\"red_theme\")', {'target_app': 'chrome'})",
+                "execute_chrome_visual_manipulation('inject_custom_css(\"dark_theme\")', {'target_app': 'chrome'})",
+                "execute_chrome_visual_manipulation('modify_page_colors(\"hue_rotate\")', {'target_app': 'chrome'})",
+            ],
+            "libreoffice_operations": [
+                # LibreOffice visual formatting
+                "execute_libreoffice_visual_formatting('randomize_cell_colors(\"A1:C10\")', {'target_app': 'libreoffice_calc'})",
+                "execute_libreoffice_visual_formatting('change_font_rendering(\"Arial\")', {'target_app': 'libreoffice_writer'})",
+                "execute_libreoffice_visual_formatting('modify_border_styles(\"A1:C10\")', {'target_app': 'libreoffice_calc'})",
+            ],
+            "system_operations": [
+                # System theme coherence
+                "execute_system_theme_coherence({'target_app': 'vlc'})",
+                "execute_system_theme_coherence({'target_app': 'chrome'})",
+                "execute_system_theme_coherence({'target_app': 'libreoffice_calc'})",
+            ],
         }
+
+    def _load_system_integration(self) -> Dict[str, List[str]]:
+        """Load system integration operations"""
+        return {
+            "file_operations": [
+                # File system operations
+                "execute_file_system_manipulation({'operation': 'create_file', 'path': '/tmp/test_file.txt', 'content': 'Test content'})",
+                "execute_file_system_manipulation({'operation': 'create_directory', 'path': '/tmp/test_dir'})",
+            ],
+            "window_management": [
+                # Window management operations
+                "execute_bash_command('wmctrl -r \"Calculator\" -e 0,100,100,300,200')",
+                "execute_bash_command('wmctrl -r \"Chrome\" -e 0,0,0,1920,1080')",
+            ],
+            "terminal_operations": [
+                # Terminal operations
+                'execute_bash_command(\'notify-send "System Notification" "Visual change applied"\')',
+                "execute_bash_command('echo \"System perturbation executed\" > /tmp/perturbation.log')",
+            ],
+            "network_operations": [
+                # Network perturbation
+                "execute_network_perturbation({'delay': 1.0})",
+                "execute_network_perturbation({'delay': 2.0})",
+            ],
+        }
+
+    # def get_operations_for_app(self, app_name: str) -> Dict[str, List[str]]:
+    #     """Get operations for a specific app, combining UI element variations with app-specific operations"""
+    #     # Get UI element-level variations (priority for invariant feature learning)
+    #     ui_variations = self.catalog["ui_element_variations"]
+    #     semantic_variations = self.catalog["semantic_content_variations"]
+    #     theme_variations = self.catalog["visual_theme_variations"]
+
+    #     # Get app-specific operations
+    #     app_operations = self.catalog["app_specific_operations"]
+    #     system_operations = self.catalog["system_integration"]
+
+    #     # Combine all variations for comprehensive perturbation
+    #     all_operations = {
+    #         "ui_element_variations": ui_variations,
+    #         "semantic_content_variations": semantic_variations,
+    #         "visual_theme_variations": theme_variations,
+    #         "app_specific_operations": app_operations,
+    #         "system_integration": system_operations,
+    #     }
+
+    #     return all_operations
 
     def _load_writer_operations(self) -> Dict[str, List[str]]:
-        """Load LibreOffice Writer operations from tools/apis/libreoffice_writer.json"""
+        """Load LibreOffice Writer operations using actual UNO patterns"""
         return {
-            "document": ["save", "export_to_pdf"],
-            "text": ["write_text", "find_and_replace", "change_text_case", "capitalize_words"],
-            "formatting": ["set_color", "set_font", "set_font_size", "set_line_spacing", "set_strikethrough"],
-            "layout": ["set_paragraph_alignment", "insert_page_break", "add_page_numbers"],
-            "content": ["insert_formula_at_cursor", "insert_image_at_cursor"],
-            "styling": ["remove_highlighting", "find_highlighted_text", "set_default_font"],
+            "document": [
+                'execute_uno_command(\'import uno; ctx = uno.getComponentContext(); resolver = ctx.ServiceManager.createInstanceWithContext("com.sun.star.bridge.UnoUrlResolver", ctx); desktop = resolver.resolve("uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext").ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", resolver.resolve("uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext")); doc = desktop.getCurrentComponent(); doc.store()\', {\'target_app\': \'libreoffice_writer\'})',
+            ],
+            "text_formatting": [
+                'execute_uno_command(\'import uno; ctx = uno.getComponentContext(); resolver = ctx.ServiceManager.createInstanceWithContext("com.sun.star.bridge.UnoUrlResolver", ctx); desktop = resolver.resolve("uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext").ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", resolver.resolve("uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext")); doc = desktop.getCurrentComponent(); text = doc.getText(); cursor = text.createTextCursor(); cursor.CharWeight = 150; text.insertString(cursor, "Modified Text", False)\', {\'target_app\': \'libreoffice_writer\'})',
+                'execute_uno_command(\'import uno; ctx = uno.getComponentContext(); resolver = ctx.ServiceManager.createInstanceWithContext("com.sun.star.bridge.UnoUrlResolver", ctx); desktop = resolver.resolve("uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext").ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", resolver.resolve("uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext")); doc = desktop.getCurrentComponent(); text = doc.getText(); cursor = text.createTextCursor(); cursor.CharFontName = "Times New Roman"; cursor.CharHeight = 16; text.insertString(cursor, "Styled Text", False)\', {\'target_app\': \'libreoffice_writer\'})',
+            ],
+            "visual_changes": [
+                'execute_uno_command(\'import uno; ctx = uno.getComponentContext(); resolver = ctx.ServiceManager.createInstanceWithContext("com.sun.star.bridge.UnoUrlResolver", ctx); desktop = resolver.resolve("uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext").ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", resolver.resolve("uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext")); doc = desktop.getCurrentComponent(); text = doc.getText(); cursor = text.createTextCursor(); cursor.CharColor = 0xFF0000; text.insertString(cursor, "Red Text", False)\', {\'target_app\': \'libreoffice_writer\'})',
+                'execute_uno_command(\'import uno; ctx = uno.getComponentContext(); resolver = ctx.ServiceManager.createInstanceWithContext("com.sun.star.bridge.UnoUrlResolver", ctx); desktop = resolver.resolve("uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext").ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", resolver.resolve("uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext")); doc = desktop.getCurrentComponent(); text = doc.getText(); cursor = text.createTextCursor(); cursor.CharBackColor = 0xFFFF00; text.insertString(cursor, "Highlighted Text", False)\', {\'target_app\': \'libreoffice_writer\'})',
+            ],
         }
 
     def _load_impress_operations(self) -> Dict[str, List[str]]:
-        """Load LibreOffice Impress operations from tools/apis/libreoffice_impress.json"""
+        """Load LibreOffice Impress operations using actual UNO patterns"""
         return {
-            "presentation": ["save", "save_as", "export_to_image"],
-            "slides": ["go_to_slide", "get_slide_count", "duplicate_slide", "set_slide_orientation"],
-            "content": ["write_text", "insert_image", "insert_file", "delete_content"],
-            "formatting": ["set_style", "set_background_color", "set_text_color", "set_text_strikethrough"],
-            "layout": ["position_box", "set_textbox_alignment", "set_slide_background"],
-            "settings": [
-                "configure_auto_save",
-                "configure_display_settings",
-                "set_slide_font",
-                "set_slide_number_color",
+            "presentation": [
+                'execute_uno_command(\'import uno; ctx = uno.getComponentContext(); resolver = ctx.ServiceManager.createInstanceWithContext("com.sun.star.bridge.UnoUrlResolver", ctx); desktop = resolver.resolve("uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext").ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", resolver.resolve("uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext")); doc = desktop.getCurrentComponent(); doc.store()\', {\'target_app\': \'libreoffice_impress\'})',
             ],
-        }
-
-    def _load_system_operations(self) -> Dict[str, List[str]]:
-        """Load system-level operations from SetupController"""
-        return {
-            "file_system": ["get_file", "upload_file", "list_directory", "get_desktop_path", "download_file"],
-            "system_info": [
-                "get_screenshot",
-                "get_accessibility_tree",
-                "get_terminal_output",
-                "get_screen_size",
-                "get_window_size",
-                "get_platform",
+            "slide_navigation": [
+                'execute_uno_command(\'import uno; ctx = uno.getComponentContext(); resolver = ctx.ServiceManager.createInstanceWithContext("com.sun.star.bridge.UnoUrlResolver", ctx); desktop = resolver.resolve("uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext").ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", resolver.resolve("uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext")); doc = desktop.getCurrentComponent(); pages = doc.getDrawPages(); controller = doc.getCurrentController(); controller.setCurrentPage(pages.getByIndex(0))\', {\'target_app\': \'libreoffice_impress\'})',
             ],
-            "execution": [
-                "execute_command",
-                "execute_with_verification",
-                "run_python_script",
-                "run_bash_script",
-            ],
-            "window_management": ["activate_window", "close_window", "launch_app", "open_file"],
-            "system_settings": ["change_wallpaper", "get_wallpaper", "get_cursor_position"],
-        }
-
-    def _load_server_endpoints(self) -> Dict[str, List[str]]:
-        """Load all available server endpoints from main.py"""
-        return {
-            "setup": [
-                "/setup/execute",
-                "/setup/execute_with_verification",
-                "/setup/launch",
-                "/setup/upload",
-                "/setup/change_wallpaper",
-                "/setup/download_file",
-                "/setup/open_file",
-                "/setup/activate_window",
-                "/setup/close_window",
-            ],
-            "core": ["/execute", "/execute_with_verification", "/screenshot", "/accessibility", "/terminal"],
-            "system": [
-                "/screen_size",
-                "/window_size",
-                "/desktop_path",
-                "/wallpaper",
-                "/list_directory",
-                "/file",
-                "/platform",
-                "/cursor_position",
-            ],
-            "execution": ["/run_python", "/run_bash_script"],
-        }
-
-    def _load_python_controller_operations(self) -> Dict[str, List[str]]:
-        """Load PythonController operations"""
-        return {
-            "screenshots": ["get_screenshot"],
-            "accessibility": ["get_accessibility_tree"],
-            "terminal": ["get_terminal_output"],
-            "files": ["get_file"],
-            "execution": ["execute_python_command", "run_python_script", "run_bash_script"],
-            "actions": ["execute_action"],
-            "system_info": [
-                "get_vm_platform",
-                "get_vm_screen_size",
-                "get_vm_window_size",
-                "get_vm_wallpaper",
-                "get_vm_desktop_path",
-                "get_vm_directory_tree",
-            ],
-        }
-
-    def _load_visual_manipulation_operations(self) -> Dict[str, List[str]]:
-        """Load visual manipulation operations for GUI randomization"""
-        return {
-            "css_injection": [
-                "inject_css",
-                "modify_element_style",
-                "change_color_scheme",
-                "randomize_fonts",
-                "alter_spacing",
-                "modify_borders",
-                "change_shadows",
-                "adjust_opacity",
-                "modify_transitions",
-                "change_backgrounds",
-            ],
-            "dom_modification": [
-                "add_fake_elements",
-                "modify_element_text",
-                "change_element_attributes",
-                "reorder_elements",
-                "hide_show_elements",
-                "duplicate_elements",
-                "modify_element_classes",
-                "change_element_ids",
-                "alter_element_hierarchy",
-            ],
-            "theme_randomization": [
-                "randomize_color_palette",
-                "change_theme_variant",
-                "modify_accent_colors",
-                "alter_contrast_levels",
-                "change_brightness",
-                "modify_saturation",
-                "randomize_gradients",
-                "change_icon_styles",
-                "alter_button_styles",
-            ],
-            "layout_perturbation": [
-                "randomize_element_positions",
-                "modify_element_sizes",
-                "change_alignment",
-                "alter_margins_padding",
-                "modify_grid_layouts",
-                "change_flex_properties",
-                "randomize_z_index",
-                "modify_overflow_settings",
-                "change_display_properties",
-            ],
-            "typography_randomization": [
-                "randomize_font_families",
-                "change_font_sizes",
-                "modify_font_weights",
-                "alter_line_heights",
-                "change_letter_spacing",
-                "modify_text_decoration",
-                "randomize_text_colors",
-                "change_text_shadows",
-                "alter_text_transforms",
-            ],
-            "animation_effects": [
-                "add_random_animations",
-                "modify_transition_durations",
-                "change_easing_functions",
-                "randomize_keyframes",
-                "alter_animation_delays",
-                "modify_transform_effects",
-                "change_animation_directions",
-                "add_hover_effects",
-                "modify_scroll_behavior",
-            ],
-            "accessibility_perturbation": [
-                "modify_aria_labels",
-                "change_tab_order",
-                "alter_focus_styles",
-                "modify_screen_reader_text",
-                "change_contrast_ratios",
-                "alter_text_scaling",
-                "modify_keyboard_navigation",
-                "change_high_contrast_mode",
-                "alter_color_blind_support",
-            ],
-        }
-
-    def _load_freeform_operations(self) -> Dict[str, List[str]]:
-        """Load freeform operations for creative GUI manipulation"""
-        return {
-            "python_execution": [
-                "execute_python_code",
-                "run_custom_script",
-                "inject_python_module",
-                "modify_runtime_behavior",
-                "execute_dynamic_code",
-                "run_conditional_logic",
-                "execute_async_operations",
-                "run_background_tasks",
-                "execute_ui_automation",
-            ],
-            "javascript_injection": [
-                "inject_javascript",
-                "modify_page_behavior",
-                "execute_dom_scripts",
-                "run_custom_functions",
-                "modify_event_handlers",
-                "execute_async_js",
-                "inject_jquery_code",
-                "run_vanilla_js",
-                "execute_framework_code",
-            ],
-            "bash_automation": [
-                "execute_bash_commands",
-                "run_shell_scripts",
-                "modify_system_files",
-                "execute_file_operations",
-                "run_network_commands",
-                "execute_process_management",
-                "run_package_management",
-                "execute_system_configuration",
-                "run_custom_automation",
-            ],
-            "playwright_automation": [
-                "execute_playwright_actions",
-                "modify_page_content",
-                "inject_custom_elements",
-                "execute_mouse_actions",
-                "run_keyboard_automation",
-                "modify_page_navigation",
-                "execute_screenshot_operations",
-                "run_element_interactions",
-                "execute_custom_workflows",
-            ],
-            "file_system_manipulation": [
-                "modify_config_files",
-                "create_temp_files",
-                "alter_user_preferences",
-                "modify_theme_files",
-                "change_icon_files",
-                "alter_font_files",
-                "modify_css_files",
-                "change_javascript_files",
-                "alter_resource_files",
-            ],
-            "network_perturbation": [
-                "modify_network_requests",
-                "inject_custom_responses",
-                "alter_api_responses",
-                "modify_http_headers",
-                "change_request_timeouts",
-                "alter_connection_settings",
-                "inject_network_delays",
-                "modify_dns_responses",
-                "alter_ssl_settings",
-            ],
-            "system_integration": [
-                "modify_system_settings",
-                "change_desktop_environment",
-                "alter_window_manager",
-                "modify_display_settings",
-                "change_input_methods",
-                "alter_system_sounds",
-                "modify_notification_settings",
-                "change_power_management",
-                "alter_security_settings",
+            "visual_formatting": [
+                'execute_uno_command(\'import uno; ctx = uno.getComponentContext(); resolver = ctx.ServiceManager.createInstanceWithContext("com.sun.star.bridge.UnoUrlResolver", ctx); desktop = resolver.resolve("uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext").ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", resolver.resolve("uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext")); doc = desktop.getCurrentComponent(); pages = doc.getDrawPages(); page = pages.getByIndex(0); shape = page.createInstance("com.sun.star.drawing.TextShape"); shape.setPosition((100, 100)); shape.setSize((400, 100)); text = shape.getText(); cursor = text.createTextCursor(); cursor.CharWeight = 150; text.insertString(cursor, "Modified Slide Text", False); page.add(shape)\', {\'target_app\': \'libreoffice_impress\'})',
+                'execute_uno_command(\'import uno; ctx = uno.getComponentContext(); resolver = ctx.ServiceManager.createInstanceWithContext("com.sun.star.bridge.UnoUrlResolver", ctx); desktop = resolver.resolve("uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext").ServiceManager.createInstanceWithContext("com.sun.star.frame.Desktop", resolver.resolve("uno:socket,host=localhost,port=2002;urp;StarOffice.ComponentContext")); doc = desktop.getCurrentComponent(); pages = doc.getDrawPages(); page = pages.getByIndex(0); shape = page.createInstance("com.sun.star.drawing.TextShape"); shape.FillColor = 0xFF0000; shape.setPosition((200, 200)); shape.setSize((300, 80)); text = shape.getText(); cursor = text.createTextCursor(); text.insertString(cursor, "Red Background Text", False); page.add(shape)\', {\'target_app\': \'libreoffice_impress\'})',
             ],
         }
 
     def get_operations_for_app(self, app_name: str) -> Dict[str, List[str]]:
         """Get operations for specific app"""
-        return self.catalog["app_tools"].get(app_name.lower(), {})
+        app_name_lower = app_name.lower()
+
+        # Get UI element variations (available for all apps)
+        ui_variations = self.catalog["ui_element_variations"]
+
+        # Get semantic content variations (available for all apps)
+        semantic_variations = self.catalog["semantic_content_variations"]
+
+        # Get visual theme variations (available for all apps)
+        theme_variations = self.catalog["visual_theme_variations"]
+
+        # Get app-specific operations
+        app_specific = self.catalog["app_specific_operations"]
+        app_ops = {}
+
+        if app_name_lower in ["vlc"]:
+            app_ops.update(app_specific["vlc_operations"])
+        elif app_name_lower in ["chrome", "google_chrome"]:
+            app_ops.update(app_specific["chrome_operations"])
+        elif app_name_lower in ["code", "vscode"]:
+            app_ops.update(app_specific["vscode_operations"])
+        elif app_name_lower in ["libreoffice_calc", "libreoffice_writer", "libreoffice_impress"]:
+            app_ops.update(app_specific["libreoffice_operations"])
+
+        # Combine all variations
+        combined_ops = {
+            "ui_element_variations": ui_variations,
+            "semantic_content_variations": semantic_variations,
+            "visual_theme_variations": theme_variations,
+            "app_specific_operations": app_ops,
+        }
+
+        return combined_ops
 
     def format_operations_for_llm(self, window_states: List[Any] = None) -> str:
         """Format operations for LLM prompt with validation and concrete examples"""
@@ -863,36 +895,55 @@ class OperationCatalog:
             app_ops = self.get_operations_for_app(app_name)
 
             if app_ops:
-                app_formatted = f"VALIDATED OPERATIONS FOR {app_name.upper()}:\n"
+                app_formatted = f"AVAILABLE OPERATIONS FOR {app_name.upper()}:\n"
                 for category, operations in app_ops.items():
-                    # Filter to only include validated operations
-                    validated_operations = [op for op in operations if self._is_operation_validated(op)]
-                    if validated_operations:
-                        app_formatted += f"  {category}: {', '.join(validated_operations)}\n"
+                    if isinstance(operations, dict):
+                        # Handle nested structure (e.g., ui_element_variations)
+                        for subcategory, suboperations in operations.items():
+                            if isinstance(suboperations, list) and suboperations:
+                                app_formatted += (
+                                    f"  {category}.{subcategory}: {len(suboperations)} operations\n"
+                                )
+                    elif isinstance(operations, list) and operations:
+                        app_formatted += f"  {category}: {len(operations)} operations\n"
                 formatted_operations.append(app_formatted)
             else:
                 # Include system operations if no app-specific operations found
                 formatted_operations.append(
-                    f"OPERATIONS FOR {app_name.upper()}:\n  system: Using validated system-level operations\n"
+                    f"OPERATIONS FOR {app_name.upper()}:\n  system: Using system-level operations\n"
                 )
 
-        # Always include validated system operations as fallback
-        system_ops = self.catalog["system_operations"]
-        system_formatted = "VALIDATED SYSTEM OPERATIONS (guaranteed to work):\n"
+        # Always include system integration operations as fallback
+        system_ops = self.catalog["system_integration"]
+        system_formatted = "SYSTEM INTEGRATION OPERATIONS (guaranteed to work):\n"
         for category, operations in system_ops.items():
-            validated_operations = [op for op in operations if self._is_operation_validated(op)]
-            if validated_operations:
-                system_formatted += f"  {category}: {', '.join(validated_operations)}\n"
+            if isinstance(operations, list) and operations:
+                system_formatted += f"  {category}: {len(operations)} operations\n"
         formatted_operations.append(system_formatted)
 
-        # Include validated visual manipulation operations
-        visual_ops = self.catalog["visual_manipulation"]
-        visual_formatted = "VALIDATED VISUAL MANIPULATION OPERATIONS:\n"
-        for category, operations in visual_ops.items():
-            validated_operations = [op for op in operations if self._is_operation_validated(op)]
-            if validated_operations:
-                visual_formatted += f"  {category}: {', '.join(validated_operations)}\n"
-        formatted_operations.append(visual_formatted)
+        # Include UI element variations
+        ui_ops = self.catalog["ui_element_variations"]
+        ui_formatted = "UI ELEMENT VARIATIONS:\n"
+        for category, operations in ui_ops.items():
+            if isinstance(operations, list) and operations:
+                ui_formatted += f"  {category}: {len(operations)} operations\n"
+        formatted_operations.append(ui_formatted)
+
+        # Include semantic content variations
+        semantic_ops = self.catalog["semantic_content_variations"]
+        semantic_formatted = "SEMANTIC CONTENT VARIATIONS:\n"
+        for category, operations in semantic_ops.items():
+            if isinstance(operations, list) and operations:
+                semantic_formatted += f"  {category}: {len(operations)} operations\n"
+        formatted_operations.append(semantic_formatted)
+
+        # Include visual theme variations
+        theme_ops = self.catalog["visual_theme_variations"]
+        theme_formatted = "VISUAL THEME VARIATIONS:\n"
+        for category, operations in theme_ops.items():
+            if isinstance(operations, list) and operations:
+                theme_formatted += f"  {category}: {len(operations)} operations\n"
+        formatted_operations.append(theme_formatted)
 
         # Generate concrete examples
         examples = self._generate_concrete_examples_for_apps(normalized_states)
@@ -1105,12 +1156,16 @@ class BaseLLM:
             # Strategy 1: Standard JSON block extraction
             json_str = self._extract_json_block(response)
             if json_str:
+                # Fix common JSON escape issues before parsing
+                json_str = self._fix_json_escapes(json_str)
                 parsed = json.loads(json_str)
                 return [parsed] if isinstance(parsed, dict) else parsed
 
             # Strategy 2: Try to find JSON-like structures
             json_str = self._extract_json_patterns(response)
             if json_str:
+                # Fix common JSON escape issues before parsing
+                json_str = self._fix_json_escapes(json_str)
                 parsed = json.loads(json_str)
                 return [parsed] if isinstance(parsed, dict) else parsed
 
@@ -1119,7 +1174,7 @@ class BaseLLM:
             return [self._generate_fallback_response()]
 
         except Exception as e:
-            self.logger.error(f"JSON extraction failed: {e}")
+            self.logger.error(f"JSON extraction failed: {e}, response: {response}")
             return [self._generate_fallback_response()]
 
     def _extract_json_block(self, response: str) -> Optional[str]:
@@ -1143,6 +1198,25 @@ class BaseLLM:
             return None
         except Exception:
             return None
+
+    def _fix_json_escapes(self, json_str: str) -> str:
+        """Fix common JSON escape sequence issues from LLM responses"""
+        try:
+            # Fix invalid escape sequences that LLMs sometimes generate
+            # Replace \' with ' (single quotes don't need escaping in JSON strings)
+            json_str = json_str.replace("\\'", "'")
+
+            # Fix double-escaped quotes: \\\" becomes \"
+            json_str = json_str.replace('\\\\"', '\\"')
+
+            # Fix other common escape issues
+            json_str = json_str.replace("\\n", "\n")
+            json_str = json_str.replace("\\t", "\t")
+            json_str = json_str.replace("\\r", "\r")
+
+            return json_str
+        except Exception:
+            return json_str
 
     def _extract_json_patterns(self, response: str) -> Optional[str]:
         """Extract JSON using pattern matching"""
@@ -1215,6 +1289,8 @@ class BaseLLM:
                 app_summary += "  [BROWSER CHROME - NOT WEBPAGE CONTENT]\n"
             else:
                 app_summary += "  [WEBPAGE CONTENT - PRIORITIZE THESE ELEMENTS]\n"
+        # Add general application context for all apps
+        app_summary += "  [APPLICATION INTERFACE - PRIORITIZE PRIMARY HIERARCHY ELEMENTS]\n"
 
         # Add window properties if available
         if window_state.is_active:
@@ -1288,43 +1364,16 @@ class BaseLLM:
         window_state: WindowState = None,
         all_window_states: List[WindowState] = None,
     ) -> str:
-        """Get context hints for element based on its properties and z-order blocking"""
+        """Generate contextual hints for UI elements - simplified and general approach"""
         hints = []
 
-        # Browser chrome detection hints
-        if window_state and window_state.app_name.lower() in ["chrome", "chromium", "google-chrome"]:
-            # Check if this is likely a browser chrome element vs webpage element
-            element_name_lower = (element.name or "").lower()
-            if any(
-                chrome_indicator in element_name_lower
-                for chrome_indicator in [
-                    "address",
-                    "omnibox",
-                    "bookmark",
-                    "toolbar",
-                    "menu",
-                    "tab",
-                    "chrome",
-                    "browser",
-                ]
-            ):
-                hints.append("[BROWSER CHROME]")
-            elif element_name_lower in ["search", "shop", "google"]:
-                hints.append("[WEBPAGE ELEMENT]")
+        # Basic element information
+        if element.name:
+            hints.append(f"[{element.name}]")
 
         # Element type hints
-        if "menu-item" in element.element_type:
-            hints.append("[menu]")
-        elif "check-box" in element.element_type:
-            hints.append("[checkbox]")
-        elif "button" in element.element_type:
-            hints.append("[button]")
-        elif "tab" in element.element_type:
-            hints.append("[tab]")
-        elif "input" in element.element_type:
-            hints.append("[input]")
-        elif "link" in element.element_type:
-            hints.append("[link]")
+        if element.element_type:
+            hints.append(f"[{element.element_type}]")
 
         # Visibility hints
         if element.visibility.value == "collapsed":
@@ -1338,22 +1387,21 @@ class BaseLLM:
         elif element.visibility.value == "not_showing":
             hints.append("[not showing - likely invisible]")
 
+        # Interactive state hints
+        if not element.is_enabled:
+            hints.append("[disabled]")
+
         # Z-order blocking hints
         if window_state and all_window_states:
             if self._is_element_blocked_by_z_order(element, window_state, all_window_states):
                 hints.append("[blocked by higher window]")
 
-        # State hints
-        if element.is_focused:
-            hints.append("[focused]")
-        if not element.is_enabled:
-            hints.append("[disabled]")
-        if element.is_expanded:
-            hints.append("[expanded]")
-
-        # Depth hint for context
-        if element.depth > 3:
-            hints.append(f"[deep: {element.depth}]")
+        # Position hints for very small elements
+        if element.position:
+            width = element.position.get("width", 0)
+            height = element.position.get("height", 0)
+            if width <= 16 and height <= 16 and not element.name:
+                hints.append("[very small - likely decorative]")
 
         return " " + " ".join(hints) if hints else ""
 
@@ -1946,7 +1994,7 @@ CRITICAL: Each scenario in this batch must be completely different from all prev
         return fallback_scenarios
 
     def _create_diverse_curriculum_prompt(self, task_context: Dict[str, Any], scenario_count: int) -> str:
-        """Create curriculum prompt with concrete, feasible operations"""
+        """Create curriculum prompt with balanced guidance for invariant feature learning"""
         # Debug: Log the structure of task_context for troubleshooting
         self.logger.debug(f"Task context keys: {list(task_context.keys())}")
         if "perturbation_opportunities" in task_context:
@@ -1961,9 +2009,9 @@ CRITICAL: Each scenario in this batch must be completely different from all prev
         task_characteristics = task_context.get("task_characteristics", {})
         perturbation_opportunities = task_context.get("perturbation_opportunities", [])
 
-        # Generate concrete operation examples based on target apps
+        # Generate balanced operation guidance (not specific examples)
         target_apps = task_context.get("app_types", ["system"])
-        concrete_examples = self._generate_concrete_operation_examples(target_apps)
+        operation_guidance = self._generate_balanced_operation_guidance(target_apps)
 
         # Generate app-specific guidance
         app_specific_guidance = self._generate_app_specific_guidance(target_apps)
@@ -2001,14 +2049,36 @@ TASK CONTEXT:
 - Target Applications: {", ".join(task_context["app_types"])}
 {characteristics_text}{opportunities_text}
 
-CONCRETE OPERATION EXAMPLES FOR TARGET APPS:
-{concrete_examples}
+OPERATION GUIDANCE FOR INVARIANT FEATURE LEARNING:
+{operation_guidance}
 
 APP-SPECIFIC GUIDANCE FOR INVARIANT FEATURE LEARNING:
 {app_specific_guidance}
 
 AVAILABLE OPERATIONS:
 {task_context["available_operations"]}
+
+INVARIANT FEATURE LEARNING FOCUS:
+1. PRIORITIZE UI ELEMENT-LEVEL PERTURBATIONS:
+   - Target specific UI elements (buttons, inputs, links, images, text, menus)
+   - Focus on visual properties that don't affect functionality
+   - Create scenarios where the same action works despite visual changes
+   - Emphasize element recognition across different visual styles
+
+2. VISUAL INVARIANCE LEARNING OBJECTIVES:
+   - Color invariance: Same element with different colors
+   - Shape invariance: Same element with different borders/radius
+   - Size invariance: Same element with different dimensions
+   - Typography invariance: Same element with different fonts
+   - Layout invariance: Same element in different positions
+   - Theme invariance: Same element with different themes
+
+3. CONCRETE LEARNING SCENARIOS:
+   - Button recognition: Submit button with different colors/shapes
+   - Input field recognition: Text inputs with different borders/styles
+   - Navigation recognition: Links with different visual treatments
+   - Content recognition: Text with different fonts/sizes
+   - Icon recognition: Images with different filters/effects
 
 MANDATORY DIVERSITY REQUIREMENTS:
 {chr(10).join([f"{i + 1}. {req.format(categories=', '.join([pc.value for pc in PerturbationCategory]), types=', '.join([pt.value for pt in PerturbationType]), intensities=', '.join([pi.value for pi in PerturbationIntensity]))}" for i, req in enumerate(PROMPT_CONSTANTS["diversity_requirements"])])}
@@ -2042,12 +2112,13 @@ Return JSON array with EXACTLY {scenario_count} scenario objects:
 CRITICAL REQUIREMENTS:
 1. Each scenario must be UNIQUE and cover different aspects of visual invariance learning
 2. available_perturbation_actions must be concrete, executable commands with specific parameters
-3. Use ONLY validated API calls: execute_bash_command, execute_python_command, execute_css_injection, execute_uno_command
+3. Use ONLY validated API calls: execute_bash_command, execute_python_command, execute_css_injection, execute_dom_modification, execute_theme_randomization, execute_layout_perturbation, execute_typography_randomization, execute_animation_effects, execute_accessibility_perturbation, execute_uno_command, execute_js_on_page, execute_python_execution, execute_javascript_injection, execute_bash_automation, execute_playwright_automation, execute_file_system_manipulation, execute_network_perturbation, execute_system_integration, execute_vlc_visual_effects, execute_chrome_visual_manipulation, execute_libreoffice_visual_formatting, execute_system_theme_coherence
 4. Commands MUST be syntactically correct and tested for Ubuntu environment
 5. Focus on perturbations that maintain target element accessibility
 6. Ensure commands are feasible for the target application
 7. Prefer simple, reliable commands over complex ones
 8. Include specific parameters and values that work in Ubuntu environment
+9. CREATE ORIGINAL SCENARIOS - Do not copy the guidance examples exactly
 
 DIVERSITY ENFORCEMENT:
 - NO two scenarios should use the same perturbation type + intensity combination
@@ -2066,8 +2137,8 @@ SAFETY REQUIREMENTS:
 QUALITY VALIDATION:
 - Test each command mentally before including it
 - Ensure commands are complete and executable
-- Use concrete examples from the operation catalog
 - Focus on meaningful visual changes for learning objectives
+- Create original scenarios that demonstrate understanding of invariant learning principles
 """
         return prompt
 
@@ -2088,6 +2159,59 @@ QUALITY VALIDATION:
         examples.extend(OperationExamples.get_system_examples())
 
         return "\n".join(f"- {example}" for example in examples[:20])  # Reduced limit
+
+    def _generate_balanced_operation_guidance(self, target_apps: List[str]) -> str:
+        """Generate balanced operation guidance without specific examples to prevent copying"""
+        guidance_parts = []
+
+        for app in target_apps:
+            app_lower = app.lower()
+
+            if app_lower in ["chrome", "google_chrome"]:
+                guidance_parts.append("""
+CHROME OPERATIONS GUIDANCE:
+- Use execute_css_injection for UI element styling (buttons, inputs, links, text)
+- Use execute_dom_modification for content changes and element manipulation
+- Use execute_theme_randomization for overall theme changes
+- Use execute_layout_perturbation for spacing and positioning changes
+- Use execute_typography_randomization for font and text styling
+- Focus on visual properties: colors, borders, shadows, fonts, spacing
+- Target specific selectors: button, input, a, img, p, div, span
+- Maintain functionality while changing appearance
+""")
+
+            elif app_lower in ["libreoffice_calc", "libreoffice_writer", "libreoffice_impress"]:
+                guidance_parts.append("""
+LIBREOFFICE OPERATIONS GUIDANCE:
+- Use execute_uno_command for LibreOffice-specific operations
+- Focus on visual formatting: colors, fonts, borders, backgrounds
+- Target text elements, shapes, and formatting properties
+- Use UNO API patterns for LibreOffice manipulation
+- Maintain document functionality while changing appearance
+- Consider slide/page navigation and content modification
+""")
+
+            elif app_lower in ["vlc"]:
+                guidance_parts.append("""
+VLC OPERATIONS GUIDANCE:
+- Use execute_vlc_visual_effects for video filter changes
+- Use execute_system_theme_coherence for system-level changes
+- Focus on visual effects: blur, sepia, brightness, aspect ratio
+- Consider system theme changes that affect VLC appearance
+- Maintain video playback functionality
+""")
+
+            elif app_lower in ["system"]:
+                guidance_parts.append("""
+SYSTEM OPERATIONS GUIDANCE:
+- Use execute_bash_command for system-level changes
+- Use gsettings for theme, font, and desktop changes
+- Use notify-send for system notifications
+- Focus on desktop themes, fonts, wallpapers, and system settings
+- Maintain system stability and accessibility
+""")
+
+        return "\n".join(guidance_parts)
 
     def _generate_app_specific_guidance(self, target_apps: List[str]) -> str:
         """Generate app-specific guidance efficiently"""
@@ -3024,14 +3148,22 @@ class PerturbationGenerator(BaseLLM):
 
         return "\n".join(context_parts)
 
-    def _format_operations_for_prompt(self, app_operations: Dict[str, List[str]]) -> str:
+    def _format_operations_for_prompt(self, app_operations: Dict[str, Any]) -> str:
         """Format operations for LLM prompt efficiently"""
         if not app_operations:
             return "No specific operations available"
 
         formatted_parts = []
         for category, operations in app_operations.items():
-            if operations:
+            if isinstance(operations, dict):
+                # Handle nested structure (e.g., ui_element_variations)
+                formatted_parts.append(f"{category.upper()}:")
+                for subcategory, suboperations in operations.items():
+                    if isinstance(suboperations, list) and suboperations:
+                        formatted_parts.append(f"  {subcategory}:")
+                        for operation in suboperations[:3]:  # Limit to 3 operations per subcategory
+                            formatted_parts.append(f"    - {operation}")
+            elif isinstance(operations, list) and operations:
                 formatted_parts.append(f"{category.upper()}:")
                 for operation in operations[:5]:  # Limit to 5 operations per category
                     formatted_parts.append(f"  - {operation}")
@@ -3088,6 +3220,44 @@ class PerturbationGenerator(BaseLLM):
 
         return "\n".join(context_parts)
 
+    def _format_diversity_analysis_for_prompt(self, diversity_analysis: Dict[str, Any]) -> str:
+        """Format diversity analysis for LLM prompt"""
+        if not diversity_analysis:
+            return "DIVERSITY ANALYSIS: No analysis available"
+
+        parts = []
+
+        # Diversity score
+        score = diversity_analysis.get("diversity_score", 0.0)
+        parts.append(f"DIVERSITY SCORE: {score:.2f}/1.0")
+
+        # Missing dimensions
+        missing = diversity_analysis.get("missing_dimensions", [])
+        if missing:
+            parts.append(f"MISSING DIMENSIONS: {', '.join(missing)}")
+
+        # Overused dimensions
+        overused = diversity_analysis.get("overused_dimensions", [])
+        if overused:
+            parts.append(f"OVERUSED DIMENSIONS: {', '.join(overused)}")
+
+        # Recommendations
+        recommendations = diversity_analysis.get("recommendations", [])
+        if recommendations:
+            parts.append("DIVERSITY RECOMMENDATIONS:")
+            for rec in recommendations:
+                parts.append(f"  - {rec}")
+
+        # Used dimensions summary
+        used_dims = diversity_analysis.get("used_dimensions", {})
+        if used_dims:
+            parts.append("CURRENT DIVERSITY:")
+            for dim_type, values in used_dims.items():
+                if values:
+                    parts.append(f"  - {dim_type}: {', '.join(values)}")
+
+        return "\n".join(parts) if parts else "DIVERSITY ANALYSIS: No recent perturbations"
+
     def _get_llm_decision_with_context(
         self, execution_context: ExecutionContext, scenario_spec: ScenarioSpec
     ) -> Dict[str, Any]:
@@ -3116,6 +3286,7 @@ class PerturbationGenerator(BaseLLM):
             # Build app-specific context
             app_context = self._build_app_specific_context(app_strategy, scenario_spec.target_app)
 
+            target_app = scenario_spec.target_app
             prompt = f"""
 {PROMPT_CONSTANTS["perturbation_role"]}
 
@@ -3126,20 +3297,23 @@ Task: {execution_context.task_instruction}
 App States: {self._format_app_states_for_decision(execution_context.window_states)}
 
 SCENARIO SPECIFICATION:
-Target App: {scenario_spec.target_app}
+Target App: {target_app}
 Trigger: {scenario_spec.perturbation_trigger}
 Available Actions: {scenario_spec.available_perturbation_actions}
 Learning Objectives: {scenario_spec.learning_objectives}
 Perturbation Types: {[pt.value for pt in scenario_spec.perturbation_types]}
 
-APP-SPECIFIC STRATEGY FOR {scenario_spec.target_app.upper()}:
+APP-SPECIFIC STRATEGY FOR {target_app.upper()}:
 {app_context}
 
-AVAILABLE OPERATIONS FOR {scenario_spec.target_app.upper()}:
+AVAILABLE OPERATIONS FOR {target_app.upper()}:
 {formatted_operations}
 
 PROCEDURAL MEMORY CONTEXT:
 {memory_context}
+
+DIVERSITY ANALYSIS:
+{self._format_diversity_analysis_for_prompt(procedural_context.get("diversity_analysis", {}))}
 
 COHERENCE REQUIREMENTS:
 1. Build on previous successful perturbations in the trajectory
@@ -3147,6 +3321,13 @@ COHERENCE REQUIREMENTS:
 3. Maintain application functionality and accessibility
 4. Use concrete, executable commands with specific parameters
 5. Consider app-specific visual perturbation opportunities
+
+DIVERSITY REQUIREMENTS:
+1. AVOID repeating the same visual modification type (theme, color, typography, layout, styling, system)
+2. AVOID targeting the same UI elements repeatedly
+3. PRIORITIZE missing diversity dimensions identified in the analysis
+4. If diversity score is low, try different perturbation approaches
+5. Balance between coherence and diversity - don't sacrifice learning for novelty
 
 PERTURBATION DECISION CRITERIA:
 {chr(10).join([f"{i + 1}. {criteria}" for i, criteria in enumerate(PROMPT_CONSTANTS["perturbation_criteria"])])}
@@ -3173,18 +3354,42 @@ SAFETY REQUIREMENTS (CRITICAL):
    - UNO commands that modify internal LibreOffice state
 
 COMMAND GENERATION RULES:
-1. Use ONLY validated API calls: execute_bash_command, execute_python_command, execute_css_injection, execute_uno_command
+1. Use ONLY validated API calls: execute_bash_command, execute_python_command, execute_css_injection, execute_dom_modification, execute_theme_randomization, execute_layout_perturbation, execute_typography_randomization, execute_animation_effects, execute_accessibility_perturbation, execute_uno_command, execute_js_on_page, execute_python_execution, execute_javascript_injection, execute_bash_automation, execute_playwright_automation, execute_file_system_manipulation, execute_network_perturbation, execute_system_integration, execute_vlc_visual_effects, execute_chrome_visual_manipulation, execute_libreoffice_visual_formatting, execute_system_theme_coherence
 2. Commands MUST be syntactically correct and executable
 3. Include specific parameters and values that work in Ubuntu environment
 4. Test commands mentally before suggesting them
 5. Prefer simple, reliable commands over complex ones
 6. Ensure commands maintain target element accessibility
+7. Focus on UI element-level visual variations for invariant feature learning
 
 SAFE COMMAND EXAMPLES:
-- Chrome: execute_css_injection('body {{ background-color: #f0f0f0 !important; }}', {{'target_app': 'chrome'}})
-- Chrome: execute_css_injection('button {{ border-radius: 8px !important; }}', {{'target_app': 'chrome'}})
-- System: execute_bash_command('notify-send "Test notification" "Visual change applied"')
-- LibreOffice: execute_css_injection('.toolbar {{ background-color: #e8e8e8 !important; }}', {{'target_app': 'libreoffice'}})
+# UI Element-Level Visual Variations (PRIORITY for invariant feature learning)
+- Chrome: execute_css_injection('button {{ background-color: #ff6b6b !important; border-radius: 12px !important; box-shadow: 0 4px 8px rgba(0,0,0,0.3) !important; }}', {{'target_app': 'chrome'}})
+- Chrome: execute_css_injection('input[type="text"], input[type="email"], textarea {{ border: 2px solid #4ecdc4 !important; border-radius: 8px !important; padding: 12px !important; }}', {{'target_app': 'chrome'}})
+- Chrome: execute_css_injection('a {{ color: #e74c3c !important; text-decoration: underline !important; font-weight: bold !important; }}', {{'target_app': 'chrome'}})
+- Chrome: execute_dom_modification('document.querySelectorAll("button").forEach(btn => {{ btn.style.backgroundColor = "#3498db"; btn.style.transform = "scale(1.05)"; }})', {{'target_app': 'chrome'}})
+- Chrome: execute_dom_modification('document.querySelectorAll("img").forEach(img => {{ img.style.filter = "hue-rotate(180deg)"; img.style.borderRadius = "10px"; }})', {{'target_app': 'chrome'}})
+
+# Theme and Layout Variations
+- Chrome: execute_theme_randomization({"target_app": 'chrome'})
+- Chrome: execute_layout_perturbation({"target_app": 'chrome'})
+- Chrome: execute_typography_randomization({"target_app": 'chrome'})
+- Chrome: execute_animation_effects('button {{ transition: all 0.3s ease !important; }} button:hover {{ transform: translateY(-2px) !important; }}', {{'target_app': 'chrome'}})
+- Chrome: execute_accessibility_perturbation({"target_app": 'chrome'})
+
+# System-Level Variations
+- System: execute_bash_command('gsettings set org.gnome.desktop.interface gtk-theme "Adwaita-dark"')
+- System: execute_bash_command('gsettings set org.gnome.desktop.interface font-name "Liberation Sans 14"')
+- System: execute_bash_command('notify-send "Visual Change" "UI element styling applied"')
+
+# LibreOffice Variations
+- LibreOffice: execute_uno_command('CalcTools.set_theme("dark")', {"target_app": 'libreoffice_calc'})
+- LibreOffice: execute_uno_command('CalcTools.format_range("A1:C10", "background_color", "#f8f9fa")', {"target_app": 'libreoffice_calc'})
+- LibreOffice: execute_uno_command('WriterTools.set_font("Arial", 14)', {"target_app": 'libreoffice_writer'})
+
+# VLC Variations
+- VLC: execute_vlc_visual_effects('apply_video_filter("blur")', {"target_app": 'vlc'})
+- VLC: execute_vlc_visual_effects('change_aspect_ratio("16_9")', {"target_app": 'vlc'})
 
 QUALITY REQUIREMENTS:
 - generated_command must be a complete, executable command
@@ -3198,10 +3403,10 @@ Return JSON:
     "should_apply": true/false,
     "reasoning": "detailed_explanation_of_decision_with_coherence_considerations",
     "perturbation_type": "{"|".join([pt.value for pt in PerturbationType])}",
-    "api_call": "execute_bash_command|execute_python_command|execute_css_injection|execute_uno_command",
+    "api_call": "execute_bash_command|execute_python_command|execute_css_injection|execute_dom_modification|execute_theme_randomization|execute_layout_perturbation|execute_typography_randomization|execute_animation_effects|execute_accessibility_perturbation|execute_uno_command|execute_js_on_page|execute_python_execution|execute_javascript_injection|execute_bash_automation|execute_playwright_automation|execute_file_system_manipulation|execute_network_perturbation|execute_system_integration|execute_vlc_visual_effects|execute_chrome_visual_manipulation|execute_libreoffice_visual_formatting|execute_system_theme_coherence",
     "generated_command": "complete_executable_command_with_specific_parameters",
     "parameters": {{
-        "target_app": "{scenario_spec.target_app}",
+        "target_app": "{target_app}",
         "intensity": "low|medium|high",
         "coherent_with_history": true/false,
         "maintains_functionality": true/false,
@@ -3285,27 +3490,34 @@ class ElementIdentificationLLM(BaseLLM):
         Available Elements:
         {window_states_summary}
 
-        CRITICAL PRIORITIZATION RULES:
-        1. WEBPAGE CONTENT OVER BROWSER CHROME: Always prioritize elements marked as "[WEBPAGE CONTENT - PRIORITIZE THESE ELEMENTS]" over elements in "[BROWSER CHROME - NOT WEBPAGE CONTENT]"
-        2. CONTEXT RELEVANCE: For actions mentioning "search bar", "page", "website", or specific webpage content, prioritize webpage elements
-        3. ELEMENT TYPE APPROPRIATENESS: Match element types to action types (e.g., "CLICK" actions should prioritize clickable elements)
-        4. VISIBILITY AND INTERACTIVITY: Prioritize visible, enabled, and interactive elements
-        5. COORDINATE REASONABLENESS: Elements with coordinates (0,0) or outside screen bounds (0-1920, 0-1080) should be deprioritized
+        GENERAL ELEMENT IDENTIFICATION RULES:
+        1. CONTEXT RELEVANCE: Prioritize elements that match the action's context and intent
+        2. ELEMENT TYPE APPROPRIATENESS: Match element types to action types (e.g., "CLICK" actions should prioritize clickable elements)
+        3. VISIBILITY AND INTERACTIVITY: Prioritize visible, enabled, and interactive elements
+        4. TEXT MATCHING: Elements with text content matching the action description should be prioritized
+        5. POSITION REASONABLENESS: Elements with coordinates (0,0) or outside screen bounds should be deprioritized
+        6. HIERARCHY AWARENESS: Consider element hierarchy and parent context when making decisions
 
-        DISAMBIGUATION RULES:
+        ELEMENT PRIORITIZATION GUIDELINES:
+        - Elements with clear, descriptive names should be prioritized over generic elements
+        - Elements in primary interface areas (menus, toolbars, navigation) should be prioritized
+        - Elements with specific roles (button, link, input) should be prioritized over generic elements
+        - Elements with meaningful text content should be prioritized over empty elements
+        - Elements that are currently visible and interactive should be prioritized
+
+        DISAMBIGUATION STRATEGIES:
         - If multiple elements have the same name, consider ALL of them as potential candidates
-        - Elements marked as "[collapsed menu - likely invisible]" or "[hidden dropdown - likely invisible]" should be deprioritized
-        - Elements marked as "[inactive tab - likely invisible]" should be deprioritized
+        - Elements marked as "[collapsed - likely invisible]" or "[hidden - likely invisible]" should be deprioritized
         - Elements marked as "[blocked by higher window]" should be deprioritized
         - Elements marked as "[disabled]" should be deprioritized
         - Very small elements (≤16x16 pixels) without names should be deprioritized unless they have interactive properties
 
-        RANKING PRIORITY (in order):
-        1. Webpage content elements (marked with "[WEBPAGE CONTENT - PRIORITIZE THESE ELEMENTS]")
+        RANKING APPROACH:
+        1. Direct text matches with the action description
         2. Element type appropriateness for the action
-        3. Coordinate reasonableness and visibility
-        4. Hierarchy visibility and context relevance
-        5. Element naming and interactive properties
+        3. Element visibility and interactivity
+        4. Element context and hierarchy
+        5. Element position and size reasonableness
 
         Return JSON array with element identifiers, ranked by likelihood from 0.00 to 1.00 and only return elements with confidence values greater than 0.70:
         [
@@ -3314,14 +3526,14 @@ class ElementIdentificationLLM(BaseLLM):
                 "element_type": "element_type",
                 "app_name": "app_name",
                 "confidence": 0.95,
-                "reasoning": "detailed_reasoning_for_element_selection_including_webpage_priority_and_coordinate_analysis"
+                "reasoning": "detailed_reasoning_for_element_selection_including_context_and_coordinate_analysis"
             }},
             {{
                 "name": "alternative_element_name",
                 "element_type": "element_type",
                 "app_name": "app_name",
                 "confidence": 0.75,
-                "reasoning": "alternative_reasoning_with_webpage_context_considerations"
+                "reasoning": "alternative_reasoning_with_context_considerations"
             }}
         ]
         """

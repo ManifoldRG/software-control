@@ -121,6 +121,8 @@ class UnifiedGenerator:
                 self.logger.error("No scenario specs generated")
                 return []
 
+            self.logger.info(f"Scenario specs: {scenario_specs}")
+
             # Step 3: Execute scenarios in parallel
             generated_trajectories = self.shared_execution_engine.execute_scenarios_parallel(
                 seed_trajectory, scenario_specs, curriculum_config.num_parallel_vms

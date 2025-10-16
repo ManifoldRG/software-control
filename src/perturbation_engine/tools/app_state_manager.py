@@ -84,9 +84,10 @@ def extract_text_from_node(node: ET.Element, platform: str = "Ubuntu") -> str:
 class AppStateExtractor:
     """Enhanced app state extractor with X11, CDP, and UNO integration"""
 
-    def __init__(self, controller=None):
+    def __init__(self, controller=None, setup_controller=None):
         self.logger = logging.getLogger(__name__)
         self.controller = controller
+        self.setup_controller = setup_controller
         self.parser = HierarchicalParser(controller=controller)
         if not controller:
             raise ValueError("AppStateExtractor requires a controller")
@@ -121,6 +122,25 @@ class AppStateExtractor:
                 )
                 if fallback_windows:
                     self.logger.info(f"X11-only fallback found {len(fallback_windows)} windows")
+
+                    # Check if any of the fallback windows are VS Code and try CDP enhancement
+                    vscode_fallback_windows = [w for w in fallback_windows if w.app_name.lower() == "code"]
+                    if vscode_fallback_windows and self.setup_controller:
+                        self.logger.info("VS Code detected via X11 fallback, attempting CDP enhancement...")
+                        try:
+                            dom_data = self.setup_controller.get_chrome_dom_data()
+                            if dom_data and dom_data.get("is_vscode", False):
+                                for window_state in vscode_fallback_windows:
+                                    if not window_state.root_element:
+                                        window_state.root_element = self._create_cdp_element_tree(
+                                            dom_data, "code"
+                                        )
+                                        self.logger.info(
+                                            f"Enhanced VS Code fallback window with CDP data: {len(dom_data.get('elements', []))} elements"
+                                        )
+                        except Exception as e:
+                            self.logger.debug(f"CDP enhancement for VS Code fallback failed: {e}")
+
                     return fallback_windows
                 else:
                     self.logger.warning("Both CDP and X11-only fallbacks found no windows")
@@ -133,6 +153,39 @@ class AppStateExtractor:
             window_states = self._match_x11_with_atspi(
                 atspi_windows, z_order_list, focused_window, current_desktop
             )
+
+            # Special handling for VS Code: Try CDP extraction as supplement to AT-SPI2
+            # Only attempt this if we have a controller and it's safe to do so
+            vscode_windows = [w for w in window_states if w.app_name.lower() == "code"]
+            if vscode_windows and self.setup_controller:
+                self.logger.info("VS Code detected via AT-SPI2, attempting CDP enhancement...")
+                try:
+                    # Try CDP extraction directly - let get_chrome_dom_data handle readiness checks
+                    dom_data = self.setup_controller.get_chrome_dom_data()
+                    if dom_data and dom_data.get("is_vscode", False):
+                        # Enhance VS Code window with CDP data
+                        for window_state in vscode_windows:
+                            if not window_state.root_element:
+                                # If AT-SPI2 didn't provide elements, use CDP
+                                window_state.root_element = self._create_cdp_element_tree(dom_data, "code")
+                                self.logger.info(
+                                    f"Enhanced VS Code window with CDP data: {len(dom_data.get('elements', []))} elements"
+                                )
+                            else:
+                                # Merge CDP elements with AT-SPI2 elements
+                                cdp_root = self._create_cdp_element_tree(dom_data, "code")
+                                if cdp_root and cdp_root.children:
+                                    # Add CDP elements to existing AT-SPI2 root
+                                    window_state.root_element.children.extend(cdp_root.children)
+                                    self.logger.info(
+                                        f"Merged CDP elements with AT-SPI2: added {len(cdp_root.children)} elements"
+                                    )
+                    else:
+                        self.logger.debug(
+                            "VS Code detected via AT-SPI2 but CDP data not available - VS Code may not be fully initialized yet"
+                        )
+                except Exception as e:
+                    self.logger.debug(f"CDP enhancement for VS Code failed: {e}")
 
             self.logger.info(f"Extracted {len(window_states)} window states")
             return window_states
@@ -177,7 +230,7 @@ class AppStateExtractor:
 
         # Try Chrome/Electron CDP extraction (works for both Chrome and VS Code)
         try:
-            dom_data = self.controller.get_chrome_dom_data()
+            dom_data = self.setup_controller.get_chrome_dom_data()
             if dom_data and (dom_data.get("url") or dom_data.get("is_vscode", False)):
                 app_name = "code" if dom_data.get("is_vscode", False) else "chrome"
                 app_title = "VS Code" if dom_data.get("is_vscode", False) else "Chrome"
@@ -243,11 +296,11 @@ class AppStateExtractor:
 
                     if dom_data.get("is_vscode", False):
                         self.logger.info(
-                            f"CDP: Created VS Code window state with {len(dom_data.get('buttons', []))} buttons, {len(dom_data.get('tabs', []))} tabs"
+                            f"CDP: Created VS Code window state with {len(dom_data.get('elements', []))} elements"
                         )
                     else:
                         self.logger.info(
-                            f"CDP: Created Chrome window state with {len(dom_data.get('buttons', []))} buttons, {len(dom_data.get('links', []))} links"
+                            f"CDP: Created Chrome window state with {len(dom_data.get('elements', []))} elements"
                         )
                 else:
                     self.logger.warning(f"{app_title} detected via CDP but no valid X11 window found")
@@ -277,103 +330,130 @@ class AppStateExtractor:
                 children=[],
             )
 
-            # Add button elements
-            for i, button in enumerate(dom_data.get("buttons", [])):
-                button_element = UIElement(
-                    element_id=f"button_{i}",
-                    element_type="button",
-                    name=button.get("text", f"Button {i}"),
-                    text=button.get("text", ""),
-                    position=button.get("position", {}),
-                    visibility=VisibilityState.VISIBLE
-                    if button.get("visible", False)
-                    else VisibilityState.HIDDEN,
-                    properties={"class": button.get("class", ""), "aria_label": button.get("aria_label", "")},
-                    parent_id=f"{app_name}_root",
-                    children=[],
-                )
-                root_element.children.append(button_element)
+            # Process all elements from the unified structure
+            for i, element_data in enumerate(dom_data.get("elements", [])):
+                # Determine element type based on the element data
+                element_type = self._determine_element_type(element_data)
 
-            # Add input elements
-            for i, input_elem in enumerate(dom_data.get("inputs", [])):
-                input_element = UIElement(
-                    element_id=f"input_{i}",
-                    element_type="input",
-                    name=input_elem.get("name", f"Input {i}"),
-                    text=input_elem.get("value", ""),
-                    position=input_elem.get("position", {}),
+                # Enhance element data with contextual analysis
+                from perturbation_engine.pipeline.app_state_utils import enhance_element_with_context
+
+                enhanced_element = enhance_element_with_context(element_data)
+
+                # Create UIElement
+                ui_element = UIElement(
+                    element_id=enhanced_element.get("id", f"element_{i}"),
+                    element_type=element_type,
+                    name=enhanced_element.get("text", f"Element {i}"),
+                    text=enhanced_element.get("text", ""),
+                    position=enhanced_element.get("position", {}),
                     visibility=VisibilityState.VISIBLE
-                    if input_elem.get("visible", False)
+                    if enhanced_element.get("visible", False)
                     else VisibilityState.HIDDEN,
                     properties={
-                        "type": input_elem.get("type", ""),
-                        "placeholder": input_elem.get("placeholder", ""),
+                        "class": enhanced_element.get("class", ""),
+                        "aria_label": enhanced_element.get("aria_label", ""),
+                        "aria_role": enhanced_element.get("aria_role", ""),
+                        "title": enhanced_element.get("title", ""),
+                        "element_context": enhanced_element.get("element_context", "unknown"),
+                        "element_utility": enhanced_element.get("element_utility", "normal"),
+                        "hierarchy_level": enhanced_element.get("hierarchy_level", "content"),
+                        "parent_context": enhanced_element.get("parent_context", {}),
+                        "computed_style": enhanced_element.get("computed_style", {}),
+                        "disabled": enhanced_element.get("disabled", False),
+                        "type": enhanced_element.get("type", ""),
                     },
                     parent_id=f"{app_name}_root",
                     children=[],
                 )
-                root_element.children.append(input_element)
-
-            # Add VS Code-specific elements
-            if app_name == "code":
-                # Add editor elements
-                for i, editor in enumerate(dom_data.get("editor_elements", [])):
-                    editor_element = UIElement(
-                        element_id=f"editor_{i}",
-                        element_type="editor",
-                        name=f"Editor {i}",
-                        text="",
-                        position=editor.get("position", {}),
-                        visibility=VisibilityState.VISIBLE
-                        if editor.get("visible", False)
-                        else VisibilityState.HIDDEN,
-                        properties={"class": editor.get("class", "")},
-                        parent_id=f"{app_name}_root",
-                        children=[],
-                    )
-                    root_element.children.append(editor_element)
-
-                # Add tab elements
-                for i, tab in enumerate(dom_data.get("tabs", [])):
-                    tab_element = UIElement(
-                        element_id=f"tab_{i}",
-                        element_type="tab",
-                        name=tab.get("text", f"Tab {i}"),
-                        text=tab.get("text", ""),
-                        position=tab.get("position", {}),
-                        visibility=VisibilityState.VISIBLE
-                        if tab.get("visible", False)
-                        else VisibilityState.HIDDEN,
-                        properties={"class": tab.get("class", "")},
-                        parent_id=f"{app_name}_root",
-                        children=[],
-                    )
-                    root_element.children.append(tab_element)
-
-            # Add Chrome-specific elements
-            else:
-                # Add link elements
-                for i, link in enumerate(dom_data.get("links", [])):
-                    link_element = UIElement(
-                        element_id=f"link_{i}",
-                        element_type="link",
-                        name=link.get("text", f"Link {i}"),
-                        text=link.get("text", ""),
-                        position=link.get("position", {}),
-                        visibility=VisibilityState.VISIBLE
-                        if link.get("visible", False)
-                        else VisibilityState.HIDDEN,
-                        properties={"href": link.get("href", ""), "class": link.get("class", "")},
-                        parent_id=f"{app_name}_root",
-                        children=[],
-                    )
-                    root_element.children.append(link_element)
+                root_element.children.append(ui_element)
 
             return root_element
 
         except Exception as e:
-            self.logger.debug(f"Error creating CDP element tree: {e}")
+            self.logger.error(f"Failed to create CDP element tree: {e}")
             return None
+
+    def _determine_element_type(self, element_data: Dict[str, Any]) -> str:
+        """Determine the appropriate element type based on element data"""
+        # Check aria role first
+        aria_role = element_data.get("aria_role", "").lower()
+        if aria_role:
+            if "button" in aria_role:
+                return "button"
+            elif "menuitem" in aria_role:
+                return "menu-item"
+            elif "tab" in aria_role:
+                return "tab"
+            elif "link" in aria_role:
+                return "link"
+            elif "textbox" in aria_role:
+                return "text-input"
+            elif "checkbox" in aria_role:
+                return "check-box"
+            elif "radio" in aria_role:
+                return "radio-button"
+            elif "menu" in aria_role:
+                return "menu"
+            elif "menubar" in aria_role:
+                return "menu-bar"
+            elif "toolbar" in aria_role:
+                return "toolbar"
+            elif "navigation" in aria_role:
+                return "navigation"
+
+        # Check element type/tag
+        element_type = element_data.get("type", "").lower()
+        if element_type:
+            if element_type in ["button", "submit", "reset"]:
+                return "button"
+            elif element_type in ["text", "email", "password", "search", "url", "tel"]:
+                return "text-input"
+            elif element_type == "checkbox":
+                return "check-box"
+            elif element_type == "radio":
+                return "radio-button"
+            elif element_type == "textarea":
+                return "text-input"
+            elif element_type == "select":
+                return "combo-box"
+            elif element_type == "a":
+                return "link"
+
+        # Check class names for VS Code specific elements
+        class_name = element_data.get("class", "").lower()
+        if class_name:
+            if "monaco-button" in class_name or "action-item" in class_name:
+                return "button"
+            elif "menubar-item" in class_name or "menu-item" in class_name:
+                return "menu-item"
+            elif "monaco-input" in class_name:
+                return "text-input"
+            elif "monaco-editor" in class_name or "editor-container" in class_name:
+                return "text-input"
+            elif "tab" in class_name or "editor-tab" in class_name:
+                return "tab"
+            elif "monaco-menu" in class_name or "monaco-dropdown" in class_name:
+                return "menu"
+
+        # Check element context
+        element_context = element_data.get("element_context", "").lower()
+        if element_context:
+            if element_context in ["menubar", "menu-bar"]:
+                return "menu-bar"
+            elif element_context in ["toolbar", "action-bar"]:
+                return "toolbar"
+            elif element_context in ["navigation", "nav"]:
+                return "navigation"
+            elif element_context == "menu":
+                return "menu"
+            elif element_context == "tab":
+                return "tab"
+            elif element_context == "editor":
+                return "text-input"
+
+        # Default fallback
+        return "generic"
 
     def _extract_x11_only_windows(
         self, z_order_list: List[str], focused_window: Optional[str], current_desktop: int
@@ -777,14 +857,44 @@ class AppStateExtractor:
                         score = self._get_window_quality_score(window_id, geometry, x11_title, app_name)
 
                         if score > best_score:
-                            # LibreOffice-specific matching criteria
-                            if (
-                                "LibreOffice" in x11_title and "VCL" not in x11_title
-                            ) or "VCL ImplGetDefaultWindow" in x11_title:
+                            # ENHANCED: More flexible LibreOffice matching for --norestore launches
+                            # Accept any LibreOffice window that doesn't look like a system dialog
+                            libreoffice_patterns = [
+                                "LibreOffice",
+                                "Calc",
+                                "Writer",
+                                "Impress",  # App types
+                                "Untitled",
+                                "Document",
+                                "Spreadsheet",
+                                "Presentation",  # Document types
+                                "soffice",  # Process name
+                            ]
+
+                            # Reject system dialogs and VCL internal windows
+                            reject_patterns = [
+                                "VCL ImplGetDefaultWindow",
+                                "VCL ImplWindow",
+                                "Dialog",
+                                "About",
+                                "Preferences",
+                                "Settings",
+                            ]
+
+                            # Check if title matches LibreOffice patterns and doesn't match reject patterns
+                            title_lower = x11_title.lower()
+                            matches_libreoffice = any(
+                                pattern.lower() in title_lower for pattern in libreoffice_patterns
+                            )
+                            matches_reject = any(
+                                pattern.lower() in title_lower for pattern in reject_patterns
+                            )
+
+                            if matches_libreoffice and not matches_reject:
                                 best_match = window_id
                                 best_score = score
                                 self.logger.debug(
-                                    f"New LibreOffice match: '{window_name}' → '{x11_title}' ({window_id}) score={score:.1f}"
+                                    f"New LibreOffice --norestore match: '{window_name}' → '{x11_title}' ({window_id}) score={score:.1f}"
                                 )
 
                     except Exception as e:
@@ -964,7 +1074,32 @@ class HierarchicalParser:
             # Skip elements without position unless they're containers or interactive elements
             return None
 
-        # Create element
+        # Extract element data for context analysis
+        element_data = {
+            "text": self._extract_name(node),
+            "class": node.get("class", ""),
+            "aria_label": node.get("aria-label", ""),
+            "aria_role": node.get("role", ""),
+            "title": node.get("title", ""),
+            "parent_context": self._get_parent_context_from_hierarchy(node, parent_id),
+        }
+
+        # Enhance with contextual analysis
+        from perturbation_engine.pipeline.app_state_utils import enhance_element_with_context
+
+        enhanced_data = enhance_element_with_context(element_data)
+
+        # Create element with enhanced properties
+        properties = self._extract_properties(node)
+        properties.update(
+            {
+                "element_context": enhanced_data.get("element_context", "unknown"),
+                "element_utility": enhanced_data.get("element_utility", "normal"),
+                "hierarchy_level": enhanced_data.get("hierarchy_level", "content"),
+                "parent_context": enhanced_data.get("parent_context", {}),
+            }
+        )
+
         element = UIElement(
             element_id=self._generate_id(),
             element_type=node.tag,
@@ -976,7 +1111,7 @@ class HierarchicalParser:
             is_enabled=node.get(f"{{{self.state_ns}}}enabled") == "true",
             is_focused=node.get(f"{{{self.state_ns}}}focused") == "true",
             is_expanded=self._is_expanded(node),
-            properties=self._extract_properties(node),
+            properties=properties,
         )
 
         # Parse children - but skip if parent is hidden
@@ -1187,6 +1322,38 @@ class HierarchicalParser:
             z_order += 300
 
         return z_order
+
+    def _get_parent_context_from_hierarchy(
+        self, node: ET.Element, parent_id: Optional[str]
+    ) -> Dict[str, str]:
+        """Get parent context from hierarchical parsing context"""
+        parent_context = {"role": "", "class": "", "tag": ""}
+
+        # For now, we'll analyze the current node's role/class to infer context
+        # This is a simplified approach - in a full implementation, we'd track parent context
+        current_role = node.get("role", "")
+        current_class = node.get("class", "")
+
+        # Infer parent context from current element's role/class patterns
+        if current_role in ["menu-item", "menuitem"]:
+            parent_context["role"] = "menubar"
+        elif current_role in ["button"] and "menu" in current_class.lower():
+            parent_context["role"] = "menubar"
+        elif current_role in ["button"] and "toolbar" in current_class.lower():
+            parent_context["role"] = "toolbar"
+        elif current_role in ["button"] and "nav" in current_class.lower():
+            parent_context["role"] = "navigation"
+
+        return parent_context
+
+    def _extract_parent_context(self, node: ET.Element) -> Dict[str, str]:
+        """Extract parent context information for AT-SPI2 elements"""
+        parent_context = {"role": "", "class": "", "tag": ""}
+
+        # For xml.etree.ElementTree, we need to find parent differently
+        # Since we don't have direct parent access, we'll return empty context
+        # The parent context will be handled by the hierarchical parsing
+        return parent_context
 
     def _generate_id(self) -> str:
         """Generate unique element ID"""

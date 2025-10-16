@@ -324,8 +324,202 @@ def should_skip_app(app_name: str) -> bool:
 
 
 # ============================================================================
-# Helper Functions for Data Conversion
+# Element Context Analysis Functions
 # ============================================================================
+
+
+def analyze_element_context(element_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Analyze element context and hierarchy based on element properties and parent information.
+
+    This function determines the contextual hierarchy, utility, and priority of UI elements
+    based on standard web accessibility patterns and common UI patterns.
+
+    Args:
+        element_data: Dictionary containing element information (text, class, aria attributes, parent info)
+
+    Returns:
+        Dictionary with contextual analysis results:
+        - element_context: Type of context (main_navigation, toolbar, etc.)
+        - element_utility: Utility level (high, medium, low)
+        - hierarchy_level: Hierarchy level (primary, secondary, content)
+        - parent_context: Information about parent element
+    """
+    element_text = element_data.get("text", "").lower()
+    element_class = element_data.get("class", "").lower()
+    aria_label = element_data.get("aria_label", "").lower()
+    aria_role = element_data.get("aria_role", "").lower()
+    title = element_data.get("title", "").lower()
+
+    # Get parent context information
+    parent_context = element_data.get("parent_context", {})
+    parent_role = parent_context.get("role", "").lower()
+    parent_class = parent_context.get("class", "").lower()
+    parent_tag = parent_context.get("tag", "").lower()
+
+    # Initialize context analysis
+    element_context = "unknown"
+    element_utility = "normal"
+    hierarchy_level = "content"
+
+    # Analyze parent context for hierarchy
+    if parent_role in ["menubar", "menu-bar"] or "menubar" in parent_class or "menu-bar" in parent_class:
+        element_context = "main_navigation"
+        element_utility = "high"
+        hierarchy_level = "primary"
+    elif (
+        parent_role in ["toolbar", "action-bar"] or "toolbar" in parent_class or "action-bar" in parent_class
+    ):
+        element_context = "toolbar"
+        element_utility = "high"
+        hierarchy_level = "primary"
+    elif parent_role in ["navigation", "nav"] or "navigation" in parent_class or "nav" in parent_class:
+        element_context = "navigation"
+        element_utility = "high"
+        hierarchy_level = "primary"
+    elif "header" in parent_class or parent_tag == "header":
+        element_context = "header"
+        element_utility = "high"
+        hierarchy_level = "primary"
+    elif (
+        parent_class in ["welcome", "getting-started", "onboarding"]
+        or "welcome" in parent_class
+        or "getting-started" in parent_class
+    ):
+        element_context = "welcome_screen"
+        element_utility = "low"
+        hierarchy_level = "secondary"
+    elif "sidebar" in parent_class or parent_tag == "aside":
+        element_context = "sidebar"
+        element_utility = "medium"
+        hierarchy_level = "secondary"
+    elif parent_class in ["main-content", "content", "main"] or parent_tag == "main":
+        element_context = "main_content"
+        element_utility = "high"
+        hierarchy_level = "primary"
+    elif "footer" in parent_class or parent_tag == "footer":
+        element_context = "footer"
+        element_utility = "low"
+        hierarchy_level = "secondary"
+
+    # Analyze element properties for additional context
+    # Check for primary action patterns
+    primary_actions = [
+        "file",
+        "edit",
+        "view",
+        "go",
+        "run",
+        "terminal",
+        "help",
+        "save",
+        "open",
+        "new",
+        "create",
+        "delete",
+        "close",
+        "quit",
+        "exit",
+    ]
+
+    if (
+        any(action in element_text for action in primary_actions)
+        or any(action in aria_label for action in primary_actions)
+        or any(action in title for action in primary_actions)
+        or aria_role == "menuitem"
+        or "menu-item" in element_class
+    ):
+        element_utility = "high"
+        hierarchy_level = "primary"
+
+    # Check for secondary/utility actions
+    secondary_actions = ["settings", "preferences", "options", "configure", "about"]
+    if any(action in element_text for action in secondary_actions) or any(
+        action in aria_label for action in secondary_actions
+    ):
+        element_utility = "medium"
+
+    # Check for low-priority actions
+    low_priority_actions = ["help", "about", "version", "license", "credits"]
+    if any(action in element_text for action in low_priority_actions) or any(
+        action in aria_label for action in low_priority_actions
+    ):
+        element_utility = "low"
+
+    return {
+        "element_context": element_context,
+        "element_utility": element_utility,
+        "hierarchy_level": hierarchy_level,
+        "parent_context": parent_context,
+    }
+
+
+def extract_parent_context(element_node: Any, platform: str = "Ubuntu") -> Dict[str, str]:
+    """
+    Extract parent context information from element node.
+
+    This function analyzes the parent hierarchy of an element to determine
+    its contextual placement in the UI hierarchy.
+
+    Args:
+        element_node: Element node (ET.Element for AT-SPI2, dict for CDP, etc.)
+        platform: Platform identifier
+
+    Returns:
+        Dictionary with parent context information:
+        - role: ARIA role of parent element
+        - class: CSS class of parent element
+        - tag: HTML tag of parent element
+    """
+    parent_context = {"role": "", "class": "", "tag": ""}
+
+    if hasattr(element_node, "getparent"):
+        # lxml XML element (has getparent method)
+        parent = element_node.getparent()
+        if parent is not None:
+            parent_context["role"] = parent.get("role", "")
+            parent_context["class"] = parent.get("class", "")
+            parent_context["tag"] = parent.tag
+    elif hasattr(element_node, "tag"):
+        # xml.etree.ElementTree element (standard library)
+        # For standard library XML, we can't easily get parent without tree context
+        # Return empty context - parent context will be handled by hierarchical parsing
+        pass
+    elif isinstance(element_node, dict):
+        # CDP element data
+        parent_element = element_node.get("parent_element")
+        if parent_element:
+            parent_context["role"] = parent_element.get("role", "")
+            parent_context["class"] = parent_element.get("class", "")
+            parent_context["tag"] = parent_element.get("tag", "")
+
+    return parent_context
+
+
+def enhance_element_with_context(element_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Enhance element data with contextual hierarchy information.
+
+    This function takes raw element data and adds contextual analysis
+    to help with element prioritization and identification.
+
+    Args:
+        element_data: Raw element data dictionary
+
+    Returns:
+        Enhanced element data with contextual information
+    """
+    # Extract parent context if not already present
+    if "parent_context" not in element_data:
+        element_data["parent_context"] = extract_parent_context(element_data)
+
+    # Analyze element context
+    context_analysis = analyze_element_context(element_data)
+
+    # Add contextual information to element data
+    element_data.update(context_analysis)
+
+    return element_data
 
 
 def _dict_to_window_state(data: dict) -> WindowState:
