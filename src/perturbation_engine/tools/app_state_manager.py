@@ -602,6 +602,7 @@ class AppStateExtractor:
 
         if not windows:
             self.logger.warning(f"No standard windows found in {app_name}")
+            raise
 
         return windows
 
@@ -1615,18 +1616,8 @@ class ElementTracker:
     ) -> List[Dict[str, Any]]:
         """Use LLM to identify ALL possible target element candidates"""
         try:
-            retries = 0
-            while retries < 3:
-                retries += 1
-                result = self.llm.identify_target_element_candidates(action_str, window_states)
-                if result:
-                    return result
-                else:
-                    self.logger.warning(
-                        f"LLM failed to identify target element candidates. Retrying ({retries}/3)..."
-                    )
-            return []
-
+            result = self.llm.identify_target_element_candidates(action_str, window_states)
+            return result if result else []
         except Exception as e:
             self.logger.exception(f"Error with LLM element identification: {e}")
             return []

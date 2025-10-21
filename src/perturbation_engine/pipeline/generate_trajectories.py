@@ -184,11 +184,11 @@ def main():
     )
 
     curriculum_config = CurriculumConfig(
-        scenario_count=1,
+        scenario_count=10,
         num_parallel_vms=1,
         result_base_dir=os.environ.get("RESULT_BASE_DIR", "/opt/manifold/results"),
         beginner_scenarios=0,
-        intermediate_scenarios=1,
+        intermediate_scenarios=10,
         advanced_scenarios=0,
     )
 
@@ -227,7 +227,7 @@ def main():
     #     if traj.task_type == "chrome" and traj.task_id == "7f52cab9-535c-4835-ac8c-391ee64dc930"
     # ][:2]
     # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "vlc"][:1]
-    test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "chrome"][:1]
+    test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "chrome"]
     # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "vs_code"][:1]
     # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "os"][:1]
     # test_seed_trajectories = [traj for traj in seed_trajectories if traj.task_type == "multi_apps" or traj.task_type == "multiapps"][:1]
@@ -248,6 +248,9 @@ def main():
 
     # Generate trajectories using the complete pipeline
     all_results = []
+    successful_trajectories = 0
+    total_attempts = 0
+
     for i, seed_trajectory in enumerate(seed_trajectories):
         logger.info(f"Processing seed trajectory {i + 1}/{len(seed_trajectories)}: {seed_trajectory.task_id}")
 
@@ -261,7 +264,14 @@ def main():
             )
             all_results.extend(trajectory_results)
 
-            logger.info(f"Generated {len(trajectory_results)} trajectories for seed {i + 1}")
+            # Count successful trajectories
+            successful_count = sum(1 for result in trajectory_results if result.success)
+            successful_trajectories += successful_count
+            total_attempts += len(trajectory_results)
+
+            logger.info(
+                f"Generated {len(trajectory_results)} trajectories for seed {i + 1} ({successful_count} successful)"
+            )
 
             # Force garbage collection after each trajectory
             force_garbage_collection(logger)
@@ -272,6 +282,12 @@ def main():
 
     # Summary
     logger.info(f"Total results: {len(all_results)}")
+    logger.info(
+        f"Success rate: {successful_trajectories}/{total_attempts} ({successful_trajectories / total_attempts * 100:.1f}%)"
+        if total_attempts > 0
+        else "No attempts made"
+    )
+
     if all_results:
         avg_score = sum(r.quality_score for r in all_results) / len(all_results)
         success_count = sum(1 for r in all_results if r.success)

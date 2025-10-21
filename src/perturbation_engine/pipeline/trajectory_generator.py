@@ -13,7 +13,6 @@ import sys
 import time
 from typing import Any, Dict
 
-from perturbation_engine.configure_logging import set_run_context
 from perturbation_engine.pipeline.app_state_utils import get_timestamp, map_app_name_to_type
 from perturbation_engine.pipeline.data_models import (
     ExecutionContext,
@@ -21,8 +20,8 @@ from perturbation_engine.pipeline.data_models import (
     ScenarioSpec,
     SeedTrajectory,
 )
-from perturbation_engine.pipeline.llm_services import PerturbationGenerator
 from perturbation_engine.pipeline.perturbation_desktop_env import PerturbationDesktopEnv
+from perturbation_engine.pipeline.perturbation_templates import TemplateBasedPerturbationGenerator
 from perturbation_engine.pipeline.phase_data_manager import PhaseDataManager
 from perturbation_engine.pipeline.trajectory_replayer import TrajectoryReplayer
 from perturbation_engine.tools.app_state_manager import ElementTracker
@@ -104,7 +103,9 @@ class PathManager:
 
     def get_recording_path(self, trajectory_id: str) -> str:
         """Get the recording video file path"""
-        return os.path.join(self.get_trajectory_directory(trajectory_id), "recording.mp4")
+        path = os.path.join(self.get_trajectory_directory(trajectory_id), "recording.mp4")
+        logging.debug(f"Recording path: {path}")
+        return path
 
     def get_screenshot_path(self, trajectory_id: str, step_num: int, timestamp: str) -> str:
         """Get the screenshot file path for a specific step"""
@@ -145,7 +146,7 @@ class TrajectoryGenerator:
             configure_logging()
 
         self.logger = logging.getLogger(__name__)
-        self.perturbation_generator = PerturbationGenerator()
+        self.perturbation_generator = TemplateBasedPerturbationGenerator()
         self.path_manager = PathManager(result_base_dir, run_id)
 
         self.element_tracker = ElementTracker()
@@ -181,6 +182,8 @@ class TrajectoryGenerator:
         """Save recording when process is interrupted"""
         if self._current_env and self._current_trajectory_id:
             try:
+                # Ensure trajectory directory exists before saving recording
+                self.path_manager.ensure_trajectory_directory(self._current_trajectory_id)
                 recording_path = self.path_manager.get_recording_path(self._current_trajectory_id)
                 self._current_env.controller.end_recording(recording_path)
                 self.logger.info(f"Recording saved on interrupt: {recording_path}")
@@ -206,8 +209,8 @@ class TrajectoryGenerator:
         self.phase_data_manager = PhaseDataManager(trajectory_id, run_id=self.path_manager.run_id)
         self.logger.info(f"Executing trajectory {trajectory_id}: {seed_trajectory.task_instruction}")
 
-        # Set run context for logging
-        set_run_context(trajectory_id, self.path_manager.run_id)
+        # # Set run context for logging
+        # set_run_context(trajectory_id, self.path_manager.run_id)
 
         # Track perturbation success rates
         perturbation_attempts = 0
@@ -220,7 +223,6 @@ class TrajectoryGenerator:
 
             env.reset(task_config=seed_trajectory.config)
             env.controller.start_recording()
-
             window_states = env.controller.get_window_states()
             done = False
             step_idx = 0
@@ -229,7 +231,10 @@ class TrajectoryGenerator:
             step_by_step_log = []
 
             # Main execution loop
-            while not done and step_idx < trajectory_replayer.get_total_steps():
+            total_gt_steps = trajectory_replayer.get_total_steps()
+            self.logger.info(f"Ground truth trajectory has {total_gt_steps} steps")
+
+            while not done and step_idx < total_gt_steps:
                 cot_response, action = trajectory_replayer.step()
 
                 # Check if trajectory is complete
@@ -237,31 +242,38 @@ class TrajectoryGenerator:
                     self.logger.info(f"Trajectory completed at step {step_idx}")
                     break
 
-                (
-                    step_log_entry,
-                    perturbation_attempts,
-                    perturbation_successes,
-                    perturbation_failures,
-                    window_states,
-                    done,
-                    obs,
-                ) = self._execute_single_step(
-                    env,
-                    step_idx,
-                    action,
-                    cot_response,
-                    window_states,
-                    action_history,
-                    seed_trajectory,
-                    scenario_spec,
-                    perturbation_attempts,
-                    perturbation_successes,
-                    perturbation_failures,
-                    trajectory_id,
-                    trajectory_replayer.get_total_steps(),
-                )
+                try:
+                    (
+                        step_log_entry,
+                        perturbation_attempts,
+                        perturbation_successes,
+                        perturbation_failures,
+                        window_states,
+                        done,
+                        obs,
+                    ) = self._execute_single_step(
+                        env,
+                        step_idx,
+                        action,
+                        cot_response,
+                        window_states,
+                        action_history,
+                        seed_trajectory,
+                        scenario_spec,
+                        perturbation_attempts,
+                        perturbation_successes,
+                        perturbation_failures,
+                        trajectory_id,
+                        trajectory_replayer.get_total_steps(),
+                    )
 
-                step_by_step_log.append(step_log_entry)
+                    step_by_step_log.append(step_log_entry)
+
+                except Exception as step_error:
+                    self.logger.warning(
+                        f"Skipping trajectory {trajectory_id} due to error at step {step_idx + 1}: {step_error}"
+                    )
+                    break
 
                 if step_log_entry["perturbation_commands"]:
                     perturbation_log.append(
@@ -291,6 +303,21 @@ class TrajectoryGenerator:
 
             generation_time = time.time() - start_time
 
+            # Check if trajectory completed all ground truth steps
+            completed_all_steps = step_idx >= total_gt_steps
+            completion_status = "completed" if completed_all_steps else "incomplete"
+
+            self.logger.info(
+                f"Trajectory completion: {step_idx}/{total_gt_steps} steps ({completion_status})"
+            )
+
+            # Save completion status to traj.jsonl
+            self._save_completion_status(
+                trajectory_id, step_idx, total_gt_steps, completion_status, completed_all_steps
+            )
+
+            # Ensure trajectory directory exists before saving recording
+            self.path_manager.ensure_trajectory_directory(trajectory_id)
             env.controller.end_recording(self.path_manager.get_recording_path(trajectory_id))
 
             perturbation_success_rate = (
@@ -774,17 +801,16 @@ class TrajectoryGenerator:
             )
             self.logger.info(f"TEMP DEBUG: Loaded target element from phases folder for step {step_idx}")
         else:
-            # Retry 3 times if no target element candidates are found
-            for _ in range(3):
-                target_element_candidates = self.element_tracker.identify_target_element_candidates(
-                    action_str, window_states
+            # Get target element candidates (app_state_manager already handles retries internally)
+            target_element_candidates = self.element_tracker.identify_target_element_candidates(
+                action_str, window_states
+            )
+            if len(target_element_candidates) == 0:
+                raise RuntimeError(
+                    "Skipping trajectory: No target element candidates found after LLM retries"
                 )
-                if len(target_element_candidates) == 0:
-                    self.logger.warning("✗ No target element candidates found")
-                else:
-                    break
 
-            target_element = target_element_candidates[0] if target_element_candidates else None
+            target_element = target_element_candidates[0]
 
         # Create element visualization for debugging
         try:
@@ -827,6 +853,7 @@ class TrajectoryGenerator:
         # ========== Phase 2: Perturbation Decision ==========
         execution_context = ExecutionContext(
             step_idx=step_idx,
+            target_app=scenario_spec.target_app,
             current_action=action_str,
             action_history=action_history.copy(),
             cot_context=cot_response,
@@ -867,21 +894,10 @@ class TrajectoryGenerator:
         # ========== Phase 3: Apply Perturbation (if decided) ==========
         perturbation_applied = False
 
-        if perturbation_decision.get("should_apply", False):
+        if perturbation_decision.get("should_apply", False) and step_idx == 1:
+            self.logger.info(f"Applying perturbation decision for step {step_idx}: {perturbation_decision}")
             # Check for duplicate commands (diversity)
             generated_command = perturbation_decision.get("generated_command", "")
-
-            # if self._is_command_duplicate(generated_command):
-            #     self.logger.warning(f"Skipping duplicate perturbation at step {step_idx}")
-            #     step_log_entry["perturbation_failure_reason"] = "Duplicate command"
-            #     step_log_entry["perturbation_commands"].append(
-            #         {
-            #             "success": False,
-            #             "operation_type": "rejected_duplicate",
-            #         }
-            #     )
-            # else:
-            #     perturbation_attempts += 1
 
             try:
                 # Apply perturbation
@@ -944,6 +960,15 @@ class TrajectoryGenerator:
             target_element = self.element_tracker.track_element_after_perturbation(
                 target_element, window_states_after
             )
+            if not target_element:
+                self.logger.warning(
+                    f"Skipping trajectory {trajectory_id} - no target element found after perturbation at step {step_idx + 1}"
+                )
+                raise RuntimeError(f"No target element found after perturbation at step {step_idx + 1}")
+            else:
+                self.logger.info(
+                    f"Target element found after perturbation at step {step_idx + 1}: {target_element.element_id}"
+                )
 
         # ========== Phase 5: Execute Action ==========
         self.logger.debug(f"Executing: {action_str[:100]}")
@@ -1323,6 +1348,15 @@ class TrajectoryGenerator:
                 "window_states_after": [self._serialize_window_state(ws) for ws in window_states_after]
                 if window_states_after
                 else [],
+                "vm_command_execution": {
+                    "command_sent": perturbation_decision.get("generated_command", ""),
+                    "api_call_used": perturbation_decision.get("api_call", ""),
+                    "execution_success": perturbation_result.get("success", False),
+                    "vm_stdout": perturbation_result.get("result_data", {}).get("stdout", ""),
+                    "vm_stderr": perturbation_result.get("result_data", {}).get("stderr", ""),
+                    "vm_exit_code": perturbation_result.get("result_data", {}).get("exit_code", ""),
+                    "vm_error": perturbation_result.get("error_message", ""),
+                },
                 "analysis": {
                     "command_parsed": perturbation_decision.get("generated_command", ""),
                     "api_call_used": perturbation_decision.get("api_call", ""),
@@ -1345,3 +1379,39 @@ class TrajectoryGenerator:
     def _get_timestamp(self) -> str:
         """Get current timestamp - delegate to shared utility"""
         return get_timestamp()
+
+    def _save_completion_status(
+        self,
+        trajectory_id: str,
+        steps_completed: int,
+        total_gt_steps: int,
+        completion_status: str,
+        completed_all_steps: bool,
+    ):
+        """Save completion status as the last line in traj.jsonl"""
+        try:
+            completion_data = {
+                "step_num": "completion_summary",
+                "action_timestamp": datetime.datetime.now().strftime("%Y%m%d@%H%M%S"),
+                "action": "trajectory_completion_check",
+                "reward": 1.0 if completed_all_steps else 0.0,
+                "done": True,
+                "perturbation_applied": False,
+                "task_instruction": "Trajectory completion analysis",
+                "completion_status": {
+                    "steps_completed": steps_completed,
+                    "total_gt_steps": total_gt_steps,
+                    "completion_status": completion_status,
+                    "completed_all_steps": completed_all_steps,
+                    "perturbation_success_indicator": "completed" if completed_all_steps else "incomplete",
+                },
+            }
+
+            with open(self.path_manager.get_trajectory_file_path(trajectory_id), "a") as f:
+                f.write(json.dumps(completion_data))
+                f.write("\n")
+
+            self.logger.info(f"Saved completion status to traj.jsonl: {completion_status}")
+
+        except Exception as e:
+            self.logger.error(f"Error saving completion status: {e}")

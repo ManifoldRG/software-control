@@ -17,33 +17,6 @@ from perturbation_engine.pipeline.app_state_utils import get_timestamp, map_app_
 from perturbation_engine.pipeline.data_models import WindowState
 from perturbation_engine.tools.app_state_manager import AppStateExtractor
 
-# Import existing autoglm_v logic
-from perturbation_engine.tools.autoglm_v.tools.package.code import CodeTools
-from perturbation_engine.tools.autoglm_v.tools.package.google_chrome import BrowserTools
-from perturbation_engine.tools.autoglm_v.tools.package.vlc import VLCTools
-
-# Import LibreOffice tools (with fallback if not available)
-try:
-    from perturbation_engine.tools.autoglm_v.tools.package.libreoffice_calc import CalcTools
-    from perturbation_engine.tools.autoglm_v.tools.package.libreoffice_impress import ImpressTools
-    from perturbation_engine.tools.autoglm_v.tools.package.libreoffice_writer import WriterTools
-except ImportError:
-    # Fallback classes if LibreOffice tools are not available
-    class CalcTools:
-        @classmethod
-        def env_info(cls):
-            return "LibreOffice Calc tools not available"
-
-    class WriterTools:
-        @classmethod
-        def env_info(cls):
-            return "LibreOffice Writer tools not available"
-
-    class ImpressTools:
-        @classmethod
-        def env_info(cls):
-            return "LibreOffice Impress tools not available"
-
 
 @dataclass
 class ManipulationResult:
@@ -364,7 +337,7 @@ class PerturbationSetupController(SetupController, PerturbationBaseController):
     def _chrome_open_tabs_setup(self, urls_to_open: List[str]):
         """
         Override Chrome tab opening to add proper timing for socat port forwarding.
-        This fixes the Chrome connection timing issue.
+        This fixes the Chrome connection timing issue and prevents hanging on connection failures.
         """
         host = self.vm_ip
         port = self.chromium_port
@@ -376,20 +349,33 @@ class PerturbationSetupController(SetupController, PerturbationBaseController):
         self.logger.info("⏳ Waiting for socat port forwarding to be ready...")
         time.sleep(3)  # Give socat time to establish port forwarding
 
-        # Check if port forwarding is working
+        # Check if port forwarding is working with timeout
+        chrome_connection_ok = False
         try:
             import requests
 
             response = requests.get(f"{remote_debugging_url}/json", timeout=2)
             if response.status_code == 200:
                 self.logger.info("✅ Port forwarding is ready!")
+                chrome_connection_ok = True
             else:
                 self.logger.warning("⚠️ Port forwarding may not be ready yet, continuing anyway...")
         except Exception as e:
             self.logger.warning(f"⚠️ Could not verify port forwarding readiness: {e}, continuing anyway...")
 
-        # Now call the original Chrome tab opening logic
-        super()._chrome_open_tabs_setup(urls_to_open)
+        # If Chrome connection failed, skip Chrome setup to prevent hanging
+        if not chrome_connection_ok:
+            self.logger.error("❌ Chrome connection failed - skipping Chrome tab setup to prevent hanging")
+            self.logger.info("🔄 Trajectory will continue without Chrome functionality")
+            return  # Skip the parent method call to prevent hanging
+
+        # Now call the original Chrome tab opening logic only if connection is OK
+        try:
+            super()._chrome_open_tabs_setup(urls_to_open)
+        except Exception as e:
+            self.logger.error(f"❌ Chrome tab setup failed: {e}")
+            self.logger.info("🔄 Trajectory will continue without Chrome functionality")
+            # Don't re-raise the exception to prevent hanging
 
     def _open_setup(self, path: str):
         """
@@ -1929,45 +1915,6 @@ except Exception as e:
     def _map_app_name_to_type(self, app_name: str) -> str:
         """Map application name to app type - delegate to shared utility"""
         return map_app_name_to_type(app_name)
-
-    def _get_app_properties(self, app_type: str) -> Dict[str, Any]:
-        """Get application-specific properties"""
-        try:
-            # Initialize autoglm_v tool classes
-            tools = {
-                "code": CodeTools,
-                "chrome": BrowserTools,
-                "vlc": VLCTools,
-                "libreoffice_calc": CalcTools,
-                "libreoffice_writer": WriterTools,
-                "libreoffice_impress": ImpressTools,
-            }
-
-            if app_type in tools:
-                tool_class = tools[app_type]
-
-                # Get environment info from the tool
-                if hasattr(tool_class, "env_info"):
-                    result = tool_class.env_info()
-                    return {"env_info": result}
-
-                # Get specific properties based on app type
-                if app_type == "libreoffice_calc":
-                    if hasattr(tool_class, "get_workbook_info"):
-                        result = tool_class.get_workbook_info()
-                        return {"workbook_info": result}
-
-                elif app_type == "chrome":
-                    return {"browser_state": "active"}
-
-                elif app_type == "code":
-                    return {"editor_state": "active"}
-
-            return {}
-
-        except Exception as e:
-            self.logger.debug(f"Error getting app properties for {app_type}: {e}")
-            return {}
 
     def _get_timestamp(self) -> str:
         """Get current timestamp - delegate to shared utility"""

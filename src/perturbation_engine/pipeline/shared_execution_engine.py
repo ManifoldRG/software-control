@@ -21,11 +21,15 @@ from perturbation_engine.utils.memory_utils import force_garbage_collection, log
 
 
 def run_vm_tasks_worker(
-    execution_config: ExecutionConfig, result_base_dir: str, scenario_queue: Queue, shared_results: list
+    execution_config: ExecutionConfig,
+    result_base_dir: str,
+    scenario_queue: Queue,
+    shared_results: list,
+    run_id: str = None,
 ):
     """Worker function for parallel execution - creates objects in subprocess to avoid pickle issues"""
     execution_engine = ParallelExecutionEngine(execution_config, result_base_dir)
-    execution_engine.run_vm_tasks(scenario_queue, shared_results)
+    execution_engine.run_vm_tasks(scenario_queue, shared_results, run_id)
 
 
 class SharedExecutionEngine:
@@ -37,7 +41,11 @@ class SharedExecutionEngine:
         self.logger = logging.getLogger(__name__)
 
     def execute_scenarios_parallel(
-        self, seed_trajectory: SeedTrajectory, scenario_specs: List[ScenarioSpec], num_parallel_vms: int = 1
+        self,
+        seed_trajectory: SeedTrajectory,
+        scenario_specs: List[ScenarioSpec],
+        num_parallel_vms: int = 1,
+        run_id: str = None,
     ) -> List[GeneratedTrajectory]:
         """Execute scenarios in parallel using shared queue management"""
 
@@ -56,7 +64,13 @@ class SharedExecutionEngine:
             for i in range(num_parallel_vms):
                 p = Process(
                     target=run_vm_tasks_worker,
-                    args=(self.execution_config, self.result_base_dir, scenario_queue, shared_results),
+                    args=(
+                        self.execution_config,
+                        self.result_base_dir,
+                        scenario_queue,
+                        shared_results,
+                        run_id,
+                    ),
                     name=f"ExecutionProcess-{i + 1}",
                 )
                 p.daemon = True
@@ -106,7 +120,7 @@ class ParallelExecutionEngine:
         self.result_base_dir = result_base_dir
         self.logger = logging.getLogger(__name__)
 
-    def run_vm_tasks(self, scenario_queue: Queue, shared_results: list):
+    def run_vm_tasks(self, scenario_queue: Queue, shared_results: list, run_id: str = None):
         """Run trajectory generation scenarios in a single VM process"""
         # Use multiprocessing's built-in logging to stderr (shows in main process)
         import multiprocessing
@@ -122,7 +136,7 @@ class ParallelExecutionEngine:
         self.logger.info(f"Starting trajectory generation in {process_name}")
 
         # Initialize trajectory generator in subprocess to avoid pickle issues
-        trajectory_generator = TrajectoryGenerator(self.result_base_dir)
+        trajectory_generator = TrajectoryGenerator(self.result_base_dir, run_id)
         env = None
         try:
             # Initialize environment - each process gets its own environment
@@ -167,10 +181,13 @@ class ParallelExecutionEngine:
                     )
 
                 except Exception as e:
+                    error_msg = str(e)
+
                     self.logger.error(f"Task-level error in {current_process().name}: {e}")
                     import traceback
 
                     self.logger.error(traceback.format_exc())
+                    continue
 
         except Exception as e:
             error_msg = str(e)

@@ -1121,19 +1121,13 @@ class BaseLLM:
     - OPENROUTER_API_KEY for OpenRouter models
     """
 
-    def __init__(self, model_name: str = "gemini-2.5-flash", model_provider: str = "gemini"):
+    def __init__(self, model_name: str = "gemini-2.5-flash-lite", model_provider: str = "gemini"):
         self.model_provider = model_provider
         self.model_name = model_name
 
         # TODO: Change provider and model
         # self.model_provider = "openai"
         # self.model_name = "gpt-4.1-nano"
-
-        # self.model_provider = "anthropic"
-        # self.model_name = "claude-haiku-3.5"
-
-        # self.model_provider = "openrouter"
-        # self.model_name = "z-ai/glm-4.5-air:free"
 
         self.logger = logging.getLogger(__name__)
 
@@ -1248,8 +1242,12 @@ class BaseLLM:
 
             except Exception as e:
                 self.logger.error(f"Error calling LLM: {e}, retrying {retries}/{max_retries}...")
+                if retries < max_retries:
+                    continue  # Retry the loop
+                else:
+                    break  # Exit the loop after max retries
 
-        return f"{'error: LLM call failed after {max_retries} attempts'}"
+        return f"error: LLM call failed after {max_retries} attempts"
 
     def _generate_fallback_response(self, target_app: str = "system") -> Dict[str, Any]:
         """Generate minimal valid perturbation decision that avoids harmful operations"""
@@ -3602,8 +3600,7 @@ class QualityLLM(BaseLLM):
         }}
         """
 
-        response = self.call_llm(prompt)
-        result = self.extract_json(response)
+        result = self.call_llm(prompt)
 
         if isinstance(result, list) and len(result) > 0:
             result = result[0]

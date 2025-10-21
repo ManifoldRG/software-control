@@ -7,17 +7,16 @@ import datetime
 import json
 import logging
 import os
-from typing import Any, Dict, List
+from typing import List
 
-from perturbation_engine.configure_logging import set_run_context
 from perturbation_engine.pipeline.data_models import (
     CurriculumConfig,
     ExecutionConfig,
     GeneratedTrajectory,
     SeedTrajectory,
 )
-from perturbation_engine.pipeline.llm_services import CurriculumGenerator
 from perturbation_engine.pipeline.perturbation_desktop_env import PerturbationDesktopEnv
+from perturbation_engine.pipeline.perturbation_templates import CurriculumGenerator
 from perturbation_engine.pipeline.phase_data_manager import PhaseDataManager
 from perturbation_engine.pipeline.quality_evaluator import QualityEvaluator
 from perturbation_engine.pipeline.shared_execution_engine import SharedExecutionEngine
@@ -56,7 +55,7 @@ class UnifiedGenerator:
         log_memory_usage("Start of trajectory generation", self.logger)
 
         # Set run context for logging
-        set_run_context(seed_trajectory.task_id, self.run_id)
+        # set_run_context(seed_trajectory.task_id, self.run_id)
 
         try:
             # Step 1: Extract environment state
@@ -119,73 +118,73 @@ class UnifiedGenerator:
 
             if not scenario_specs:
                 self.logger.error("No scenario specs generated")
-                return []
+                raise
 
             self.logger.info(f"Scenario specs: {scenario_specs}")
 
             # Step 3: Execute scenarios in parallel
             generated_trajectories = self.shared_execution_engine.execute_scenarios_parallel(
-                seed_trajectory, scenario_specs, curriculum_config.num_parallel_vms
+                seed_trajectory, scenario_specs, curriculum_config.num_parallel_vms, self.run_id
             )
 
             # Step 4: Evaluate quality and filter trajectories
-            valid_trajectories = []
-            quality_stats = {
-                "total_trajectories": len(generated_trajectories),
-                "high_quality_trajectories": 0,
-                "low_perturbation_success": 0,
-                "failed_trajectories": 0,
-            }
+            # valid_trajectories = []
+            # quality_stats = {
+            #     "total_trajectories": len(generated_trajectories),
+            #     "high_quality_trajectories": 0,
+            #     "low_perturbation_success": 0,
+            #     "failed_trajectories": 0,
+            # }
 
-            for i, trajectory in enumerate(generated_trajectories):
-                if i < len(scenario_specs):
-                    # Evaluate quality
-                    quality_score = self.quality_evaluator.evaluate_trajectory_quality(
-                        trajectory, scenario_specs[i]
-                    )
-                    trajectory.quality_score = quality_score
+            # for i, trajectory in enumerate(generated_trajectories):
+            #     if i < len(scenario_specs):
+            #         # Evaluate quality
+            #         quality_score = self.quality_evaluator.evaluate_trajectory_quality(
+            #             trajectory, scenario_specs[i]
+            #         )
+            #         trajectory.quality_score = quality_score
 
-                    # Check perturbation success rate from log
-                    perturbation_success_rate = 0.0
-                    if trajectory.perturbation_log:
-                        summary = trajectory.perturbation_log[-1].get("summary", {})
-                        perturbation_success_rate = summary.get("perturbation_success_rate", 0.0)
+            #         # Check perturbation success rate from log
+            #         perturbation_success_rate = 0.0
+            #         if trajectory.perturbation_log:
+            #             summary = trajectory.perturbation_log[-1].get("summary", {})
+            #             perturbation_success_rate = summary.get("perturbation_success_rate", 0.0)
 
-                    # Filter trajectories based on quality and perturbation success
-                    if (
-                        quality_score >= 0.6 and perturbation_success_rate >= 0.3
-                    ):  # 60% quality, 30% perturbation success
-                        valid_trajectories.append(trajectory)
-                        quality_stats["high_quality_trajectories"] += 1
-                    elif perturbation_success_rate < 0.3:
-                        quality_stats["low_perturbation_success"] += 1
-                        self.logger.warning(
-                            f"Trajectory {trajectory.trajectory_id} dropped: low perturbation success rate {perturbation_success_rate:.2%}"
-                        )
-                    else:
-                        quality_stats["failed_trajectories"] += 1
-                        self.logger.warning(
-                            f"Trajectory {trajectory.trajectory_id} dropped: low quality score {quality_score:.2f}"
-                        )
+            #         # Filter trajectories based on quality and perturbation success
+            #         if (
+            #             quality_score >= 0.6 and perturbation_success_rate >= 0.3
+            #         ):  # 60% quality, 30% perturbation success
+            #             valid_trajectories.append(trajectory)
+            #             quality_stats["high_quality_trajectories"] += 1
+            #         elif perturbation_success_rate < 0.3:
+            #             quality_stats["low_perturbation_success"] += 1
+            #             self.logger.warning(
+            #                 f"Trajectory {trajectory.trajectory_id} dropped: low perturbation success rate {perturbation_success_rate:.2%}"
+            #             )
+            #         else:
+            #             quality_stats["failed_trajectories"] += 1
+            #             self.logger.warning(
+            #                 f"Trajectory {trajectory.trajectory_id} dropped: low quality score {quality_score:.2f}"
+            #             )
 
-            # Log comprehensive statistics
-            self.logger.info("Trajectory Quality Analysis:")
-            self.logger.info(f"  Total generated: {quality_stats['total_trajectories']}")
-            self.logger.info(f"  High quality (kept): {quality_stats['high_quality_trajectories']}")
-            self.logger.info(
-                f"  Low perturbation success (dropped): {quality_stats['low_perturbation_success']}"
-            )
-            self.logger.info(f"  Failed quality check (dropped): {quality_stats['failed_trajectories']}")
+            # # Log comprehensive statistics
+            # self.logger.info("Trajectory Quality Analysis:")
+            # self.logger.info(f"  Total generated: {quality_stats['total_trajectories']}")
+            # self.logger.info(f"  High quality (kept): {quality_stats['high_quality_trajectories']}")
+            # self.logger.info(
+            #     f"  Low perturbation success (dropped): {quality_stats['low_perturbation_success']}"
+            # )
+            # self.logger.info(f"  Failed quality check (dropped): {quality_stats['failed_trajectories']}")
 
-            generated_trajectories = valid_trajectories
-            self.logger.info(f"Final valid trajectories: {len(generated_trajectories)}")
+            # generated_trajectories = valid_trajectories
+            # self.logger.info(f"Final valid trajectories: {len(generated_trajectories)}")
 
             # Final cleanup and memory check
             force_garbage_collection(self.logger)
             log_memory_usage("End of trajectory generation", self.logger)
 
             # Save run summary
-            self._save_run_summary(seed_trajectory, generated_trajectories, quality_stats)
+            self._save_run_summary(seed_trajectory, generated_trajectories)
 
             return generated_trajectories
 
@@ -197,7 +196,7 @@ class UnifiedGenerator:
         self,
         seed_trajectory: SeedTrajectory,
         generated_trajectories: List[GeneratedTrajectory],
-        quality_stats: Dict[str, Any],
+        # quality_stats: Dict[str, Any],
     ):
         """Save a comprehensive summary of this run"""
         try:
@@ -227,10 +226,10 @@ class UnifiedGenerator:
                     "os_type": self.execution_config.os_type,
                 },
                 "results": {
-                    "total_trajectories_generated": quality_stats["total_trajectories"],
-                    "high_quality_trajectories": quality_stats["high_quality_trajectories"],
-                    "low_perturbation_success": quality_stats["low_perturbation_success"],
-                    "failed_trajectories": quality_stats["failed_trajectories"],
+                    # "total_trajectories_generated": quality_stats["total_trajectories"],
+                    # "high_quality_trajectories": quality_stats["high_quality_trajectories"],
+                    # "low_perturbation_success": quality_stats["low_perturbation_success"],
+                    # "failed_trajectories": quality_stats["failed_trajectories"],
                     "final_valid_trajectories": len(generated_trajectories),
                 },
                 "trajectory_details": [

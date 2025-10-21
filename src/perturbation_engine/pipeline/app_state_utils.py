@@ -303,8 +303,8 @@ def should_skip_app(app_name: str) -> bool:
         "xdg-desktop-portal",
         "org.gnome.Software",
         "gnome-shell",  # Desktop environment
-        "gjs",  # GNOME JavaScript
-        "gnome-session",  # Session manager
+        # "gjs",  # GNOME JavaScript
+        "seahorsegnome-session",  # Session manager
         "dbus",  # D-Bus daemon
         "systemd",  # System daemon
         "pulseaudio",  # Audio daemon
@@ -317,8 +317,8 @@ def should_skip_app(app_name: str) -> bool:
         "tracker",  # File indexer
         "evolution",  # Email client (if not explicitly needed)
         "thunderbird",  # Email client (if not explicitly needed)
-        "firefox",  # Browser (if not explicitly needed)
-        "nautilus",  # File manager (if not explicitly needed)
+        # "firefox",  # Browser (if not explicitly needed)
+        # "nautilus",  # File manager (if not explicitly needed)
     ]
     return any(pattern in app_name for pattern in skip_patterns)
 

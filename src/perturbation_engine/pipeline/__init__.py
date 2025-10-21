@@ -12,15 +12,23 @@ from .data_models import (
     ExecutionConfig,
     ExecutionContext,
     GeneratedTrajectory,
+    PerturbationCategory,
     PerturbationType,
     ScenarioSpec,
     SeedTrajectory,
+    TemplateCategory,
     UIElement,
     VisibilityState,
     WindowState,
 )
-from .llm_services import CurriculumGenerator, PerturbationGenerator, QualityLLM
 from .perturbation_desktop_env import PerturbationDesktopEnv
+from .perturbation_templates import (
+    AppPerturbationTemplates,
+    CurriculumGenerator,
+    PerturbationDecision,
+    PerturbationTemplate,
+    TemplateBasedPerturbationGenerator,
+)
 from .quality_evaluator import QualityEvaluator
 from .shared_execution_engine import SharedExecutionEngine
 from .trajectory_generator import TrajectoryGenerator
@@ -37,7 +45,8 @@ __all__ = [
     "GeneratedTrajectory",
     "ExecutionContext",
     "PerturbationType",
-    "PerturbationPhase",
+    "PerturbationCategory",
+    "TemplateCategory",
     "WindowState",
     "UIElement",
     "VisibilityState",

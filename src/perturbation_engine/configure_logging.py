@@ -1,4 +1,3 @@
-import json
 import logging
 import os
 import sys
@@ -20,16 +19,16 @@ class ContextLogHandler(logging.Handler):
         self.current_run_id = None
         self.current_trajectory_id = None
 
-    def set_run_context(self, trajectory_id: str, run_id: str):
-        """Set the current run context for organizing debug logs"""
-        with self.lock:
-            self.current_trajectory_id = trajectory_id
-            self.current_run_id = run_id
+    # def set_run_context(self, trajectory_id: str, run_id: str):
+    #     """Set the current run context for organizing debug logs"""
+    #     with self.lock:
+    #         self.current_trajectory_id = trajectory_id
+    #         self.current_run_id = run_id
 
     def emit(self, record: logging.LogRecord):
-        """Emit a log record and save context for errors/warnings"""
+        """Emit a log record - simplified to prevent hanging"""
         with self.lock:
-            # Add current record to buffer
+            # Add current record to buffer (for potential future use)
             log_entry = {
                 "timestamp": datetime.fromtimestamp(record.created).isoformat(),
                 "level": record.levelname,
@@ -43,52 +42,7 @@ class ContextLogHandler(logging.Handler):
             }
             self.log_buffer.append(log_entry)
 
-            # Save context for errors and warnings
-            if record.levelno >= logging.WARNING:
-                self._save_error_context(record)
-
-    def _save_error_context(self, error_record: logging.LogRecord):
-        """Save context around an error or warning"""
-        if not self.current_trajectory_id or not self.current_run_id:
-            return
-
-        try:
-            # Create debug directory structure
-            debug_path = os.path.join(self.debug_dir, self.current_trajectory_id, self.current_run_id, "logs")
-            os.makedirs(debug_path, exist_ok=True)
-
-            # Create context data
-            context_data = {
-                "error_info": {
-                    "timestamp": datetime.fromtimestamp(error_record.created).isoformat(),
-                    "level": error_record.levelname,
-                    "logger": error_record.name,
-                    "message": error_record.getMessage(),
-                    "pathname": error_record.pathname,
-                    "lineno": error_record.lineno,
-                    "funcName": error_record.funcName,
-                    "process": getattr(error_record, "processName", "unknown"),
-                    "thread": error_record.thread,
-                    "exc_info": error_record.exc_info,
-                },
-                "context_before": list(self.log_buffer)[
-                    -self.context_lines - 1 : -1
-                ],  # Exclude current record
-                "context_after": [],  # Will be populated as more logs come in
-                "total_context_lines": len(self.log_buffer),
-            }
-
-            # Save context to file
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            filename = f"error_context_{error_record.levelname.lower()}_{timestamp}.json"
-            filepath = os.path.join(debug_path, filename)
-
-            with open(filepath, "w") as f:
-                json.dump(context_data, f, indent=2)
-
-        except Exception as e:
-            # Don't let logging errors break the application
-            print(f"Error saving log context: {e}", file=sys.stderr)
+            # No file I/O operations to prevent hanging
 
 
 class ColorFormatter(logging.Formatter):
@@ -145,11 +99,11 @@ def get_context_handler() -> Optional[ContextLogHandler]:
     return _context_handler
 
 
-def set_run_context(trajectory_id: str, run_id: str):
-    """Set the run context for the global context handler"""
-    global _context_handler
-    if _context_handler:
-        _context_handler.set_run_context(trajectory_id, run_id)
+# def set_run_context(trajectory_id: str, run_id: str):
+#     """Set the run context for the global context handler"""
+#     global _context_handler
+#     if _context_handler:
+#         _context_handler.set_run_context(trajectory_id, run_id)
 
 
 def configure_logging() -> None:
@@ -179,63 +133,65 @@ def configure_logging() -> None:
     console_handler.setLevel(level)
     console_handler.setFormatter(ColorFormatter(use_color=color_enabled))
 
-    # Context handler for debug folder logging
-    debug_dir = os.getenv("PERTURB_ENGINE_DEBUG_DIR", "./debug")
-    context_lines = int(os.getenv("PERTURB_ENGINE_CONTEXT_LINES", "20"))
-    _context_handler = ContextLogHandler(debug_dir=debug_dir, context_lines=context_lines)
-    _context_handler.setLevel(logging.WARNING)  # Only capture warnings and errors
+    # # Context handler for debug folder logging
+    # debug_dir = os.getenv("PERTURB_ENGINE_DEBUG_DIR", "./debug")
+    # context_lines = int(os.getenv("PERTURB_ENGINE_CONTEXT_LINES", "20"))
+    # _context_handler = ContextLogHandler(debug_dir=debug_dir, context_lines=context_lines)
+    # _context_handler.setLevel(logging.WARNING)  # Only capture warnings and errors
 
     root.setLevel(level)
     root.addHandler(console_handler)
-    root.addHandler(_context_handler)
+    # Disable context handler completely to prevent any hanging issues
+    # root.addHandler(_context_handler)
 
 
-def configure_subprocess_logging(process_name: str = None) -> None:
-    """Configure logging for subprocesses to show in main process.
+# def configure_subprocess_logging(process_name: str = None) -> None:
+#     """Configure logging for subprocesses to show in main process.
 
-    This ensures subprocess logs appear in the main process console.
-    """
-    global _context_handler
+#     This ensures subprocess logs appear in the main process console.
+#     """
+#     global _context_handler
 
-    level_name = os.getenv("PERTURB_ENGINE_LOG_LEVEL", "INFO").upper()
-    level = getattr(logging, level_name, logging.INFO)
+#     level_name = os.getenv("PERTURB_ENGINE_LOG_LEVEL", "INFO").upper()
+#     level = getattr(logging, level_name, logging.INFO)
 
-    root = logging.getLogger()
+#     root = logging.getLogger()
 
-    # Clear existing handlers to avoid duplication
-    for handler in root.handlers[:]:
-        root.removeHandler(handler)
+#     # Clear existing handlers to avoid duplication
+#     for handler in root.handlers[:]:
+#         root.removeHandler(handler)
 
-    # Set up console handler that writes to stdout
-    stream = sys.stdout
-    color_env = os.getenv("PERTURB_ENGINE_LOG_COLOR", "1").lower()
-    color_enabled = color_env not in {"0", "false", "no"} and hasattr(stream, "isatty") and stream.isatty()
+#     # Set up console handler that writes to stdout
+#     stream = sys.stdout
+#     color_env = os.getenv("PERTURB_ENGINE_LOG_COLOR", "1").lower()
+#     color_enabled = color_env not in {"0", "false", "no"} and hasattr(stream, "isatty") and stream.isatty()
 
-    console_handler = logging.StreamHandler(stream)
-    console_handler.setLevel(level)
+#     console_handler = logging.StreamHandler(stream)
+#     console_handler.setLevel(level)
 
-    # Create formatter with process name
-    if process_name:
-        formatter = ColorFormatter(use_color=color_enabled, datefmt="%H:%M:%S")
-        # Override the format method to include process name
-        original_format = formatter.format
+#     # Create formatter with process name
+#     if process_name:
+#         formatter = ColorFormatter(use_color=color_enabled, datefmt="%H:%M:%S")
+#         # Override the format method to include process name
+#         original_format = formatter.format
 
-        def format_with_process_name(record):
-            record.processName = f"{record.processName}-{process_name}"
-            return original_format(record)
+#         def format_with_process_name(record):
+#             record.processName = f"{record.processName}-{process_name}"
+#             return original_format(record)
 
-        formatter.format = format_with_process_name
-    else:
-        formatter = ColorFormatter(use_color=color_enabled, datefmt="%H:%M:%S")
+#         formatter.format = format_with_process_name
+#     else:
+#         formatter = ColorFormatter(use_color=color_enabled, datefmt="%H:%M:%S")
 
-    console_handler.setFormatter(formatter)
+#     console_handler.setFormatter(formatter)
 
-    # Context handler for debug folder logging (same as main process)
-    debug_dir = os.getenv("PERTURB_ENGINE_DEBUG_DIR", "./debug")
-    context_lines = int(os.getenv("PERTURB_ENGINE_CONTEXT_LINES", "20"))
-    _context_handler = ContextLogHandler(debug_dir=debug_dir, context_lines=context_lines)
-    _context_handler.setLevel(logging.WARNING)  # Only capture warnings and errors
+#     # Context handler for debug folder logging (same as main process)
+#     debug_dir = os.getenv("PERTURB_ENGINE_DEBUG_DIR", "./debug")
+#     context_lines = int(os.getenv("PERTURB_ENGINE_CONTEXT_LINES", "20"))
+#     _context_handler = ContextLogHandler(debug_dir=debug_dir, context_lines=context_lines)
+#     _context_handler.setLevel(logging.WARNING)  # Only capture warnings and errors
 
-    root.setLevel(level)
-    root.addHandler(console_handler)
-    root.addHandler(_context_handler)
+#     root.setLevel(level)
+#     root.addHandler(console_handler)
+#     # Disable context handler completely to prevent any hanging issues
+#     # root.addHandler(_context_handler)
