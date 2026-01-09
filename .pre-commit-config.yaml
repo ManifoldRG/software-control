@@ -27,22 +27,26 @@ repos:
     hooks:
       - id: check-added-large-files
         args: ['--maxkb=1024']
-        exclude: experiments/perturbation_experiment.ipynb
+        exclude: experiments/perturbation_experiment.ipynb|^osworld-human-main/.*$
       # - id: debug-statements
       - id: check-merge-conflict
       - id: check-case-conflict
       - id: check-yaml
       - id: check-toml
       - id: end-of-file-fixer
+        exclude: ^osworld-human-main/.*$
       - id: trailing-whitespace
+        exclude: ^osworld-human-main/.*$
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.12.12
     hooks:
       - id: ruff-format
+        exclude: ^src/perturbation_engine/tools/autoglm_v/.*$|^osworld-human-main/
       - id: ruff
         args: [--fix, --exit-non-zero-on-fix]
         files: \.py$
+        exclude: ^src/perturbation_engine/tools/autoglm_v/.*$|^osworld-human-main/
 
   # - repo: https://github.com/PyCQA/isort
   #   rev: 6.0.1
@@ -56,6 +60,7 @@ repos:
       - id: typos
         args: [--force-exclude]
         files: \.py$|.md$
+        exclude: ^src/perturbation_engine/tools/autoglm_v/.*$|^osworld-human-main/.*$
 
 
   # - repo: https://github.com/asottile/pyupgrade
@@ -73,6 +78,7 @@ repos:
         types_or: [markdown, mdx]
         args: [--prose-wrap=preserve]
         files: \.py$|.md$
+        exclude: ^osworld-human-main/.*$
 
 
   ##### Security #####

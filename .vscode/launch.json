@@ -18,6 +18,19 @@
       "justMyCode": true
     },
     {
+      "name": "Python Debugger: generate_trajectories.py",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "src/perturbation_engine/pipeline/generate_trajectories.py",
+      "console": "integratedTerminal",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      },
+      "cwd": "${workspaceFolder}",
+      "justMyCode": true
+    },
+    {
       "name": "Pytest: Current File",
       "type": "debugpy",
       "request": "launch",

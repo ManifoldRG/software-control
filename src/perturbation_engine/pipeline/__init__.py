@@ -2,23 +2,40 @@
 Pipeline Refactored: Clean data randomization pipeline
 """
 
-from .curriculum_planner import CurriculumPlanner
+from .app_state_utils import (
+    get_element_property,
+    normalize_ui_elements,
+    normalize_window_states,
+)
 from .data_models import (
     CurriculumConfig,
     ExecutionConfig,
     ExecutionContext,
     GeneratedTrajectory,
+    PerturbationCategory,
     PerturbationType,
     ScenarioSpec,
     SeedTrajectory,
+    TemplateCategory,
+    UIElement,
+    VisibilityState,
+    WindowState,
 )
-from .llm_services import CurriculumLLM, PerturbationLLM, QualityEvaluationLLM
-from .perturbation_desktop_env import AppType, PerturbationDesktopEnv
+from .perturbation_desktop_env import PerturbationDesktopEnv
+from .perturbation_templates import (
+    AppPerturbationTemplates,
+    CurriculumGenerator,
+    PerturbationDecision,
+    PerturbationTemplate,
+    TemplateBasedPerturbationGenerator,
+)
 from .quality_evaluator import QualityEvaluator
 from .shared_execution_engine import SharedExecutionEngine
 from .trajectory_generator import TrajectoryGenerator
 from .trajectory_replayer import TrajectoryReplayer
 from .unified_generator import UnifiedGenerator
+
+# Import WindowState and UIElement from data_models
 
 __all__ = [
     "ExecutionConfig",
@@ -28,16 +45,18 @@ __all__ = [
     "GeneratedTrajectory",
     "ExecutionContext",
     "PerturbationType",
-    "PerturbationPhase",
-    "CurriculumLLM",
-    "PerturbationLLM",
-    "QualityEvaluationLLM",
-    "CurriculumPlanner",
+    "PerturbationCategory",
+    "TemplateCategory",
+    "WindowState",
+    "UIElement",
+    "VisibilityState",
+    "normalize_window_states",
+    "normalize_ui_elements",
+    "get_element_property",
     "TrajectoryGenerator",
     "SharedExecutionEngine",
     "QualityEvaluator",
     "UnifiedGenerator",
     "PerturbationDesktopEnv",
-    "AppType",
     "TrajectoryReplayer",
 ]
